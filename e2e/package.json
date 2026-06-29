@@ -1,0 +1,14 @@
+{
+  "name": "@btcr2-aggregation/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "e2e": "tsx headless-cohort.ts"
+  },
+  "dependencies": {
+    "@btcr2-aggregation/participant": "workspace:*",
+    "@btcr2-aggregation/service": "workspace:*",
+    "@btcr2-aggregation/shared": "workspace:*"
+  }
+}

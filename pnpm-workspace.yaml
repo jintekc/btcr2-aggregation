@@ -1,0 +1,8 @@
+packages:
+  - "packages/*"
+  - "e2e"
+allowBuilds:
+  classic-level: false
+  esbuild: false
+minimumReleaseAgeExclude:
+  - '@did-btcr2/method@0.45.0'

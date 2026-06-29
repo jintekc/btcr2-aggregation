@@ -1,0 +1,25 @@
+{
+  "name": "@btcr2-aggregation/shared",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@did-btcr2/aggregation": "^0.3.0",
+    "@did-btcr2/common": "^9.1.0",
+    "@did-btcr2/keypair": "^0.13.1",
+    "@did-btcr2/method": "^0.45.0",
+    "@noble/hashes": "^1.8.0",
+    "@scure/btc-signer": "^1.8.1"
+  }
+}

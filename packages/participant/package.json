@@ -1,0 +1,23 @@
+{
+  "name": "@btcr2-aggregation/participant",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@btcr2-aggregation/shared": "workspace:*",
+    "@did-btcr2/aggregation": "^0.3.0",
+    "@did-btcr2/keypair": "^0.13.1",
+    "@did-btcr2/method": "^0.45.0"
+  }
+}
