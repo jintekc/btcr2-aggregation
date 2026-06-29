@@ -22,7 +22,7 @@ A fully working, deployed, public web demo, **demoable at a conference in Octobe
 2026**. Conference attendees visit a public URL in their browser and perform the
 full aggregation update flow themselves:
 
-> join a cohort → submit a DID update → contribute to MuSig2 signing → see the
+> join a cohort -> submit a DID update -> contribute to MuSig2 signing -> see the
 > aggregated update anchored on-chain.
 
 This implies:
@@ -53,9 +53,9 @@ Consume from npm (versions current as of 2026-06-29; check npm for latest):
 
 `@did-btcr2/aggregation` exposes role-scoped subpath exports:
 
-- `@did-btcr2/aggregation/service` — `AggregationServiceRunner`, `HttpServerTransport`, plus server machinery (inbox buffer, nonce cache, rate limiter, SSE writer), service events.
-- `@did-btcr2/aggregation/participant` — `AggregationParticipantRunner`, `HttpClientTransport`, participant events.
-- `@did-btcr2/aggregation/core` — shared types, message factories/guards, the HTTP protocol layer, `TransportFactory`.
+- `@did-btcr2/aggregation/service` - `AggregationServiceRunner`, `HttpServerTransport`, plus server machinery (inbox buffer, nonce cache, rate limiter, SSE writer), service events.
+- `@did-btcr2/aggregation/participant` - `AggregationParticipantRunner`, `HttpClientTransport`, participant events.
+- `@did-btcr2/aggregation/core` - shared types, message factories/guards, the HTTP protocol layer, `TransportFactory`.
 
 The HTTP transport is fully implemented on both sides. The server transport is
 **sans-I/O**: `handleRequest(req)` / `handleSse(req, stream)` return descriptors
@@ -76,7 +76,7 @@ new AggregationServiceRunner({
 })
 ```
 
-- `onProvideTxData` returns `{ tx, prevOutScripts, prevOutValues }` — this is where
+- `onProvideTxData` returns `{ tx, prevOutScripts, prevOutValues }` - this is where
   a Bitcoin connection builds the beacon transaction (network-agnostic:
   regtest / mutinynet / mainnet).
 - Drive it with `advertiseCohort(config) -> { cohortId, completion }` (many cohorts
@@ -119,7 +119,7 @@ body) with a nonce + timestamp replay cache.
 
 ## Implementation plan (phased)
 
-There is **no real-HTTP-transport end-to-end test in the library yet** — the
+There is **no real-HTTP-transport end-to-end test in the library yet** - the
 library's E2E runs over an in-memory `MockTransport`, and the HTTP client/server
 are covered only in isolation. So the first slice here closes that gap before any
 UI work.
@@ -127,7 +127,7 @@ UI work.
 1. **Headless real-HTTP E2E.** A service process + one or more participant
    processes wired through the *real* `HttpServerTransport` / `HttpClientTransport`
    (behind a minimal HTTP framework adapter), driving a full cohort to completion
-   on regtest: cohort formation → update submission → MuSig2 signing → beacon tx.
+   on regtest: cohort formation -> update submission -> MuSig2 signing -> beacon tx.
    This proves the wiring and the framework adapter.
 2. **Web UI.** A thin frontend (minimal stack, e.g. Vite) for the participant, and
    a service dashboard, visualizing the four protocol steps and live cohort state
@@ -143,7 +143,7 @@ UI work.
   truth; when it is silent, decide deliberately and record it.
 - Keep an **ADR log** in `docs/adr/` for app-level decisions (deployment topology,
   network choice, key custody in-browser, UI/UX of the flow). Library-level
-  decisions already have ADRs in the `did-btcr2-js` repo — reference them rather
+  decisions already have ADRs in the `did-btcr2-js` repo - reference them rather
   than duplicating.
 - No em-dash characters and no unicode arrows in prose, code, or docs (use commas,
   colons, parentheses, periods, or ASCII `->`).
