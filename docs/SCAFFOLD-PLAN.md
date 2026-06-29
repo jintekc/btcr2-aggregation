@@ -1,151 +1,268 @@
-# Scaffold Plan: btcr2-aggregation
+# Scaffold Plan: btcr2-aggregation (Milestone 1, one-shot build spec)
 
-> The initial structure, dependencies, and first milestone for this app. Read
-> [PROJECT-CONTEXT.md](./PROJECT-CONTEXT.md) first for the goal and the upstream
-> API surface. This document is a plan, not yet code; it is the thing to approve
-> and adjust before scaffolding.
+> This document is written to be executed start-to-finish by a fresh Claude Code
+> session with no further questions. Read [PROJECT-CONTEXT.md](./PROJECT-CONTEXT.md)
+> first for the goal and upstream API.
+>
+> The code patterns below are transcribed from the library's working reference E2E
+> (`packages/aggregation/lib/operations/aggregation/e2e-http-transport.ts` and
+> `packages/aggregation/tests/aggregation.spec.ts`). Those files are NOT in the
+> published npm package, so they cannot be read from `node_modules` here - they are
+> inlined below. The published packages DO ship their `src` and `dist/types`, so
+> verify every exact signature against `node_modules/@did-btcr2/*/src` and
+> `node_modules/@did-btcr2/*/dist/types` as you build. Where a property is
+> uncertain, check the type, do not guess.
 
-## Shape of the app
+## Goal of Milestone 1
 
-Three runtime roles plus shared glue, built on the published `@did-btcr2/*`
-packages:
+A **headless, real-HTTP end-to-end** run: one aggregation **service** on a real
+local port and **N participants** over `HttpClientTransport` (real HTTP + SSE),
+driving a full CAS cohort to a valid 64-byte aggregated Taproot signature. No UI,
+no Bitcoin node, no broadcast (the beacon tx spends a fixture prevout). This is the
+foundation every later phase builds on; the library proves the same flow over the
+real HTTP transport in its (unpublished) `lib/operations` reference, which M1 ports
+to Hono and the workspace layout.
 
-- **service** - a Node HTTP server that runs `AggregationServiceRunner` behind
-  `HttpServerTransport`, exposes the `/v1/*` routes, and builds the beacon
-  transaction in `onProvideTxData`.
-- **participant** - isomorphic (Node + browser) logic that runs
-  `AggregationParticipantRunner` over `HttpClientTransport`. The same package
-  backs both the headless E2E (Node) and the browser UI.
-- **web** - the browser frontend attendees use (later phase); imports
-  `participant` and adds UI.
-- **shared** - DID/key/network/config helpers and app-level types used by all of
-  the above.
+## Decisions (locked 2026-06-29)
 
-A **pnpm workspace monorepo** holds these. It mirrors the proven `did-btcr2-js`
-layout, lets the four packages share one TS config and cross-import types, and
-keeps the deployable service and static web build cleanly separable. Everything
-is **ESM, Node >= 22, TypeScript** (the `@did-btcr2` packages and their
-transitive deps are ESM-first).
+1. **Structure** - pnpm workspace monorepo (`packages/{shared,service,participant,web}` + `e2e/`). M1 builds `shared`, `service`, `participant`, `e2e`; `web` is M2.
+2. **Service framework** - Hono (+ `@hono/node-server`).
+3. **Test runner** - vitest for unit; e2e as a real-service `tsx` script (no mocking).
+4. **Dependency source** - published `@did-btcr2/*` from npm (caret ranges).
+5. **Network label** - `mutinynet` for DID/config strings (cosmetic in M1; no chain interaction until M3).
 
 ## Directory structure
 
 ```
 btcr2-aggregation/
-├── package.json              # private workspace root
-├── pnpm-workspace.yaml
-├── tsconfig.base.json        # shared compiler defaults (strict, ES2022, NodeNext)
+├── package.json                 # private workspace root
+├── pnpm-workspace.yaml          # packages: ["packages/*", "e2e"]
+├── tsconfig.base.json           # strict, ES2022, NodeNext, "type":"module"
 ├── eslint.config.js
-├── docs/
-│   ├── PROJECT-CONTEXT.md    # (exists) goal + upstream API
-│   ├── SCAFFOLD-PLAN.md      # (this file)
-│   └── adr/                  # app-level ADRs (deploy topology, network, key custody, UX)
+├── docs/                        # PROJECT-CONTEXT.md, SCAFFOLD-PLAN.md, adr/
 ├── packages/
-│   ├── shared/               # @btcr2-aggregation/shared
-│   ├── service/              # @btcr2-aggregation/service  (Node + Hono)
-│   ├── participant/          # @btcr2-aggregation/participant  (isomorphic)
-│   └── web/                  # @btcr2-aggregation/web  (Vite + React, phase 2)
-└── e2e/                      # @btcr2-aggregation/e2e  (tsx harness; milestone 1)
-    └── headless-cohort.ts
+│   ├── shared/                  # @btcr2-aggregation/shared
+│   │   └── src/index.ts         # keys/DIDs, network constants, the buildSignedUpdate + buildFixtureTxData helpers
+│   ├── service/                 # @btcr2-aggregation/service
+│   │   └── src/
+│   │       ├── index.ts         # createService(opts) -> { start(port), stop(), runner }
+│   │       ├── hono-adapter.ts  # HttpServerTransport <-> Hono (routes + SSE bridge)
+│   │       └── tx.ts            # buildFixtureTxData (onProvideTxData impl)
+│   └── participant/             # @btcr2-aggregation/participant (isomorphic)
+│       └── src/index.ts         # createParticipant(opts) -> runner wired to HttpClientTransport
+└── e2e/                         # @btcr2-aggregation/e2e
+    ├── headless-cohort.ts       # the tsx harness (pnpm e2e)
+    └── headless-cohort.spec.ts  # vitest wrapper asserting the harness result
 ```
 
-Milestone 1 scaffolds `shared`, `service`, `participant`, and `e2e`. `web` is
-created in phase 2.
+## Dependencies (exact, caret ranges; current published versions 2026-06-29)
 
-## Stack decisions
+**Root** `package.json` (`"private": true`, `"type": "module"`, `engines.node >=22`):
+- devDeps: `typescript ^5.9`, `@types/node ^22`, `tsx ^4`, `vitest ^2`, `eslint ^9`, `typescript-eslint ^8`, `rimraf ^6`.
+- scripts: `"typecheck": "tsc -b"`, `"test": "vitest run"`, `"e2e": "tsx e2e/headless-cohort.ts"`, `"lint": "eslint ."`, `"build": "pnpm -r build"`.
 
-| Concern | Choice | Why / alternative |
-|---|---|---|
-| Package manager | **pnpm workspace** | Matches the library; strict node_modules; subpath-export friendly. |
-| Language / module | **TypeScript, ESM, Node >= 22** | Upstream packages are ESM-first; Node 22 has global `fetch` + SSE. |
-| Service HTTP framework | **Hono + @hono/node-server** | Tiny, fast, first-class streaming (clean SSE adapter for `handleSse`), and deploys to Node, Docker, or edge later. Alt: Express/Fastify if you prefer familiarity. |
-| Participant runtime | **isomorphic package** | Pure logic over `HttpClientTransport` (fetch + SSE); runs in Node for E2E and in the browser for the UI. |
-| Unit tests | **vitest** | TS-native, no compile step, fast, and has a browser/jsdom mode for the UI later. Alt: mocha+chai+c8 to match the library. |
-| E2E tests | **standalone `tsx` scripts, real services** | No mocking: spin up the real service + real participants over real HTTP. Matches the "e2e = real services" convention. |
-| Frontend (phase 2) | **Vite + React + TS** | Fast dev/build, large ecosystem, quick to a presentable demo. Alt: Svelte for a lighter bundle. |
-| Bitcoin (M1) | **fixture-funded prevout, no node** | M1 proves transport+runner+signing; a synthetic regtest-style P2TR prevout is enough to build a signable tx and verify the aggregate signature. Live funding/broadcast is phase 3. |
-| Beacon type (M1) | **CAS first** | Simpler announcement map; add SMT once CAS is green. Both are runner config (`beaconType`). |
+**packages/shared** `@btcr2-aggregation/shared`:
+- `@did-btcr2/method ^0.45.0`, `@did-btcr2/keypair ^0.13.1`, `@did-btcr2/aggregation ^0.3.0`, `@did-btcr2/common ^9.1.0`, `@scure/btc-signer ^1.8.1`, `@noble/hashes ^1.8.0`.
 
-## Dependencies (per package)
+**packages/service** `@btcr2-aggregation/service`:
+- `@btcr2-aggregation/shared workspace:*`, `@did-btcr2/aggregation ^0.3.0`, `@did-btcr2/method ^0.45.0`, `@did-btcr2/keypair ^0.13.1`, `@scure/btc-signer ^1.8.1`, `@noble/hashes ^1.8.0`, `hono ^4`, `@hono/node-server ^1`.
 
-Versions are the currently-published `@did-btcr2/*` (2026-06-29); track latest.
-Assumes the `@did-btcr2/*` packages are published to npm; if consuming a
-pre-release, use `pnpm link` / a local registry / `file:` specifiers.
+**packages/participant** `@btcr2-aggregation/participant` (no Node-only APIs):
+- `@btcr2-aggregation/shared workspace:*`, `@did-btcr2/aggregation ^0.3.0`, `@did-btcr2/method ^0.45.0`, `@did-btcr2/keypair ^0.13.1`.
 
-**Root** (`package.json`, `"private": true`, `"type": "module"`):
-- devDeps: `typescript ^5.9`, `@types/node ^22`, `tsx ^4`, `vitest ^2`,
-  `eslint ^9`, `typescript-eslint ^8`, `rimraf ^6`.
-- scripts: `build` (`pnpm -r build`), `typecheck` (`tsc -b`), `test`
-  (`vitest run`), `e2e` (`tsx e2e/headless-cohort.ts`), `lint`.
+**e2e** `@btcr2-aggregation/e2e` (`"private": true`):
+- `@btcr2-aggregation/service workspace:*`, `@btcr2-aggregation/participant workspace:*`, `@btcr2-aggregation/shared workspace:*`.
 
-**packages/shared** (`@btcr2-aggregation/shared`):
-- `@did-btcr2/aggregation ^0.3.0` (for `/core` types), `@did-btcr2/method ^0.45.0`,
-  `@did-btcr2/keypair ^0.13.1`, `@did-btcr2/common ^9.1.0`,
-  `@did-btcr2/bitcoin ^0.8.0`.
+## Imports and their sources (verify against node_modules types)
 
-**packages/service** (`@btcr2-aggregation/service`):
-- `@btcr2-aggregation/shared workspace:*`, `@did-btcr2/aggregation ^0.3.0`
-  (`/service`, `/core`), `@did-btcr2/method ^0.45.0`, `@did-btcr2/bitcoin ^0.8.0`,
-  `@did-btcr2/keypair ^0.13.1`, `hono ^4`, `@hono/node-server ^1`.
+| Symbol | Import from |
+|---|---|
+| `SchnorrKeyPair`, `LocalSigner` | `@did-btcr2/keypair` |
+| `DidBtcr2`, `Updater`, `Resolver`, `resolveBtcr2SenderPk` | `@did-btcr2/method` |
+| `AggregationServiceRunner`, `HttpServerTransport`, types `SigningTxData` / `CohortConfig` / `HttpRequestLike` / `HttpResponseLike` / `SseStream` | `@did-btcr2/aggregation/service` |
+| `AggregationParticipantRunner`, `HttpClientTransport` | `@did-btcr2/aggregation/participant` |
+| `musig2`, `p2tr`, `Transaction`, `Script` | `@scure/btc-signer` |
+| `bytesToHex` | `@noble/hashes/utils` |
 
-**packages/participant** (`@btcr2-aggregation/participant`, isomorphic):
-- `@btcr2-aggregation/shared workspace:*`, `@did-btcr2/aggregation ^0.3.0`
-  (`/participant`, `/core`), `@did-btcr2/method ^0.45.0`,
-  `@did-btcr2/keypair ^0.13.1`. No Node-only APIs.
+## Reference patterns (inlined; transcribed from the library, verify signatures)
 
-**e2e** (`@btcr2-aggregation/e2e`, private):
-- `@btcr2-aggregation/service workspace:*`,
-  `@btcr2-aggregation/participant workspace:*`,
-  `@btcr2-aggregation/shared workspace:*`.
+### Keys and DIDs
+```ts
+// from tests/aggregation.spec.ts:635-640
+const keys = SchnorrKeyPair.generate();
+const did = DidBtcr2.create(keys.publicKey.compressed, { idType: 'KEY', network: 'mutinynet' });
+```
+Create one identity for the service and one per participant. `keys.publicKey.compressed`
+is the 33-byte compressed key; its x-only coordinate is `compressed.slice(1)` (32 bytes).
 
-**packages/web** (phase 2, `@btcr2-aggregation/web`):
-- `@btcr2-aggregation/participant workspace:*`, `react ^18`, `react-dom ^18`;
-  devDeps `vite ^6`, `@vitejs/plugin-react ^4`.
+### Exact transport shapes (from `@did-btcr2/aggregation/service`)
+```ts
+// SigningTxData (src/service/service.ts)
+interface SigningTxData { tx: Transaction; prevOutScripts: Uint8Array[]; prevOutValues: bigint[]; }
 
-## Milestone 1: headless real-HTTP E2E
+// HttpServerTransport request/response/SSE (src/service/http-server.ts)
+interface HttpRequestLike { method: string; url: string; headers: Record<string,string>; body?: string; remoteAddr?: string; } // header names MUST be lowercased
+interface HttpResponseLike { status: number; headers: Record<string,string>; body: string; }
+interface SseStream { writeEvent(event: string, data: string, id?: string): void; writeComment(c: string): void; close(): void; onClose(cb: () => void): void; }
+```
 
-**Goal:** prove the whole aggregation flow over the *real* HTTP transport, with no
-UI, no Bitcoin node, and no broadcast. This is the gap the library does not cover
-(its E2E uses an in-memory `MockTransport`; the HTTP client/server are tested only
-in isolation).
+### Service: CohortConfig + runner + fixture tx
+`CohortConfig` requires `beaconType`, `minParticipants`, `network`, **and** `recoveryKey`
+(64-hex x-only) **and** `recoverySequence` (>=1) - the last two are easy to miss and
+will throw if absent (ADR 042 recovery leaf).
+```ts
+// recoveryKey: a valid x-only 64-hex key. Derive one to avoid invalid-point issues:
+const recoveryKey = bytesToHex(SchnorrKeyPair.generate().publicKey.compressed.slice(1)); // 64 hex chars
+const config: CohortConfig = { beaconType: 'CASBeacon', minParticipants: 2, network: 'mutinynet', recoveryKey, recoverySequence: 144 };
 
-**`pnpm e2e` does this:**
+// onProvideTxData fixture (from tests/aggregation.spec.ts:656-662 + buildDummyTx:66-78).
+// Reaches into the finalized cohort for its aggregate keys + committed signal.
+function buildFixtureTxData(runner: AggregationServiceRunner): SigningTxData {
+  const cohort = runner.session.cohorts[0];                       // AggregationCohort; verify shape in types
+  const aggPk = musig2.keyAggExport(musig2.keyAggregate(cohort.cohortKeys));
+  const payment = p2tr(aggPk);                                    // @scure/btc-signer P2TR for the aggregate key
+  const prevOutValue = 100000n;
+  const tx = new Transaction({ version: 2, allowUnknownOutputs: true });
+  tx.addInput({ txid: '00'.repeat(32), index: 0, witnessUtxo: { amount: prevOutValue, script: payment.script } });
+  tx.addOutput({ script: payment.script, amount: prevOutValue - 500n });
+  tx.addOutput({ script: Script.encode([ 'RETURN', cohort.signalBytes! ]), amount: 0n }); // bind approval to the signal
+  return { tx, prevOutScripts: [payment.script], prevOutValues: [prevOutValue] };
+}
 
-1. Start the **service** on `http://localhost:PORT` - Hono routes wired to
-   `HttpServerTransport.handleRequest` / `handleSse`, driving an
-   `AggregationServiceRunner` with a CAS cohort config and an `onProvideTxData`
-   that builds a Taproot beacon tx spending a fixture-funded P2TR prevout at the
-   cohort aggregate key.
-2. Start **N participants** in-process, each with its own DID + `SchnorrKeyPair`
-   and a `HttpClientTransport({ baseUrl: 'http://localhost:PORT' })` - real HTTP,
-   real SSE. Each `onProvideUpdate` returns a signed BTCR2 update (`Updater.sign`).
-3. Drive to completion: advertise -> discover -> join -> keygen -> submit update
-   -> aggregate -> validate -> MuSig2 sign.
-4. **Assert:** the service emits `signing-complete` with a valid aggregated
-   BIP-341 key-path signature over the beacon tx sighash, and each participant
-   sees `cohort-complete` with its CAS Announcement.
+const runner = new AggregationServiceRunner({
+  transport, did: serviceDid, keys: serviceKeys, config,
+  onProvideTxData: async () => buildFixtureTxData(runner),
+});
+```
 
-**Acceptance:** a green, deterministic `pnpm e2e` (and a vitest wrapper) that
-exercises the real HTTP transport end to end, plus a documented service-adapter
-and participant-wiring pattern the web phase builds on directly.
+### Participant: signed update via `Updater.sign`
+```ts
+// from lib/operations/aggregation/e2e-http-transport.ts:151-170
+function buildSignedUpdate(did: string, kp: SchnorrKeyPair, beaconAddress: string) {
+  const doc = Resolver.deterministic({ genesisBytes: kp.publicKey.compressed, hrp: 'k', idType: 'KEY', version: 1, network: 'mutinynet' });
+  const vm = doc.verificationMethod![0];
+  const unsigned = Updater.construct(doc, [{
+    op: 'add', path: '/service/-',
+    value: { id: `${did}#beacon-cas`, type: 'CASBeacon', serviceEndpoint: `bitcoin:${beaconAddress}` },
+  }], 1);
+  return Updater.sign(did, unsigned, vm, new LocalSigner(kp.raw.secret!)); // verify LocalSigner ctor arg in keypair types
+}
 
-**Explicitly out of scope for M1:** any UI, a live Bitcoin node, broadcasting a
-real tx, SMT beacons, multi-cohort, persistence, and deployment.
+const participant = new AggregationParticipantRunner({
+  transport, did, keys,
+  shouldJoin: async () => true,
+  onProvideUpdate: async ({ beaconAddress }) => buildSignedUpdate(did, keys, beaconAddress),
+});
+```
+
+### Envelope auth wiring (both transports use the same resolver)
+The server verifies each participant's signed envelope by resolving its DID to a
+public key, and the client verifies the server's. For KEY DIDs this is one function:
+```ts
+// server
+const transport = new HttpServerTransport({ resolveSenderPk: resolveBtcr2SenderPk, heartbeatIntervalMs: 0 });
+transport.registerActor(serviceDid, serviceKeys);
+// client (per participant)
+const transport = new HttpClientTransport({ baseUrl: 'http://127.0.0.1:PORT', resolveSenderPk: resolveBtcr2SenderPk });
+transport.registerActor(did, keys);
+```
+No manual `registerPeer` is needed when `resolveBtcr2SenderPk` is supplied and all
+identities are did:btcr2 KEY DIDs.
+
+### Hono adapter (service)
+Wrap `HttpServerTransport`. Map each Hono request to `HttpRequestLike` (lowercase
+header names; read the body for POSTs), then:
+- non-SSE -> `const r = await transport.handleRequest(reqLike); return c.body(r.body, r.status, r.headers);`
+- SSE GETs (`GET /v1/adverts`, `GET /v1/actors/:did/inbox`) -> back an `SseStream` and call `transport.handleSse(reqLike, stream)`.
+
+Routes to mount: `POST /v1/messages`, `POST /v1/adverts`, `GET /v1/adverts` (SSE),
+`GET /v1/actors/:did/inbox` (SSE), `GET /v1/.well-known/aggregation`.
+
+For SSE under `@hono/node-server`, back the `SseStream` with the raw Node
+`ServerResponse` (exposed on the Hono context env by `@hono/node-server`; verify the
+property name in its types) and write `event:/data:/id:` frames in `writeEvent`,
+`: comment` in `writeComment`, `.end()` in `close()`, and `res.on('close', cb)` in
+`onClose`. If the raw-response bridge proves awkward, fall back to a plain Node
+`http` server for the service in M1 (the library reference uses exactly that) and
+introduce Hono in M2 - record the choice in an ADR either way.
+
+## Milestone 1: the headless E2E (`e2e/headless-cohort.ts`)
+
+Mirror `tests/aggregation.spec.ts:634-715`, but with real HTTP instead of
+`MockTransport`:
+1. Generate service identity + N=2 participant identities (KEY DIDs, mutinynet).
+2. Start the service (`@btcr2-aggregation/service`) on `127.0.0.1:<port>` with the
+   CAS `config` and the fixture `onProvideTxData`.
+3. Create 2 participants (`@btcr2-aggregation/participant`) with
+   `HttpClientTransport({ baseUrl })`, `shouldJoin: () => true`, and the
+   `buildSignedUpdate` `onProvideUpdate`.
+4. `await p.start()` for each participant, then `const result = await service.runner.run()`.
+5. Assert: `result.signature.length === 64`, `result.signedTx` exists, and the
+   service saw `cohort-advertised -> opt-in-received -> keygen-complete ->
+   signing-started -> signing-complete` and each participant saw
+   `cohort-discovered -> cohort-joined -> cohort-ready -> cohort-complete`.
+6. Tear down: stop participants and the service; exit 0 on success, non-zero on
+   failure or timeout (wrap the run in a ~30s timeout so a stall fails loudly).
+
+`e2e/headless-cohort.spec.ts` is a thin vitest wrapper that runs the harness and
+asserts it resolves with a 64-byte signature.
+
+## Build sequence (do in order)
+
+1. Scaffold the workspace: root `package.json`, `pnpm-workspace.yaml`,
+   `tsconfig.base.json`, `eslint.config.js`, and the four package dirs with their
+   `package.json` + `tsconfig.json` (composite, extends base) + `src/`.
+2. `pnpm install`. If any `@did-btcr2/*` version is not on npm, STOP and report;
+   the fallback is `pnpm` `link:`/`file:` to the local `did-btcr2-js` checkout at
+   `/home/jintek/projects/github/@dcdpr/did-btcr2-js` (do not silently switch).
+3. Open `node_modules/@did-btcr2/aggregation/dist/types` and confirm the exact
+   shapes used above: `SigningTxData`, `CohortConfig` (and its required fields),
+   `HttpRequestLike`/`HttpResponseLike`/`SseStream`, the runner option/callback
+   types, and `runner.session.cohorts[0]` (`cohortKeys`, `signalBytes`). Adjust the
+   inlined code to match if anything differs.
+4. Implement `shared` (keys/DIDs helpers, `buildSignedUpdate`, `buildFixtureTxData`).
+5. Implement `service` (`hono-adapter.ts`, `tx.ts`, `createService`).
+6. Implement `participant` (`createParticipant`).
+7. Implement `e2e/headless-cohort.ts` + the vitest wrapper.
+8. `pnpm typecheck`, then `pnpm e2e`, then `pnpm test`. Iterate until green.
+
+## Verification / definition of done
+
+- `pnpm install` succeeds.
+- `pnpm typecheck` (`tsc -b`) is clean.
+- `pnpm e2e` prints a successful run and exits 0, having produced a 64-byte
+  aggregated signature and a signed tx over real HTTP (service on a port,
+  participants over `HttpClientTransport`).
+- `pnpm test` (the vitest wrapper) passes.
+- `pnpm lint` is clean.
+- No em-dash characters or unicode arrows in any file (use `,` `:` `()` `.` or `->`).
+- An ADR under `docs/adr/` records the service framework wiring (Hono vs the Node
+  http fallback if taken) and the M1 fixture-tx approach.
+
+## Gotchas and fallbacks
+
+- **Missing `recoveryKey`/`recoverySequence`** in `CohortConfig` throws at advertise
+  time. Both are required; derive a valid x-only `recoveryKey` as shown.
+- **`runner.session.cohorts[0]`** is white-box but is the supported way the
+  reference reads `cohortKeys`/`signalBytes` in `onProvideTxData`; the cohort is
+  populated by keygen before `onProvideTxData` is called.
+- **OP_RETURN in the fixture tx is required**: the signing approval binds to the
+  validated signal, so the tx must carry `Script.encode(['RETURN', signalBytes])`.
+- **SSE under Hono** is the fiddliest piece; the raw-Node-response bridge or the
+  Node-http fallback (then Hono in M2) are both acceptable - just keep the service
+  on a real port so the transport is genuinely exercised over HTTP.
+- **ESM only**: the `@did-btcr2/*` packages and their deps are ESM; keep
+  `"type": "module"` everywhere and use `import`.
+- **Published-package assumption**: if npm install of `@did-btcr2/*` fails, switch
+  to local `link:` and say so; do not stub the library.
 
 ## Phasing beyond M1
 
-- **M2 - web UI.** `packages/web` (Vite + React): a participant flow attendees
-  drive in-browser (generate keys, join, submit, sign) plus a service dashboard,
-  both rendered off the runner event streams. Reuses `participant` unchanged.
-- **M3 - live + deploy.** Switch `onProvideTxData` to a real `@did-btcr2/bitcoin`
-  connection on **mutinynet**; fund and broadcast a real beacon tx (reuse the
-  library's scenario tooling patterns); deploy the service to a public host and
+- **M2 - web UI.** `packages/web` (Vite + React, decide React vs Svelte then):
+  in-browser participant (generate keys, join, submit, sign) + a service dashboard,
+  rendered off the runner event streams. Reuses `participant` unchanged.
+- **M3 - live + deploy.** Swap the fixture `onProvideTxData` for a real
+  `@did-btcr2/bitcoin` connection on mutinynet; fund and broadcast a real beacon tx
+  (reuse the library scenario tooling patterns); deploy the service publicly and
   serve the web build. Add SMT alongside CAS.
-
-## Decisions (locked 2026-06-29)
-
-1. **Structure** - pnpm workspace monorepo (`packages/{shared,service,participant,web}` + `e2e/`).
-2. **Service framework** - Hono (+ `@hono/node-server`).
-3. **Test runner** - vitest for unit tests; e2e as real-service `tsx` scripts (no mocking).
-4. **Dependency source** - the published `@did-btcr2/*` packages from npm (caret ranges).
-
-Still open (M2, does not gate M1): **frontend framework** - React (recommended) vs Svelte.
+```
