@@ -1,7 +1,15 @@
 import { pathToFileURL } from 'node:url';
 import { createParticipant } from '@btcr2-aggregation/participant';
 import { createService } from '@btcr2-aggregation/service';
-import { buildCohortConfig, createIdentity, type Identity } from '@btcr2-aggregation/shared';
+import {
+  buildCohortConfig,
+  createIdentity,
+  type BeaconType,
+  type Identity,
+} from '@btcr2-aggregation/shared';
+
+/** Which off-chain resolution artifact a participant received on `cohort-complete`. */
+type CohortArtifact = 'cas' | 'smt' | 'none';
 
 /** Ordered service milestones the cohort must pass through. */
 const SERVICE_MILESTONES = [
@@ -23,9 +31,15 @@ const PARTICIPANT_MILESTONES = [
 export interface ParticipantResult {
   did: string;
   milestones: string[];
+  /** Beacon type reported in this participant's `cohort-complete` payload. */
+  beaconType: string;
+  /** The off-chain artifact carried by `cohort-complete`: CAS map, SMT proof, or none. */
+  artifact: CohortArtifact;
 }
 
 export interface HeadlessResult {
+  /** Beacon type the cohort was configured with. */
+  beaconType: BeaconType;
   /** Length in bytes of the aggregated MuSig2 signature (64 on success). */
   signatureLength: number;
   /** Whether the runner produced a signed transaction. */
@@ -39,6 +53,8 @@ export interface HeadlessResult {
 export interface HeadlessOptions {
   /** Number of participants (default 2). */
   participants?: number;
+  /** Beacon type for the cohort (default CAS). */
+  beaconType?: BeaconType;
   /** Port to listen on (default 0 = ephemeral). */
   port?: number;
   /** Overall run timeout in ms (default 30000). */
@@ -60,6 +76,25 @@ function orderedFirstOccurrences(events: string[], expected: readonly string[]):
     .sort((a, b) => (firstIndex.get(a) ?? 0) - (firstIndex.get(b) ?? 0));
 }
 
+/**
+ * Classify the off-chain artifact in a `cohort-complete` payload. CAS cohorts
+ * carry the full announcement map; SMT cohorts carry this DID's inclusion proof.
+ * Structurally typed so the inferred `CohortCompleteInfo` matches without dragging
+ * `@did-btcr2/aggregation` in as a direct e2e dependency.
+ */
+function deriveArtifact(info: {
+  casAnnouncement?: Record<string, string>;
+  smtProof?: unknown;
+}): CohortArtifact {
+  if (info.casAnnouncement) {
+    return 'cas';
+  }
+  if (info.smtProof) {
+    return 'smt';
+  }
+  return 'none';
+}
+
 /** Reject if `p` does not settle within `ms` (the timeout does not keep Node alive). */
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -79,25 +114,29 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
 }
 
 /**
- * Drive a full CAS aggregation cohort over the real HTTP transport: one service on
- * a real local port and N in-process participants over `HttpClientTransport`, from
- * cohort advert through MuSig2 keygen, update submission, validation, and signing,
- * to a 64-byte aggregated Taproot signature. No Bitcoin node and no broadcast (the
- * beacon tx spends a fixture prevout).
+ * Drive a full aggregation cohort (CAS or SMT, per `options.beaconType`) over the
+ * real HTTP transport: one service on a real local port and N in-process
+ * participants over `HttpClientTransport`, from cohort advert through MuSig2
+ * keygen, update submission, validation, and signing, to a 64-byte aggregated
+ * Taproot signature. No Bitcoin node and no broadcast (the beacon tx spends a
+ * fixture prevout); the cohort still builds the real CAS announcement / SMT tree
+ * internally, so each participant receives its true off-chain resolution artifact.
  */
 export async function runHeadlessCohort(options: HeadlessOptions = {}): Promise<HeadlessResult> {
   const n = options.participants ?? 2;
+  const beaconType: BeaconType = options.beaconType ?? 'CASBeacon';
   const timeoutMs = options.timeoutMs ?? 30000;
   const log = options.quiet ? () => {} : (msg: string) => console.log(msg);
 
   const serviceIdentity = createIdentity();
   const participantIdentities: Identity[] = Array.from({ length: n }, () => createIdentity());
   log(`service ${serviceIdentity.did}`);
+  log(`beaconType ${beaconType}`);
   participantIdentities.forEach((id, i) => log(`participant ${i} ${id.did}`));
 
   const service = createService({
     identity: serviceIdentity,
-    config: buildCohortConfig(n),
+    config: buildCohortConfig(n, beaconType),
   });
 
   const serviceEvents: string[] = [];
@@ -124,9 +163,13 @@ export async function runHeadlessCohort(options: HeadlessOptions = {}): Promise<
   log(`service listening on ${baseUrl}`);
 
   const participants = participantIdentities.map((identity) =>
-    createParticipant({ identity, baseUrl }),
+    createParticipant({ identity, baseUrl, beaconType }),
   );
   const participantEvents: string[][] = participants.map(() => []);
+  // The off-chain artifact each participant receives on `cohort-complete` (CAS
+  // map vs SMT proof). Captured from the event payload, not the signing result.
+  const participantArtifacts: Array<{ beaconType: string; artifact: CohortArtifact }> =
+    participants.map(() => ({ beaconType: '', artifact: 'none' }));
   // Each participant's `cohort-complete` arrives over its inbox SSE a beat after
   // the service's `signing-complete`, so the run() promise can resolve before the
   // participants finish. Arm a completion promise per participant up front and
@@ -138,9 +181,13 @@ export async function runHeadlessCohort(options: HeadlessOptions = {}): Promise<
     participant.runner.on('cohort-ready', () => participantEvents[i].push('cohort-ready'));
     participantComplete.push(
       new Promise<void>((resolve) => {
-        participant.runner.on('cohort-complete', () => {
+        participant.runner.on('cohort-complete', (info) => {
           participantEvents[i].push('cohort-complete');
-          log(`[participant ${i}] cohort-complete`);
+          participantArtifacts[i] = { beaconType: info.beaconType, artifact: deriveArtifact(info) };
+          log(
+            `[participant ${i}] cohort-complete ` +
+              `(${info.beaconType}, artifact=${participantArtifacts[i].artifact})`,
+          );
           resolve();
         });
       }),
@@ -163,12 +210,15 @@ export async function runHeadlessCohort(options: HeadlessOptions = {}): Promise<
     );
 
     return {
+      beaconType,
       signatureLength: result.signature.length,
       hasSignedTx: Boolean(result.signedTx),
       serviceMilestones: orderedFirstOccurrences(serviceEvents, SERVICE_MILESTONES),
       participants: participants.map((_participant, i) => ({
         did: participantIdentities[i].did,
         milestones: orderedFirstOccurrences(participantEvents[i], PARTICIPANT_MILESTONES),
+        beaconType: participantArtifacts[i].beaconType,
+        artifact: participantArtifacts[i].artifact,
       })),
     };
   } finally {
@@ -194,17 +244,33 @@ function checkResult(result: HeadlessResult): string[] {
     problems.push(`service milestones: expected [${expectedService}], got [${actualService}]`);
   }
   const expectedParticipant = [...PARTICIPANT_MILESTONES].join(' -> ');
+  const expectedArtifact: CohortArtifact = result.beaconType === 'SMTBeacon' ? 'smt' : 'cas';
   for (const participant of result.participants) {
     const actual = participant.milestones.join(' -> ');
     if (actual !== expectedParticipant) {
       problems.push(`participant ${participant.did} milestones: expected [${expectedParticipant}], got [${actual}]`);
+    }
+    if (participant.beaconType !== result.beaconType) {
+      problems.push(
+        `participant ${participant.did} beaconType: expected ${result.beaconType}, got ${participant.beaconType}`,
+      );
+    }
+    if (participant.artifact !== expectedArtifact) {
+      problems.push(
+        `participant ${participant.did} artifact: expected ${expectedArtifact} for ${result.beaconType}, got ${participant.artifact}`,
+      );
     }
   }
   return problems;
 }
 
 async function main(): Promise<number> {
-  const result = await runHeadlessCohort();
+  // `--smt` (or `--beacon=SMTBeacon`) drives an SMT cohort; default is CAS.
+  const argv = process.argv.slice(2);
+  const beaconType: BeaconType =
+    argv.includes('--smt') || argv.includes('--beacon=SMTBeacon') ? 'SMTBeacon' : 'CASBeacon';
+
+  const result = await runHeadlessCohort({ beaconType });
   const problems = checkResult(result);
   if (problems.length > 0) {
     console.error('\nE2E FAILED:');
@@ -213,8 +279,11 @@ async function main(): Promise<number> {
     }
     return 1;
   }
+  const label = beaconType === 'SMTBeacon' ? 'SMT' : 'CAS';
+  const artifact = beaconType === 'SMTBeacon' ? 'SMT inclusion proof' : 'CAS announcement';
   console.log(
-    '\nE2E PASSED: full CAS cohort -> 64-byte aggregated Taproot signature over real HTTP.',
+    `\nE2E PASSED: full ${label} cohort -> 64-byte aggregated Taproot signature over real HTTP, ` +
+      `each participant received its ${artifact}.`,
   );
   return 0;
 }
