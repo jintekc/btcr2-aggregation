@@ -18,6 +18,7 @@
     "@btcr2-aggregation/participant": "workspace:*",
     "@btcr2-aggregation/shared": "workspace:*",
     "@did-btcr2/aggregation": "^0.3.0",
+    "@did-btcr2/common": "^9.1.0",
     "@did-btcr2/keypair": "^0.13.1",
     "@did-btcr2/method": "^0.45.0",
     "@hono/node-server": "^1",

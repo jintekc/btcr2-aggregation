@@ -9,6 +9,7 @@ import { resolveBtcr2SenderPk } from '@did-btcr2/method';
 import type { Identity } from '@btcr2-aggregation/shared';
 import { createHonoApp } from './hono-adapter.js';
 import { makeProvideTxData } from './tx.js';
+import { persistCohortArtifacts } from './persist.js';
 import type { ArtifactStore } from './store.js';
 
 export { createHonoApp, type HonoAppOptions } from './hono-adapter.js';
@@ -31,6 +32,11 @@ export {
   exportSidecar,
   mountArtifactRoutes,
 } from './store.js';
+export {
+  persistCohortArtifacts,
+  type PersistableCohort,
+  type PersistSummary,
+} from './persist.js';
 
 export interface CreateServiceOptions {
   /** Service identity (the coordinator). */
@@ -119,6 +125,29 @@ export function createService(opts: CreateServiceOptions): Service {
     cohortTtlMs: opts.cohortTtlMs,
     phaseTimeoutMs: opts.phaseTimeoutMs,
   });
+
+  // When a store is configured, harvest each completed cohort's off-chain
+  // resolution artifacts (the per-member signed updates plus the CAS announcement
+  // or SMT proofs) and persist them under the exact hex keys a did:btcr2 resolver
+  // will request. The artifacts live on the cohort accessor, NOT on the
+  // `signing-complete` result, so a handler that read only the result would
+  // persist nothing and resolution would silently fail. Fire-and-forget: a persist
+  // failure must never crash the runner, so it is caught and logged. The headless
+  // M1/M2 path configures no store, so this never runs in the hermetic gate; the
+  // hermetic persist test wires a MemoryArtifactStore here explicitly.
+  if (opts.store) {
+    const store = opts.store;
+    runner.on('signing-complete', ({ cohortId }) => {
+      const cohort = runner.session.getCohort(cohortId);
+      if (!cohort) {
+        return;
+      }
+      void persistCohortArtifacts(store, cohort).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[service] failed to persist cohort ${cohortId} artifacts: ${message}`);
+      });
+    });
+  }
 
   const app = createHonoApp(transport, {
     runner,
