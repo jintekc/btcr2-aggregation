@@ -4,15 +4,32 @@ import { bytesToHex } from '@noble/hashes/utils';
 import { Script, Transaction, p2tr } from '@scure/btc-signer';
 import * as musig2 from '@scure/btc-signer/musig2';
 import type { CohortConfig, SigningTxData } from '@did-btcr2/aggregation/service';
+import { DEFAULT_NETWORK } from './networks.js';
 
 export type { CohortConfig, SigningTxData } from '@did-btcr2/aggregation/service';
+export * from './networks.js';
+
+/**
+ * The two beacon types this aggregator supports, chosen per cohort. A CAS
+ * announcement discloses every cohort member's DID + update hash to any resolver;
+ * an SMT proof discloses only the resolved DID's own leaf (privacy). The protocol
+ * drives both identically: the difference is which off-chain artifact the cohort
+ * builds internally and which service is appended to the participant's update.
+ */
+export type BeaconType = 'CASBeacon' | 'SMTBeacon';
+
+/** The `#beacon-<slug>` service-id fragment for a beacon type. */
+function beaconSlug(beaconType: BeaconType): 'cas' | 'smt' {
+  return beaconType === 'SMTBeacon' ? 'smt' : 'cas';
+}
 
 /**
  * Bitcoin network label used for every DID and cohort config in this app. In M1
  * this is cosmetic (no chain interaction); it becomes load-bearing in M3 when the
- * fixture beacon tx is swapped for a real mutinynet transaction.
+ * fixture beacon tx is swapped for a real beacon transaction. Aliases
+ * {@link DEFAULT_NETWORK} so the network registry is the single source of truth.
  */
-export const NETWORK = 'mutinynet';
+export const NETWORK = DEFAULT_NETWORK;
 
 /** A did:btcr2 KEY identity: the DID string paired with its Schnorr keypair. */
 export interface Identity {
@@ -61,13 +78,18 @@ export function deriveRecoveryKey(): string {
 }
 
 /**
- * Build a CAS cohort config for `participants` signers. recoveryKey and
- * recoverySequence are required by the protocol and easy to miss, so they are set
- * here once for the whole app.
+ * Build a cohort config for `participants` signers and the given `beaconType`
+ * (default CAS). recoveryKey and recoverySequence are required by the protocol and
+ * easy to miss, so they are set here once for the whole app. The protocol drives
+ * CAS and SMT cohorts identically; the cohort builds the matching artifact (CAS
+ * announcement map or SMT tree) internally.
  */
-export function buildCohortConfig(participants: number): CohortConfig {
+export function buildCohortConfig(
+  participants: number,
+  beaconType: BeaconType = 'CASBeacon',
+): CohortConfig {
   return {
-    beaconType: 'CASBeacon',
+    beaconType,
     minParticipants: participants,
     network: NETWORK,
     recoveryKey: deriveRecoveryKey(),
@@ -76,11 +98,20 @@ export function buildCohortConfig(participants: number): CohortConfig {
 }
 
 /**
- * Build a signed did:btcr2 update that appends a CAS beacon service pointing at
- * the cohort's beacon address. Returned to the participant runner's
- * onProvideUpdate callback as the participant's contribution to the cohort.
+ * Build a signed did:btcr2 update that appends a beacon service (CAS or SMT,
+ * default CAS) pointing at the cohort's beacon address. Returned to the
+ * participant runner's onProvideUpdate callback as the participant's contribution
+ * to the cohort. The service `type` and `#beacon-<slug>` id fragment match the
+ * cohort's beacon type, with distinct fragments (`#beacon-cas` vs `#beacon-smt`)
+ * so a DID that ever rides both a CAS and an SMT cohort never collides on
+ * `/service/-`.
  */
-export function buildSignedUpdate(did: string, kp: SchnorrKeyPair, beaconAddress: string) {
+export function buildSignedUpdate(
+  did: string,
+  kp: SchnorrKeyPair,
+  beaconAddress: string,
+  beaconType: BeaconType = 'CASBeacon',
+) {
   const doc = Resolver.deterministic({
     genesisBytes: kp.publicKey.compressed,
     hrp: 'k',
@@ -96,8 +127,8 @@ export function buildSignedUpdate(did: string, kp: SchnorrKeyPair, beaconAddress
         op: 'add',
         path: '/service/-',
         value: {
-          id: `${did}#beacon-cas`,
-          type: 'CASBeacon',
+          id: `${did}#beacon-${beaconSlug(beaconType)}`,
+          type: beaconType,
           serviceEndpoint: `bitcoin:${beaconAddress}`,
         },
       },
