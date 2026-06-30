@@ -9,11 +9,28 @@ import { resolveBtcr2SenderPk } from '@did-btcr2/method';
 import type { Identity } from '@btcr2-aggregation/shared';
 import { createHonoApp } from './hono-adapter.js';
 import { makeProvideTxData } from './tx.js';
+import type { ArtifactStore } from './store.js';
 
-export { createHonoApp } from './hono-adapter.js';
+export { createHonoApp, type HonoAppOptions } from './hono-adapter.js';
 export { makeProvideTxData } from './tx.js';
 export { bridgeRunnerToSse } from './dashboard-sse.js';
 export { startDemoServer, type DemoServer, type DemoServerOptions } from './demo-server.js';
+export {
+  ARTIFACT_KINDS,
+  type ArtifactKind,
+  type ArtifactValueByKind,
+  type ArtifactStore,
+  MemoryArtifactStore,
+  FileSystemArtifactStore,
+  isHexKey,
+  normalizeHexKey,
+  putAnnouncement,
+  putProof,
+  putUpdate,
+  putGenesis,
+  exportSidecar,
+  mountArtifactRoutes,
+} from './store.js';
 
 export interface CreateServiceOptions {
   /** Service identity (the coordinator). */
@@ -47,6 +64,14 @@ export interface CreateServiceOptions {
    * topology). Omit for the headless M1 path, which serves no UI.
    */
   webDistDir?: string;
+  /**
+   * Content-addressed artifact store. When set, the server exposes read-only
+   * `GET /cas/*` routes serving the off-chain resolution artifacts (CAS
+   * announcements, SMT proofs, signed updates) by hex hash. The cohort artifacts
+   * are persisted into it when live broadcasting is enabled (M3c). Omit for the
+   * headless M1 path, which persists nothing.
+   */
+  store?: ArtifactStore;
 }
 
 export interface StartedService {
@@ -95,7 +120,11 @@ export function createService(opts: CreateServiceOptions): Service {
     phaseTimeoutMs: opts.phaseTimeoutMs,
   });
 
-  const app = createHonoApp(transport, runner, opts.webDistDir);
+  const app = createHonoApp(transport, {
+    runner,
+    webDistDir: opts.webDistDir,
+    store: opts.store,
+  });
   let server: ServerType | undefined;
 
   return {

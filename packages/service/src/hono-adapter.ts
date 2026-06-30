@@ -11,6 +11,7 @@ import {
 import { Hono, type Context } from 'hono';
 import { bridgeRunnerToSse } from './dashboard-sse.js';
 import { mountStaticSite } from './static-site.js';
+import { mountArtifactRoutes, type ArtifactStore } from './store.js';
 
 type Env = { Bindings: HttpBindings };
 
@@ -87,22 +88,33 @@ function openTransportSse(c: Context<Env>, transport: HttpServerTransport): Resp
   return RESPONSE_ALREADY_SENT;
 }
 
+/** Optional features layered onto the protocol transport by {@link createHonoApp}. */
+export interface HonoAppOptions {
+  /** Runner whose lifecycle events stream to the read-only dashboard SSE route. */
+  runner?: AggregationServiceRunner;
+  /** Absolute path to the built web SPA; serves the same-origin production topology. */
+  webDistDir?: string;
+  /** Content-addressed artifact store backing the read-only `GET /cas/*` routes. */
+  store?: ArtifactStore;
+}
+
 /**
  * Mount {@link HttpServerTransport} under Hono. Non-SSE routes pass through
  * `handleRequest` and return a standard `Response`; the two protocol SSE GET routes
  * hijack the raw Node response and stream transport-driven events. When a `runner`
  * is supplied, a read-only `GET /dashboard/events` SSE route streams the runner's
  * lifecycle events to a browser dashboard (demo telemetry; kept out of the signed
- * protocol surface). When `webDistDir` is supplied, the built web SPA is served
- * from that directory as a trailing catch-all, giving the same-origin production
- * topology (one server hosts the app, the protocol, and the dashboard, no CORS,
- * no Vite proxy).
+ * protocol surface). When a `store` is supplied, read-only `GET /cas/*` routes serve
+ * the off-chain resolution artifacts by hex hash. When `webDistDir` is supplied, the
+ * built web SPA is served from that directory as a trailing catch-all, giving the
+ * same-origin production topology (one server hosts the app, the protocol, the
+ * dashboard, and the artifact store, no CORS, no Vite proxy).
  */
 export function createHonoApp(
   transport: HttpServerTransport,
-  runner?: AggregationServiceRunner,
-  webDistDir?: string,
+  opts: HonoAppOptions = {},
 ): Hono<Env> {
+  const { runner, webDistDir, store } = opts;
   const app = new Hono<Env>();
 
   const handle = async (c: Context<Env>): Promise<Response> => {
@@ -133,7 +145,12 @@ export function createHonoApp(
     });
   }
 
-  // Static site last so it only catches paths the protocol/dashboard routes did not.
+  // Read-only artifact routes after the protocol/dashboard routes, before the SPA.
+  if (store) {
+    mountArtifactRoutes(app, store);
+  }
+
+  // Static site last so it only catches paths the other routes did not.
   if (webDistDir) {
     mountStaticSite(app, webDistDir);
   }
