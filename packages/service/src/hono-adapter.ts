@@ -3,11 +3,14 @@ import { RESPONSE_ALREADY_SENT } from '@hono/node-server/utils/response';
 import {
   formatSseComment,
   formatSseEvent,
+  type AggregationServiceRunner,
   type HttpRequestLike,
   type HttpServerTransport,
   type SseStream,
 } from '@did-btcr2/aggregation/service';
 import { Hono, type Context } from 'hono';
+import { bridgeRunnerToSse } from './dashboard-sse.js';
+import { mountStaticSite } from './static-site.js';
 
 type Env = { Bindings: HttpBindings };
 
@@ -44,9 +47,9 @@ async function toRequestLike(c: Context<Env>): Promise<HttpRequestLike> {
  * Hijack the raw Node response for an SSE GET. `@hono/node-server` exposes the
  * underlying ServerResponse on `c.env.outgoing`; we write `event:/data:/id:` and
  * comment frames straight to it (formatted exactly as the client's SSE parser
- * expects), then return the sentinel that tells Hono the response is already sent.
+ * expects). Returns the {@link SseStream} handle; the caller wires the producer.
  */
-function openSseStream(c: Context<Env>, transport: HttpServerTransport): Response {
+function openRawSse(c: Context<Env>): SseStream {
   const res = c.env.outgoing;
   res.writeHead(200, {
     'content-type': 'text/event-stream',
@@ -54,7 +57,7 @@ function openSseStream(c: Context<Env>, transport: HttpServerTransport): Respons
     connection: 'keep-alive',
   });
 
-  const stream: SseStream = {
+  return {
     writeEvent(event, data, id) {
       dbg(`SSE write event=${event} id=${id ?? '-'} bytes=${data.length} on ${c.req.url}`);
       res.write(formatSseEvent(event, data, id));
@@ -69,24 +72,37 @@ function openSseStream(c: Context<Env>, transport: HttpServerTransport): Respons
       res.on('close', cb);
     },
   };
+}
 
+/** Open an SSE stream backed by the protocol transport (adverts / inbox). */
+function openTransportSse(c: Context<Env>, transport: HttpServerTransport): Response {
+  const stream = openRawSse(c);
   const reqLike: HttpRequestLike = {
     method: c.req.method,
     url: c.req.url,
     headers: lowercaseHeaders(c),
     remoteAddr: c.env.incoming.socket?.remoteAddress,
   };
-
   transport.handleSse(reqLike, stream);
   return RESPONSE_ALREADY_SENT;
 }
 
 /**
  * Mount {@link HttpServerTransport} under Hono. Non-SSE routes pass through
- * `handleRequest` and return a standard `Response`; the two SSE GET routes hijack
- * the raw Node response and stream transport-driven events.
+ * `handleRequest` and return a standard `Response`; the two protocol SSE GET routes
+ * hijack the raw Node response and stream transport-driven events. When a `runner`
+ * is supplied, a read-only `GET /dashboard/events` SSE route streams the runner's
+ * lifecycle events to a browser dashboard (demo telemetry; kept out of the signed
+ * protocol surface). When `webDistDir` is supplied, the built web SPA is served
+ * from that directory as a trailing catch-all, giving the same-origin production
+ * topology (one server hosts the app, the protocol, and the dashboard, no CORS,
+ * no Vite proxy).
  */
-export function createHonoApp(transport: HttpServerTransport): Hono<Env> {
+export function createHonoApp(
+  transport: HttpServerTransport,
+  runner?: AggregationServiceRunner,
+  webDistDir?: string,
+): Hono<Env> {
   const app = new Hono<Env>();
 
   const handle = async (c: Context<Env>): Promise<Response> => {
@@ -100,13 +116,27 @@ export function createHonoApp(transport: HttpServerTransport): Hono<Env> {
   app.post('/v1/adverts', handle);
   app.get('/v1/adverts', (c) => {
     dbg(`SSE open GET ${new URL(c.req.url).pathname}`);
-    return openSseStream(c, transport);
+    return openTransportSse(c, transport);
   });
   app.get('/v1/actors/:did/inbox', (c) => {
     dbg(`SSE open GET ${new URL(c.req.url).pathname}`);
-    return openSseStream(c, transport);
+    return openTransportSse(c, transport);
   });
   app.get('/v1/.well-known/aggregation', handle);
+
+  if (runner) {
+    app.get('/dashboard/events', (c) => {
+      dbg('SSE open GET /dashboard/events');
+      const stream = openRawSse(c);
+      bridgeRunnerToSse(runner, stream);
+      return RESPONSE_ALREADY_SENT;
+    });
+  }
+
+  // Static site last so it only catches paths the protocol/dashboard routes did not.
+  if (webDistDir) {
+    mountStaticSite(app, webDistDir);
+  }
 
   return app;
 }

@@ -36,6 +36,11 @@ export function createParticipant(opts: CreateParticipantOptions): Participant {
   const transport = new HttpClientTransport({
     baseUrl: opts.baseUrl,
     resolveSenderPk: resolveBtcr2SenderPk,
+    // The transport calls its stored fetch as a bare function. The browser's
+    // `window.fetch` throws "Illegal invocation" when its `this` is not the
+    // Window, so bind it. Node's fetch is unbound, so this is a no-op there and
+    // keeps `createParticipant` isomorphic.
+    fetchImpl: globalThis.fetch.bind(globalThis),
   });
   transport.registerActor(did, keys);
 
