@@ -28,6 +28,29 @@ export function createIdentity(): Identity {
 }
 
 /**
+ * Reconstruct a did:btcr2 KEY identity from its 32-byte secret (hex string or
+ * raw bytes). This is the "bring your own DID" path: an attendee who saved the
+ * secret from a prior {@link createIdentity} re-derives the exact same DID
+ * without re-running keygen. The DID is a pure function of the secret, so the
+ * result is deterministic.
+ */
+export function importIdentity(secret: string | Uint8Array): Identity {
+  const keys = SchnorrKeyPair.fromSecret(secret);
+  const did = DidBtcr2.create(keys.publicKey.compressed, { idType: 'KEY', network: NETWORK });
+  return { did, keys };
+}
+
+/**
+ * The hex-encoded 32-byte secret backing an identity. The demo lets an attendee
+ * copy this so they can re-import the same DID later via {@link importIdentity}.
+ * These are throwaway demo keys, never a real mnemonic, so nothing of value is
+ * at risk.
+ */
+export function identitySecretHex(identity: Identity): string {
+  return bytesToHex(identity.keys.raw.secret!);
+}
+
+/**
  * Derive a valid x-only recovery key (64 hex chars) for a cohort config.
  * CohortConfig requires both recoveryKey and recoverySequence (ADR 042 recovery
  * leaf); deriving from a freshly generated key avoids invalid-point errors at

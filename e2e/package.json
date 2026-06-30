@@ -4,11 +4,16 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "e2e": "tsx headless-cohort.ts"
+    "e2e": "tsx headless-cohort.ts",
+    "e2e:browser": "tsx browser-cohort.ts",
+    "e2e:browser:prod": "tsx browser-prod-cohort.ts"
   },
   "dependencies": {
     "@btcr2-aggregation/participant": "workspace:*",
     "@btcr2-aggregation/service": "workspace:*",
     "@btcr2-aggregation/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.61.1"
   }
 }

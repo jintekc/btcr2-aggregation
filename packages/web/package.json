@@ -1,0 +1,30 @@
+{
+  "name": "@btcr2-aggregation/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@btcr2-aggregation/participant": "workspace:*",
+    "@btcr2-aggregation/shared": "workspace:*",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "zustand": "^5.0.14"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.2",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^6",
+    "playwright-core": "^1.61.1",
+    "tailwindcss": "^4.3.2",
+    "typescript": "^5.9",
+    "vite": "^8",
+    "vite-plugin-node-polyfills": "^0.28.0"
+  }
+}

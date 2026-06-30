@@ -1,0 +1,53 @@
+@import "tailwindcss";
+
+/*
+ * Demo theme tokens. Tailwind v4 reads `@theme` to generate utilities, so
+ * `bg-surface`, `text-accent`, `border-edge` etc. are all available as classes.
+ * The palette is a dark slate canvas with bitcoin-orange as the single accent.
+ */
+@theme {
+  --color-canvas: oklch(0.17 0.015 260);
+  --color-surface: oklch(0.21 0.018 260);
+  --color-surface-2: oklch(0.26 0.02 260);
+  --color-edge: oklch(0.32 0.02 260);
+  --color-edge-strong: oklch(0.42 0.03 260);
+  --color-ink: oklch(0.95 0.01 260);
+  --color-muted: oklch(0.72 0.015 260);
+  --color-faint: oklch(0.55 0.015 260);
+  --color-accent: oklch(0.74 0.16 55);
+  --color-accent-ink: oklch(0.2 0.05 55);
+  --color-good: oklch(0.78 0.16 155);
+  --color-warn: oklch(0.82 0.15 90);
+  --color-bad: oklch(0.68 0.2 25);
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* A soft pulse for "live / in-progress" affordances. */
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklch, var(--color-accent) 55%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 8px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+.pulse {
+  animation: pulse-ring 1.8s ease-out infinite;
+}

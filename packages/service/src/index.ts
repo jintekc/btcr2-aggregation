@@ -12,12 +12,41 @@ import { makeProvideTxData } from './tx.js';
 
 export { createHonoApp } from './hono-adapter.js';
 export { makeProvideTxData } from './tx.js';
+export { bridgeRunnerToSse } from './dashboard-sse.js';
+export { startDemoServer, type DemoServer, type DemoServerOptions } from './demo-server.js';
 
 export interface CreateServiceOptions {
   /** Service identity (the coordinator). */
   identity: Identity;
   /** Cohort configuration the runner advertises on `run()`. */
   config: CohortConfig;
+  /**
+   * SSE heartbeat interval, in ms. Defaults to 0 (disabled) so a one-shot M1
+   * process exits cleanly once a cohort completes. The long-lived demo server
+   * sets a positive value (e.g. 15000) to keep advert/inbox SSE connections
+   * alive through idle periods and intermediary proxies.
+   */
+  heartbeatIntervalMs?: number;
+  /**
+   * Per-cohort overall TTL, in ms. Left undefined the runner NEVER times a
+   * cohort out, so a participant who joins then walks away mid-flow leaves the
+   * cohort's completion promise pending forever (it can neither complete nor
+   * fail). The long-lived booth MUST set this so a stalled cohort rejects and
+   * the advertise loop can move on.
+   */
+  cohortTtlMs?: number;
+  /**
+   * Per-phase stall timeout, in ms. Bounds each protocol phase (keygen, nonce,
+   * signing); if a participant drops mid-round the phase times out and the
+   * cohort fails fast for the remaining members instead of hanging.
+   */
+  phaseTimeoutMs?: number;
+  /**
+   * Absolute path to the built web SPA (e.g. `packages/web/dist`). When set, the
+   * server also serves the app from this origin (production same-origin
+   * topology). Omit for the headless M1 path, which serves no UI.
+   */
+  webDistDir?: string;
 }
 
 export interface StartedService {
@@ -48,7 +77,7 @@ export function createService(opts: CreateServiceOptions): Service {
 
   const transport = new HttpServerTransport({
     resolveSenderPk: resolveBtcr2SenderPk,
-    heartbeatIntervalMs: 0,
+    heartbeatIntervalMs: opts.heartbeatIntervalMs ?? 0,
   });
   transport.registerActor(did, keys);
 
@@ -60,9 +89,13 @@ export function createService(opts: CreateServiceOptions): Service {
     keys,
     config: opts.config,
     onProvideTxData: makeProvideTxData(() => runner),
+    // Undefined => disabled (the one-shot M1 path relies on that). The booth
+    // passes both so abandoned/stalled cohorts reject instead of wedging.
+    cohortTtlMs: opts.cohortTtlMs,
+    phaseTimeoutMs: opts.phaseTimeoutMs,
   });
 
-  const app = createHonoApp(transport);
+  const app = createHonoApp(transport, runner, opts.webDistDir);
   let server: ServerType | undefined;
 
   return {
