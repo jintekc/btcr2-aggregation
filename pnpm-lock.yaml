@@ -41,6 +41,12 @@ importers:
       '@btcr2-aggregation/shared':
         specifier: workspace:*
         version: link:../packages/shared
+      '@did-btcr2/common':
+        specifier: ^9.1.0
+        version: 9.1.0(@scure/bip32@1.7.0)
+      '@did-btcr2/method':
+        specifier: ^0.45.0
+        version: 0.45.0(typescript@5.9.3)
     devDependencies:
       playwright-core:
         specifier: ^1.61.1
@@ -72,6 +78,9 @@ importers:
       '@did-btcr2/aggregation':
         specifier: ^0.3.0
         version: 0.3.0(@scure/bip32@1.7.0)(typescript@5.9.3)
+      '@did-btcr2/common':
+        specifier: ^9.1.0
+        version: 9.1.0(@scure/bip32@1.7.0)
       '@did-btcr2/keypair':
         specifier: ^0.13.1
         version: 0.13.1(@scure/bip32@1.7.0)
