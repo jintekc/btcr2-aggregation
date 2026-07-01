@@ -126,6 +126,30 @@ describe.each([
   });
 });
 
+describe('FileSystemArtifactStore - corrupt file tolerance', () => {
+  // A corrupt (unparseable) artifact file must not abort resolution. `entries()`
+  // (which the SMT resolve driver scans) skips it, and a by-hash `get()` treats it
+  // as absent, so one bad blob never breaks reads over the store's valid artifacts.
+  it('skips a corrupt file in entries() and returns undefined from get()', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'btcr2-store-corrupt-'));
+    tempDirs.push(root);
+    const store = new FileSystemArtifactStore(root);
+    await putProof(store, PROOF_HASH, PROOF);
+
+    // Write a syntactically-invalid JSON file next to the valid one, under a valid
+    // hex key so it is not filtered out by the .json/hex-name guards.
+    const corruptKey = 'c'.repeat(64);
+    await writeFile(join(root, 'proof', `${corruptKey}.json`), '{ not valid json', 'utf8');
+
+    const entries = await store.entries('proof');
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toEqual([PROOF_HASH, PROOF]);
+    expect(await store.get('proof', corruptKey)).toBeUndefined();
+    // The valid artifact is still readable.
+    expect(await store.get('proof', PROOF_HASH)).toEqual(PROOF);
+  });
+});
+
 describe('exportSidecar', () => {
   it('produces a resolver-ready Sidecar with one array per populated kind', async () => {
     const store = new MemoryArtifactStore();

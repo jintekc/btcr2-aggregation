@@ -99,6 +99,9 @@ importers:
       '@did-btcr2/method':
         specifier: ^0.45.0
         version: 0.45.0(typescript@5.9.3)
+      '@did-btcr2/smt':
+        specifier: ^0.3.0
+        version: 0.3.0
       '@hono/node-server':
         specifier: ^1
         version: 1.19.14(hono@4.12.27)

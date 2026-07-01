@@ -54,6 +54,12 @@ export {
   type PersistableCohort,
   type PersistSummary,
 } from './persist.js';
+export {
+  resolveBtcr2,
+  driveResolution,
+  type ResolveBtcr2Options,
+  type ResolverLike,
+} from './resolve.js';
 
 export interface CreateServiceOptions {
   /** Service identity (the coordinator). */
@@ -278,6 +284,11 @@ export function createService(opts: CreateServiceOptions): Service {
     store: opts.store,
     broadcaster,
     network: netConfig,
+    // The read-only resolve route is independent of the live/broadcast path: a
+    // Bitcoin connection alone (to run the beacon-signal indexer) plus the artifact
+    // store is enough to serve `GET /resolve/:did`. Passed whenever a connection is
+    // injected, so an operator can offer resolution without broadcasting.
+    bitcoin: opts.bitcoin,
   });
   let server: ServerType | undefined;
 
