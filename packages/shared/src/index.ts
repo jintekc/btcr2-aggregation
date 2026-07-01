@@ -1,10 +1,11 @@
+import { canonicalHash, canonicalHashBytes, decode, encode } from '@did-btcr2/common';
 import { LocalSigner, SchnorrKeyPair } from '@did-btcr2/keypair';
 import { DidBtcr2, Resolver, Updater } from '@did-btcr2/method';
 import { bytesToHex } from '@noble/hashes/utils';
 import { Script, Transaction, p2tr } from '@scure/btc-signer';
 import * as musig2 from '@scure/btc-signer/musig2';
 import type { CohortConfig, SigningTxData } from '@did-btcr2/aggregation/service';
-import { DEFAULT_NETWORK } from './networks.js';
+import { DEFAULT_NETWORK, resolveNetwork, type NetworkConfig } from './networks.js';
 
 export type { CohortConfig, SigningTxData } from '@did-btcr2/aggregation/service';
 export * from './networks.js';
@@ -163,4 +164,133 @@ export function buildFixtureTxData(cohortKeys: Uint8Array[], signalBytes: Uint8A
   tx.addOutput({ script: Script.encode(['RETURN', signalBytes]), amount: 0n });
 
   return { tx, prevOutScripts: [payment.script], prevOutValues: [prevOutValue] };
+}
+
+/**
+ * The hex canonical hash of a signed did:btcr2 update: JCS-canonicalize -> SHA-256
+ * -> hex. This is the value a resolver requests as `NeedSignedUpdate.updateHash`,
+ * the key the aggregator stores the update body under, and (as raw bytes) the
+ * OP_RETURN payload of a singleton-beacon registration. Goes through the same
+ * `@did-btcr2/common` helper the resolver and the service persistence use, so the
+ * keys match with zero mismatch. Non-deterministic signing means this must be taken
+ * over the EXACT submitted body (see participant `getSubmittedUpdate`).
+ */
+export function updateHashHex(update: object): string {
+  return canonicalHash(update as Record<string, unknown>, { encoding: 'hex' });
+}
+
+/** The 32-byte canonical hash of a signed update (the OP_RETURN payload bytes). */
+export function updateHashBytes(update: object): Uint8Array {
+  return canonicalHashBytes(update as Record<string, unknown>);
+}
+
+/**
+ * Convert a base64urlnopad hash (as carried in a CAS announcement value or an SMT
+ * proof's `updateId`) to lowercase hex - the encoding the resolver and store use.
+ */
+export function base64UrlHashToHex(b64: string): string {
+  return encode(decode(b64, 'base64urlnopad'), 'hex');
+}
+
+/**
+ * A controller's genesis P2TR SingletonBeacon address on `network` (default the
+ * app network). A KEY did:btcr2's deterministic document carries three
+ * SingletonBeacons at the key's p2pkh / p2wpkh / p2tr addresses; the P2TR one is
+ * the modern default and the target the resolve path exercises. Byte-identical to
+ * `@did-btcr2/method`'s `BeaconUtils` `#initialP2TR` branch
+ * (`p2tr(compressed.slice(1,33), undefined, network)`), but pure `@scure/btc-signer`
+ * so it stays browser-clean (no method/`@web5/dids` import). This is the address a
+ * controller funds and spends to publish their first update's registration signal.
+ */
+export function genesisP2trBeaconAddress(
+  keys: SchnorrKeyPair,
+  network: NetworkConfig = resolveNetwork(NETWORK),
+): string {
+  const xOnly = keys.publicKey.compressed.slice(1, 33);
+  return p2tr(xOnly, undefined, network.scureNetwork).address;
+}
+
+/** A spendable UTXO at the controller's beacon address (esplora `AddressUtxo` subset). */
+export interface RegistrationUtxo {
+  txid: string;
+  vout: number;
+  /** Amount in satoshis. */
+  value: number;
+}
+
+/** The built, signed singleton-beacon registration transaction, ready to broadcast. */
+export interface RegistrationTx {
+  /** Network-serialized signed transaction, hex (POST to esplora `/tx`). */
+  rawHex: string;
+  /** The transaction id. */
+  txid: string;
+  /** Fee paid, in satoshis. */
+  fee: bigint;
+  /** Change returned to the beacon address, in satoshis. */
+  change: bigint;
+}
+
+/** Default fee for a 1-in / (change + OP_RETURN)-out P2TR registration tx (sats). */
+export const REGISTRATION_FEE_SATS = 1000n;
+/** P2TR dust threshold (sats); a change output below this is uneconomical. */
+const P2TR_DUST_SATS = 330n;
+/** Minimum funding a beacon address needs to build a registration tx (fee + dust-safe change). */
+export const MIN_REGISTRATION_FUNDING_SATS = REGISTRATION_FEE_SATS + P2TR_DUST_SATS;
+
+/**
+ * Build and sign the controller's first-update singleton-beacon registration
+ * transaction: a Taproot key-path spend of a funded UTXO at their genesis P2TR
+ * beacon address, with a single `OP_RETURN <32-byte updateHash>` output announcing
+ * the update, and change back to the same address.
+ *
+ * The OP_RETURN is the LAST output because the resolver's beacon-signal indexer
+ * reads only a transaction's final `vout`; putting change last would hide the
+ * signal. Signing is a BIP341 key-path spend with the controller's own key (tweaked
+ * with an empty merkle root by `@scure/btc-signer`); the raw untweaked secret is
+ * passed and the library does the tweak. Nothing here leaves the browser: the caller
+ * broadcasts `rawHex` via the same-origin `/v1/tx/broadcast` proxy.
+ *
+ * @throws if the UTXO cannot cover the fee plus a dust-safe change output.
+ */
+export function buildSingletonRegistrationTx(opts: {
+  keys: SchnorrKeyPair;
+  utxo: RegistrationUtxo;
+  /** 32-byte canonical update hash (see {@link updateHashBytes}). */
+  updateHash: Uint8Array;
+  network?: NetworkConfig;
+  /** Fee in sats; defaults to {@link REGISTRATION_FEE_SATS}. */
+  fee?: bigint;
+}): RegistrationTx {
+  const network = opts.network ?? resolveNetwork(NETWORK);
+  const fee = opts.fee ?? REGISTRATION_FEE_SATS;
+  const value = BigInt(opts.utxo.value);
+  if (value < fee + P2TR_DUST_SATS) {
+    throw new Error(
+      `funding UTXO (${value} sats) is too small; fund the beacon address with at least ` +
+        `${fee + P2TR_DUST_SATS} sats`,
+    );
+  }
+  if (opts.updateHash.length !== 32) {
+    throw new Error(`updateHash must be 32 bytes, got ${opts.updateHash.length}`);
+  }
+  const internalKey = opts.keys.publicKey.compressed.slice(1, 33);
+  const pay = p2tr(internalKey, undefined, network.scureNetwork);
+  const change = value - fee;
+
+  const tx = new Transaction({ version: 2, allowUnknownOutputs: true });
+  tx.addInput({
+    txid: opts.utxo.txid,
+    index: opts.utxo.vout,
+    witnessUtxo: { amount: value, script: pay.script },
+    // Required for @scure to take the key-path taproot branch and sighash.
+    tapInternalKey: pay.tapInternalKey,
+  });
+  // Change FIRST, OP_RETURN LAST (the indexer reads the final vout).
+  tx.addOutput({ script: pay.script, amount: change });
+  tx.addOutput({ script: Script.encode(['RETURN', opts.updateHash]), amount: 0n });
+  // Sign with the raw untweaked secret; @scure applies the BIP341 tweak internally.
+  tx.sign(opts.keys.raw.secret!);
+  tx.finalize();
+
+  return { rawHex: bytesToHex(tx.extract()), txid: tx.id, fee, change };
 }

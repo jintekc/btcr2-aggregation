@@ -60,6 +60,7 @@ export {
   type ResolveBtcr2Options,
   type ResolverLike,
 } from './resolve.js';
+export { createOfflineBitcoinConnection } from './offline-chain.js';
 
 export interface CreateServiceOptions {
   /** Service identity (the coordinator). */

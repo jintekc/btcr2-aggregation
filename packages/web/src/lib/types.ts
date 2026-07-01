@@ -38,6 +38,9 @@ export interface DashboardParticipant {
   pk?: string;
 }
 
+/** On-chain anchor lifecycle of a cohort's beacon tx (live broadcasting only). */
+export type AnchorStatus = 'broadcast' | 'confirmed' | 'failed';
+
 export interface CohortState {
   cohortId: string;
   status: CohortStatus;
@@ -52,6 +55,16 @@ export interface CohortState {
   path?: string;
   txid?: string;
   reason?: string;
+  /**
+   * On-chain anchor state, present only when the coordinator broadcasts live
+   * (M3c): the broadcast beacon txid, whether it has confirmed, a block-explorer
+   * URL, and any broadcast failure reason.
+   */
+  anchorTxid?: string;
+  anchorStatus?: AnchorStatus;
+  anchorConfirmed?: boolean;
+  explorerUrl?: string;
+  anchorError?: string;
   /** Monotonic ms offset of the first event for this cohort (for ordering). */
   firstSeen: number;
 }

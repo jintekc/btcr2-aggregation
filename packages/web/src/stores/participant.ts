@@ -4,16 +4,41 @@ import {
   type Participant,
 } from '@btcr2-aggregation/participant';
 import {
+  buildSingletonRegistrationTx,
   createIdentity,
+  genesisP2trBeaconAddress,
   identitySecretHex,
   importIdentity,
+  MIN_REGISTRATION_FUNDING_SATS,
+  updateHashBytes,
+  updateHashHex,
   type Identity,
 } from '@btcr2-aggregation/shared';
 import { elapsed } from '../lib/clock';
+import {
+  findAppendedBeacon,
+  resolveDid,
+  ResolveError,
+  type ResolveResponse,
+} from '../lib/resolve';
+import { buildSidecar, didSlug, downloadJson, type Sidecar } from '../lib/sidecar';
+import { broadcastTx, fetchUtxos, TxProxyError, type Utxo } from '../lib/tx-client';
 import type { LogEntry, LogLevel, StepKey, StepStatus } from '../lib/types';
 
 /** Connection lifecycle of the in-browser participant. */
 export type ParticipantStatus = 'no-identity' | 'ready' | 'connecting' | 'live' | 'complete' | 'failed';
+
+/** Lifecycle of the LIVE first-update singleton-beacon registration. */
+export type RegistrationStatus =
+  | 'idle'
+  | 'checking'
+  | 'awaiting-funds'
+  | 'broadcasting'
+  | 'registered'
+  | 'failed';
+
+/** Lifecycle of a server-driven DID resolution. */
+export type ResolutionStatus = 'idle' | 'resolving' | 'resolved' | 'failed';
 
 /** What the attendee keeps after their update is included in a cohort. */
 export interface ParticipantResult {
@@ -23,6 +48,12 @@ export interface ParticipantResult {
   included: boolean;
   /** Number of entries in the CAS announcement map (CAS beacons only). */
   announcementEntries: number;
+  /**
+   * Hex canonical hash of this participant's signed update: the value carried in
+   * the registration OP_RETURN and the key the aggregator stores the body under.
+   * Null when the participant declined (non-inclusion) so there is no update.
+   */
+  updateHashHex: string | null;
 }
 
 interface ParticipantState {
@@ -35,8 +66,20 @@ interface ParticipantState {
   cohortId: string | null;
   beaconAddress: string | null;
   result: ParticipantResult | null;
+  /** The controller's downloadable, sovereign resolution sidecar (once included). */
+  sidecar: Sidecar | null;
   error: string | null;
   log: LogEntry[];
+
+  /** The controller's genesis P2TR SingletonBeacon address to fund for registration. */
+  beaconRegAddress: string | null;
+  regStatus: RegistrationStatus;
+  regTxid: string | null;
+  regError: string | null;
+
+  resolveStatus: ResolutionStatus;
+  resolution: ResolveResponse | null;
+  resolveError: string | null;
 
   /** Generate a fresh did:btcr2 KEY identity in-browser. */
   generate(): void;
@@ -46,12 +89,32 @@ interface ParticipantState {
   join(baseUrl: string): Promise<void>;
   /** Tear down the live participant and return to a fresh-but-identified state. */
   leave(): void;
+  /** Download the resolution sidecar JSON (the artifacts a resolver needs). */
+  downloadSidecar(): void;
+  /**
+   * LIVE only: check the beacon address for funds and, when funded, build + sign +
+   * broadcast the first-update singleton-beacon registration transaction.
+   */
+  register(baseUrl: string): Promise<void>;
+  /** Resolve this DID via the coordinator (`GET /resolve/:did`) and keep the document. */
+  resolve(baseUrl: string): Promise<void>;
 }
 
 // The live participant (transport + runner + event emitters) is intentionally
 // kept OUT of reactive state: it is a long-lived object with listeners, not a
 // value React should diff. The store holds only the serializable projection.
 let live: Participant | null = null;
+
+// The controller's captured first-update artifacts (the signed body + its hash
+// bytes + the beacon-specific artifact). Kept at module scope, not in reactive
+// state, because the raw bytes/body are inputs to registration, not render values.
+// Captured on cohort-complete (before teardown, since the runner never re-emits the
+// body and BIP340 signing is non-deterministic).
+interface Captured {
+  did: string;
+  updateHashBytes: Uint8Array;
+}
+let captured: Captured | null = null;
 
 // Watchdog for a join that never discovers a cohort (coordinator unreachable):
 // without it, transport.start() resolves and the SSE loops retry forever, so the
@@ -89,6 +152,23 @@ const INITIAL_STEPS: Record<StepKey, StepStatus> = {
   sign: 'idle',
   anchored: 'idle',
 };
+
+/** The per-round outcome slice, reset on a fresh identity / join / leave. */
+const INITIAL_OUTCOME = {
+  result: null,
+  sidecar: null,
+  regStatus: 'idle' as RegistrationStatus,
+  regTxid: null,
+  regError: null,
+  resolveStatus: 'idle' as ResolutionStatus,
+  resolution: null,
+  resolveError: null,
+} as const;
+
+/** Clear the module-level captured artifacts (paired with an INITIAL_OUTCOME reset). */
+function clearCaptured(): void {
+  captured = null;
+}
 
 let logSeq = 0;
 
@@ -130,6 +210,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
   }
 
   function adopt(identity: Identity): void {
+    clearCaptured();
     set({
       identity,
       did: identity.did,
@@ -138,8 +219,9 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       steps: { ...INITIAL_STEPS },
       cohortId: null,
       beaconAddress: null,
-      result: null,
       error: null,
+      beaconRegAddress: genesisP2trBeaconAddress(identity.keys),
+      ...INITIAL_OUTCOME,
     });
   }
 
@@ -151,9 +233,10 @@ export const useParticipant = create<ParticipantState>((set, get) => {
     steps: { ...INITIAL_STEPS },
     cohortId: null,
     beaconAddress: null,
-    result: null,
     error: null,
     log: [],
+    beaconRegAddress: null,
+    ...INITIAL_OUTCOME,
 
     generate() {
       const identity = createIdentity();
@@ -186,7 +269,8 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       // first so we never leak its SSE streams or leave two runners listening.
       clearWatchdog();
       teardownLive();
-      set({ status: 'connecting', error: null, result: null, steps: { ...INITIAL_STEPS } });
+      clearCaptured();
+      set({ status: 'connecting', error: null, steps: { ...INITIAL_STEPS }, ...INITIAL_OUTCOME });
       append('info', `connecting to coordinator at ${baseUrl}`);
 
       const participant = createParticipant({ identity, baseUrl });
@@ -236,14 +320,32 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       r.on('cohort-complete', (info) => {
         setStep('sign', 'done');
         setStep('anchored', 'done');
+
+        // Capture this participant's own signed update body BEFORE teardown: the
+        // runner never re-emits it and it cannot be rebuilt to the same canonical
+        // hash (BIP340 signing is non-deterministic). Only present when included.
+        const body = info.included ? live?.getSubmittedUpdate(info.cohortId) : undefined;
+        let updateHex: string | null = null;
+        let sidecar: Sidecar | null = null;
+        if (body) {
+          updateHex = updateHashHex(body);
+          captured = { did: get().did ?? '', updateHashBytes: updateHashBytes(body) };
+          sidecar = buildSidecar({
+            update: body,
+            casAnnouncement: info.casAnnouncement,
+            smtProof: info.smtProof,
+          });
+        }
+
         const result: ParticipantResult = {
           cohortId: info.cohortId,
           beaconAddress: info.beaconAddress,
           beaconType: info.beaconType,
           included: info.included,
           announcementEntries: info.casAnnouncement ? Object.keys(info.casAnnouncement).length : 0,
+          updateHashHex: updateHex,
         };
-        set({ result, status: 'complete', beaconAddress: info.beaconAddress });
+        set({ result, sidecar, status: 'complete', beaconAddress: info.beaconAddress });
         append('good', `cohort ${info.cohortId} anchored; your update was ${info.included ? 'included' : 'not included'}`);
         // Stop here: one cohort per Join. Otherwise the still-live runner would
         // auto-join the booth's next advert and reuse this key unbidden.
@@ -289,16 +391,121 @@ export const useParticipant = create<ParticipantState>((set, get) => {
     leave() {
       clearWatchdog();
       teardownLive();
+      clearCaptured();
       const { identity } = get();
       set({
         status: identity ? 'ready' : 'no-identity',
         steps: { ...INITIAL_STEPS },
         cohortId: null,
         beaconAddress: null,
-        result: null,
         error: null,
+        ...INITIAL_OUTCOME,
       });
       append('info', 'left the cohort');
+    },
+
+    downloadSidecar() {
+      const { sidecar, did } = get();
+      if (!sidecar || !did) {
+        return;
+      }
+      downloadJson(`btcr2-sidecar-${didSlug(did)}.json`, sidecar);
+      append('info', 'downloaded resolution sidecar');
+    },
+
+    async register(baseUrl) {
+      const { identity, did, beaconRegAddress, result, regStatus } = get();
+      // Re-entrancy guard: the button's disabled state lags a React commit, so a
+      // sub-frame double-click could fire two concurrent registrations that spend
+      // the same UTXO; the second (conflicting) broadcast would fail and clobber the
+      // first's 'registered' state. One attempt at a time.
+      if (regStatus === 'checking' || regStatus === 'broadcasting') {
+        return;
+      }
+      if (!identity || !did || !beaconRegAddress || !captured || captured.did !== did) {
+        return;
+      }
+      if (!result?.included) {
+        set({ regStatus: 'failed', regError: 'no update to register (this DID was not included)' });
+        return;
+      }
+
+      set({ regStatus: 'checking', regError: null });
+      append('info', `checking ${beaconRegAddress} for funds`);
+      let utxos: Utxo[];
+      try {
+        utxos = await fetchUtxos(baseUrl, beaconRegAddress);
+      } catch (err) {
+        const msg = err instanceof TxProxyError ? err.message : String(err);
+        set({ regStatus: 'failed', regError: msg });
+        append('bad', `funding check failed: ${msg}`);
+        return;
+      }
+
+      const min = Number(MIN_REGISTRATION_FUNDING_SATS);
+      const fundable = utxos
+        .filter((u) => u.value >= min)
+        .sort((a, b) => b.value - a.value)[0];
+      if (!fundable) {
+        set({ regStatus: 'awaiting-funds' });
+        append('warn', `no spendable funds at ${beaconRegAddress}; fund it (>= ${min} sats) then retry`);
+        return;
+      }
+
+      set({ regStatus: 'broadcasting' });
+      append('info', `funded (${fundable.value} sats); building + signing registration tx`);
+      let rawHex: string;
+      let txid: string;
+      try {
+        const tx = buildSingletonRegistrationTx({
+          keys: identity.keys,
+          utxo: fundable,
+          updateHash: captured.updateHashBytes,
+        });
+        rawHex = tx.rawHex;
+        txid = tx.txid;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        set({ regStatus: 'failed', regError: msg });
+        append('bad', `could not build registration tx: ${msg}`);
+        return;
+      }
+
+      try {
+        const broadcastTxid = await broadcastTx(baseUrl, rawHex);
+        set({ regStatus: 'registered', regTxid: broadcastTxid });
+        append('good', `broadcast first-update registration ${broadcastTxid}`);
+      } catch (err) {
+        const msg = err instanceof TxProxyError ? err.message : String(err);
+        set({ regStatus: 'failed', regError: msg });
+        append('bad', `broadcast failed: ${msg}`);
+        // Keep the locally-built txid so the user can look it up if it did land.
+        set({ regTxid: txid });
+      }
+    },
+
+    async resolve(baseUrl) {
+      const { did } = get();
+      if (!did) {
+        return;
+      }
+      set({ resolveStatus: 'resolving', resolveError: null });
+      append('info', `resolving ${did}`);
+      try {
+        const resolution = await resolveDid(baseUrl, did);
+        set({ resolveStatus: 'resolved', resolution });
+        const beacon = findAppendedBeacon(resolution.didDocument, did);
+        append(
+          'good',
+          beacon
+            ? `resolved; aggregate beacon present (${beacon.type})`
+            : 'resolved; genesis document (aggregate beacon not yet registered on-chain)',
+        );
+      } catch (err) {
+        const msg = err instanceof ResolveError ? err.message : String(err);
+        set({ resolveStatus: 'failed', resolveError: msg });
+        append('bad', `resolve failed: ${msg}`);
+      }
     },
   };
 });

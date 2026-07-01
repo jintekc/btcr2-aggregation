@@ -15,9 +15,18 @@ import { defineConfig } from 'vite';
 // coordinator origin is overridable (COORDINATOR_ORIGIN) so the browser E2E can
 // run the coordinator on an ephemeral port and inject it here.
 const COORDINATOR_ORIGIN = process.env.COORDINATOR_ORIGIN ?? 'http://127.0.0.1:8080';
+// Forward every coordinator-owned route to the coordinator so the browser client
+// (baseUrl = window.location.origin) needs no CORS: the protocol + Bitcoin tx proxy
+// (/v1), dashboard telemetry (/dashboard), server-driven resolution (/resolve), and
+// the read-only artifact store (/cas). SSE streams (adverts, inbox, dashboard) must
+// not be buffered by the proxy. The coordinator origin is overridable
+// (COORDINATOR_ORIGIN) so the browser E2E can inject an ephemeral port. In prod the
+// same routes are served same-origin by Hono, no proxy.
 const PROXY = {
   '/v1': { target: COORDINATOR_ORIGIN, changeOrigin: true },
   '/dashboard': { target: COORDINATOR_ORIGIN, changeOrigin: true },
+  '/resolve': { target: COORDINATOR_ORIGIN, changeOrigin: true },
+  '/cas': { target: COORDINATOR_ORIGIN, changeOrigin: true },
 } as const;
 
 export default defineConfig({

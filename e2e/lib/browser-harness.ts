@@ -120,6 +120,41 @@ async function runAttendee(page: Page, label: string, baseUrl: string): Promise<
 }
 
 /**
+ * After anchoring, exercise the M3e resolve UX on `page` (hermetic default: the
+ * coordinator resolves over an offline chain, so a KEY DID resolves to its genesis
+ * document and the live-only registration reports no funds). Verifies: server-driven
+ * resolution renders the genesis document, the sovereign sidecar download exists, and
+ * the first-update registration is wired (funding check -> awaiting funds). Pushes
+ * any failure onto `problems`.
+ */
+async function verifyResolveUx(page: Page, label: string, problems: string[]): Promise<void> {
+  try {
+    // Server-driven resolve (GET /resolve/:did). Offline chain -> genesis document.
+    await page.getByRole('button', { name: 'Resolve this DID' }).click();
+    await page
+      .getByText('genesis document', { exact: false })
+      .first()
+      .waitFor({ state: 'visible', timeout: STEP_TIMEOUT_MS });
+    if ((await page.getByText(/services \(\d+\)/).count()) < 1) {
+      problems.push(`${label}: resolved document did not render a services list`);
+    }
+    // The controller's sovereign sidecar download must be available.
+    if ((await page.getByRole('button', { name: 'Download resolution sidecar' }).count()) < 1) {
+      problems.push(`${label}: no sidecar download button after anchoring`);
+    }
+    // First-update registration is live-only; the hermetic funding check reports no funds.
+    await page.getByRole('button', { name: 'Check funds & register' }).click();
+    await page
+      .getByText(/No spendable funds/)
+      .first()
+      .waitFor({ state: 'visible', timeout: STEP_TIMEOUT_MS });
+    console.log(`${label}: resolve UX verified (genesis doc rendered, sidecar available, live-only registration)`);
+  } catch (err) {
+    problems.push(`${label}: resolve UX failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
  * Run the full two-attendee cohort scenario against `baseUrl` (a dashboard page
  * plus two independent attendees) and return a list of problems (empty = pass).
  * `baseUrl` is the only thing that differs between the dev and prod topologies.
@@ -153,6 +188,10 @@ export async function runCohortScenario(context: BrowserContext, baseUrl: string
     if (didA === didB) {
       problems.push('both attendees produced the same DID (expected two distinct signers)');
     }
+
+    // 2b) Exercise the M3e resolve UX on one attendee (server-driven resolve ->
+    //     genesis document, sovereign sidecar download, live-only registration).
+    await verifyResolveUx(pageA, 'attendee-A', problems);
 
     // 3) A completed attendee must NOT auto-join the booth's next cohort. Give the
     //    re-advertise a few seconds to reach the (now torn-down) participants.

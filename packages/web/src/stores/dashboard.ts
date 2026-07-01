@@ -26,6 +26,15 @@ const SERVICE_EVENTS = [
 
 type ServiceEvent = (typeof SERVICE_EVENTS)[number];
 
+/**
+ * The beacon-tx broadcast lifecycle frames the dashboard SSE forwards when the
+ * coordinator runs live (mirrors the broadcaster bridge in
+ * packages/service/src/dashboard-sse.ts). Absent in the hermetic fixture path.
+ */
+const BEACON_EVENTS = ['beacon-broadcast', 'beacon-anchored', 'beacon-broadcast-failed'] as const;
+
+type BeaconEvent = (typeof BEACON_EVENTS)[number];
+
 interface Metrics {
   advertised: number;
   accepted: number;
@@ -184,6 +193,47 @@ export const useDashboard = create<DashboardState>((set, get) => {
     }
   }
 
+  /** Apply a beacon-tx broadcast lifecycle frame to the cohort's anchor state. */
+  function handleBeacon(event: BeaconEvent, payload: Record<string, unknown>): void {
+    const cohortId = payload.cohortId as string | undefined;
+    if (!cohortId) {
+      return;
+    }
+    // Drop a late anchor frame for a cohort no longer tracked (evicted past
+    // MAX_COHORTS, or cleared on reconnect): patchCohort would otherwise resurrect
+    // it as a phantom 'advertised' card carrying only an anchor row. A beacon frame
+    // for a live cohort always arrives after its advertise, so it is present here.
+    if (!get().cohorts[cohortId]) {
+      return;
+    }
+    const txid = payload.txid as string | undefined;
+    const explorerUrl = payload.explorerUrl as string | undefined;
+    switch (event) {
+      case 'beacon-broadcast':
+        append('info', `beacon tx broadcast for ${cohortId}${txid ? ` (${txid.slice(0, 12)}…)` : ''}`);
+        patchCohort(cohortId, { anchorTxid: txid, anchorStatus: 'broadcast', explorerUrl });
+        return;
+      case 'beacon-anchored': {
+        const confirmed = Boolean(payload.confirmed);
+        append(
+          confirmed ? 'good' : 'warn',
+          `beacon tx ${confirmed ? 'confirmed' : 'still unconfirmed'} for ${cohortId}`,
+        );
+        patchCohort(cohortId, {
+          anchorTxid: txid,
+          anchorConfirmed: confirmed,
+          anchorStatus: confirmed ? 'confirmed' : 'broadcast',
+          explorerUrl,
+        });
+        return;
+      }
+      case 'beacon-broadcast-failed':
+        append('bad', `beacon broadcast failed for ${cohortId}: ${payload.reason ?? 'unknown'}`);
+        patchCohort(cohortId, { anchorStatus: 'failed', anchorError: payload.reason as string });
+        return;
+    }
+  }
+
   return {
     connected: false,
     cohorts: {},
@@ -208,7 +258,12 @@ export const useDashboard = create<DashboardState>((set, get) => {
         source = null;
       }
       everOpened = false;
-      set({ connected: false });
+      // Clear the transient cohort view state on teardown. DashboardView unmounts
+      // on a tab switch and remounts on return; the feed has no replay, so a fresh
+      // mount must start clean rather than showing the prior mount's frozen cards
+      // (and missing any cohort that completed while the tab was away). Mirrors the
+      // reconnect-resync (which also clears cohorts/order, not the cumulative metrics).
+      set({ connected: false, cohorts: {}, order: [] });
     },
   };
 
@@ -269,6 +324,17 @@ export const useDashboard = create<DashboardState>((set, get) => {
             payload: unknown;
           };
           handle(event, (frame.payload ?? {}) as Record<string, unknown>);
+        } catch {
+          // Ignore a malformed frame rather than tearing down the feed.
+        }
+      });
+    }
+
+    for (const event of BEACON_EVENTS) {
+      es.addEventListener(event, (ev) => {
+        try {
+          const frame = JSON.parse((ev as MessageEvent).data) as { payload: unknown };
+          handleBeacon(event, (frame.payload ?? {}) as Record<string, unknown>);
         } catch {
           // Ignore a malformed frame rather than tearing down the feed.
         }

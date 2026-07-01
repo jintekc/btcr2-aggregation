@@ -25,6 +25,9 @@ function normalizeBeaconType(beaconType: string): BeaconType {
   return beaconType === 'SMTBeacon' ? 'SMTBeacon' : 'CASBeacon';
 }
 
+/** A signed did:btcr2 update body (the object `buildSignedUpdate` produces). */
+export type SubmittedUpdate = ReturnType<typeof buildSignedUpdate>;
+
 export interface Participant {
   /** The participant runner. Attach event listeners to it. */
   readonly runner: AggregationParticipantRunner;
@@ -34,6 +37,16 @@ export interface Participant {
   start(): Promise<void>;
   /** Tear down subscriptions and reconnect loops. */
   stop(): void;
+  /**
+   * The exact signed update body this participant submitted for `cohortId`, or
+   * `undefined` if it has not (yet) submitted one. BIP340 signing injects fresh
+   * randomness per call, so the body cannot be rebuilt to the same canonical hash
+   * later; it is captured here at submit time. This is the artifact a resolver
+   * needs (`NeedSignedUpdate`) and the body of the controller's downloadable
+   * sovereign sidecar. The runner exposes only the update's hash (via
+   * `cohort-complete`), not the body, hence this accessor.
+   */
+  getSubmittedUpdate(cohortId: string): SubmittedUpdate | undefined;
 }
 
 /**
@@ -65,6 +78,11 @@ export function createParticipant(opts: CreateParticipantOptions): Participant {
   // cohort actually builds on-chain.
   const cohortBeaconTypes = new Map<string, BeaconType>();
 
+  // The signed update body this participant returned into the runner, per cohort.
+  // Captured at submit time because the runner never re-emits it and BIP340 signing
+  // is non-deterministic (a later rebuild would hash differently).
+  const submittedUpdates = new Map<string, SubmittedUpdate>();
+
   const runner = new AggregationParticipantRunner({
     transport,
     did,
@@ -73,8 +91,16 @@ export function createParticipant(opts: CreateParticipantOptions): Participant {
       cohortBeaconTypes.set(advert.cohortId, normalizeBeaconType(advert.beaconType));
       return true;
     },
-    onProvideUpdate: async ({ cohortId, beaconAddress }) =>
-      buildSignedUpdate(did, keys, beaconAddress, cohortBeaconTypes.get(cohortId) ?? defaultBeaconType),
+    onProvideUpdate: async ({ cohortId, beaconAddress }) => {
+      const update = buildSignedUpdate(
+        did,
+        keys,
+        beaconAddress,
+        cohortBeaconTypes.get(cohortId) ?? defaultBeaconType,
+      );
+      submittedUpdates.set(cohortId, update);
+      return update;
+    },
   });
 
   return {
@@ -91,5 +117,6 @@ export function createParticipant(opts: CreateParticipantOptions): Participant {
       runner.stop();
       transport.stop();
     },
+    getSubmittedUpdate: (cohortId: string) => submittedUpdates.get(cohortId),
   };
 }

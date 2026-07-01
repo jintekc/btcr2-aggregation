@@ -10,6 +10,7 @@ import {
 } from '@did-btcr2/aggregation/service';
 import type { NetworkConfig } from '@btcr2-aggregation/shared';
 import { Hono, type Context } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import type { BitcoinConnection } from '@did-btcr2/bitcoin';
 import { bridgeRunnerToSse } from './dashboard-sse.js';
 import { mountStaticSite } from './static-site.js';
@@ -197,6 +198,64 @@ export function createHonoApp(
         return c.json({ error: 'resolution failed' }, 502);
       }
     });
+  }
+
+  // Same-origin Bitcoin tx proxy for the browser's first-update singleton-beacon
+  // registration. The controller SIGNS the OP_RETURN spend in the browser (their
+  // key never leaves the client); the proxy only reads UTXOs and relays the raw
+  // signed tx to esplora. Server-side so the browser stays same-origin (no reliance
+  // on an esplora host's CORS, which varies by network) and never bundles a Bitcoin
+  // client. Mounted whenever a connection is present; the offline default answers
+  // "no funds" and refuses to broadcast, so registration is correctly live-only.
+  if (bitcoin) {
+    app.get('/v1/tx/utxos/:address', async (c) => {
+      const address = c.req.param('address');
+      // Cheap shape guard before hitting esplora: a Bitcoin address is base58 or
+      // bech32(m), so alnum-only bounded length. This also neutralizes any path
+      // injection into the esplora URL (no '/', '.', '..').
+      if (!/^[a-zA-Z0-9]{8,100}$/.test(address)) {
+        return c.json({ error: 'invalid address' }, 400);
+      }
+      try {
+        const utxos = await bitcoin.rest.address.getUtxos(address);
+        return c.json(utxos);
+      } catch (err) {
+        console.error(`[tx] utxos ${address} failed: ${err instanceof Error ? err.message : String(err)}`);
+        return c.json({ error: 'utxo lookup failed' }, 502);
+      }
+    });
+
+    app.post(
+      '/v1/tx/broadcast',
+      // Reject an oversized body DURING streaming, before it is buffered by
+      // c.req.json(): a raw tx is at most a few hundred kB of hex, so 512 kB is
+      // ample. Without this the post-parse `rawHex.length` cap gives no memory
+      // protection against an unauthenticated large-body flood.
+      bodyLimit({ maxSize: 512 * 1024, onError: (c) => c.json({ error: 'request too large' }, 413) }),
+      async (c) => {
+        let rawHex: unknown;
+        try {
+          ({ rawHex } = await c.req.json<{ rawHex?: unknown }>());
+        } catch {
+          return c.json({ error: 'expected a JSON body { rawHex }' }, 400);
+        }
+        // A raw tx is even-length hex; bound the length so an oversized body cannot
+        // be relayed. 200 kB of hex covers any standard tx (bodyLimit above already
+        // rejects a large body during streaming; this bounds what reaches esplora).
+        if (typeof rawHex !== 'string' || rawHex.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(rawHex) || rawHex.length > 400_000) {
+          return c.json({ error: 'rawHex must be an even-length hex string' }, 400);
+        }
+        try {
+          const txid = await bitcoin.rest.transaction.send(rawHex.toLowerCase());
+          return c.json({ txid });
+        } catch (err) {
+          // Broadcast rejection (bad tx, insufficient fee, offline connection) is an
+          // upstream failure; surface a generic 502 and log the detail server-side.
+          console.error(`[tx] broadcast failed: ${err instanceof Error ? err.message : String(err)}`);
+          return c.json({ error: 'broadcast failed' }, 502);
+        }
+      },
+    );
   }
 
   // Static site last so it only catches paths the other routes did not.
