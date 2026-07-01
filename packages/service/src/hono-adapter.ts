@@ -10,9 +10,11 @@ import {
 } from '@did-btcr2/aggregation/service';
 import type { NetworkConfig } from '@btcr2-aggregation/shared';
 import { Hono, type Context } from 'hono';
+import type { BitcoinConnection } from '@did-btcr2/bitcoin';
 import { bridgeRunnerToSse } from './dashboard-sse.js';
 import { mountStaticSite } from './static-site.js';
 import { mountArtifactRoutes, type ArtifactStore } from './store.js';
+import { resolveBtcr2 } from './resolve.js';
 import type { BeaconBroadcaster } from './broadcast.js';
 
 type Env = { Bindings: HttpBindings };
@@ -105,6 +107,14 @@ export interface HonoAppOptions {
   broadcaster?: BeaconBroadcaster;
   /** Network config used to derive the anchored tx's block-explorer URL. */
   network?: NetworkConfig;
+  /**
+   * Bitcoin REST (esplora) connection. When supplied together with {@link store},
+   * a read-only `GET /resolve/:did` route resolves a did:btcr2 identifier
+   * server-side (discovering beacon signals over this connection, fetching off-chain
+   * artifacts from the store). Server-driven so the browser never bundles the
+   * resolver's `level`/`classic-level` dependencies.
+   */
+  bitcoin?: BitcoinConnection;
 }
 
 /**
@@ -123,7 +133,7 @@ export function createHonoApp(
   transport: HttpServerTransport,
   opts: HonoAppOptions = {},
 ): Hono<Env> {
-  const { runner, webDistDir, store, broadcaster, network } = opts;
+  const { runner, webDistDir, store, broadcaster, network, bitcoin } = opts;
   const app = new Hono<Env>();
 
   const handle = async (c: Context<Env>): Promise<Response> => {
@@ -157,6 +167,36 @@ export function createHonoApp(
   // Read-only artifact routes after the protocol/dashboard routes, before the SPA.
   if (store) {
     mountArtifactRoutes(app, store);
+  }
+
+  // Read-only server-driven resolve route. Needs both a Bitcoin connection (to
+  // discover beacon signals) and the artifact store (to serve off-chain artifacts).
+  // Registered before the SPA catch-all so a valid `did:btcr2:...` segment resolves
+  // rather than falling through to index.html.
+  if (bitcoin && store) {
+    app.get('/resolve/:did', async (c) => {
+      // Hono decodes the path param; guard the shape before touching the resolver so
+      // obviously-malformed input is a cheap 400 and never reaches (nor leaks the
+      // internals of) the DID parser. The suffix after `did:btcr2:` is bech32m, whose
+      // charset is lowercase alphanumeric - reject anything else up front.
+      const did = c.req.param('did');
+      if (!/^did:btcr2:[a-z0-9]+$/.test(did)) {
+        return c.json({ error: 'not a valid did:btcr2 identifier' }, 400);
+      }
+      try {
+        const { didDocument, metadata } = await resolveBtcr2(did, { bitcoin, store });
+        return c.json({ didDocument, didDocumentMetadata: metadata });
+      } catch (err) {
+        // Resolution failed: a missing artifact, an unresolvable DID (bad checksum),
+        // or an esplora error. 502 (not 500): the failure is in an upstream dependency
+        // (the chain or the artifact source), not the route itself. Log the detail
+        // server-side; return a generic message so resolver/parser internals are not
+        // disclosed to an untrusted caller.
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[resolve] ${did} failed: ${message}`);
+        return c.json({ error: 'resolution failed' }, 502);
+      }
+    });
   }
 
   // Static site last so it only catches paths the other routes did not.

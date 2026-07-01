@@ -7,6 +7,7 @@
     "e2e": "tsx headless-cohort.ts",
     "e2e:smt": "tsx headless-cohort.ts --smt",
     "e2e:persist": "tsx persist-cohort.ts",
+    "e2e:resolve": "tsx resolve-cohort.ts",
     "e2e:live:mock": "tsx live-mock-cohort.ts",
     "e2e:live:broadcast": "tsx live-broadcast-cohort.ts",
     "e2e:browser": "tsx browser-cohort.ts",

@@ -132,9 +132,11 @@ export class FileSystemArtifactStore implements ArtifactStore {
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       // ENOENT = absent. ENAMETOOLONG = a key too long to name a file, so it can
-      // never exist => also absent. Genuine operator faults (EACCES, EISDIR, ...)
-      // still surface rather than being masked as a miss.
-      if (code === 'ENOENT' || code === 'ENAMETOOLONG') {
+      // never exist => also absent. A corrupt (unparseable) blob at this hash is
+      // unusable, so it is also treated as absent (the resolver then re-requests it
+      // from another source). Genuine operator faults (EACCES, EISDIR, ...) still
+      // surface rather than being masked as a miss.
+      if (code === 'ENOENT' || code === 'ENAMETOOLONG' || err instanceof SyntaxError) {
         return undefined;
       }
       throw err;
@@ -164,7 +166,13 @@ export class FileSystemArtifactStore implements ArtifactStore {
       if (!isHexKey(key)) {
         continue;
       }
-      out.push([key, JSON.parse(await readFile(join(this.#dir(kind), name), 'utf8'))]);
+      try {
+        out.push([key, JSON.parse(await readFile(join(this.#dir(kind), name), 'utf8'))]);
+      } catch {
+        // Skip an unreadable or corrupt artifact file rather than aborting the whole
+        // enumeration: a single bad blob must not break resolution (which scans
+        // `entries('proof')`) over the store's other, valid artifacts.
+      }
     }
     return out;
   }
