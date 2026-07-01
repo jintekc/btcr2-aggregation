@@ -8,10 +8,12 @@ import {
   type HttpServerTransport,
   type SseStream,
 } from '@did-btcr2/aggregation/service';
+import type { NetworkConfig } from '@btcr2-aggregation/shared';
 import { Hono, type Context } from 'hono';
 import { bridgeRunnerToSse } from './dashboard-sse.js';
 import { mountStaticSite } from './static-site.js';
 import { mountArtifactRoutes, type ArtifactStore } from './store.js';
+import type { BeaconBroadcaster } from './broadcast.js';
 
 type Env = { Bindings: HttpBindings };
 
@@ -96,6 +98,13 @@ export interface HonoAppOptions {
   webDistDir?: string;
   /** Content-addressed artifact store backing the read-only `GET /cas/*` routes. */
   store?: ArtifactStore;
+  /**
+   * Beacon-tx broadcast emitter (live broadcasting only). Its lifecycle events are
+   * forwarded on the dashboard SSE route so the dashboard shows "anchored on-chain".
+   */
+  broadcaster?: BeaconBroadcaster;
+  /** Network config used to derive the anchored tx's block-explorer URL. */
+  network?: NetworkConfig;
 }
 
 /**
@@ -114,7 +123,7 @@ export function createHonoApp(
   transport: HttpServerTransport,
   opts: HonoAppOptions = {},
 ): Hono<Env> {
-  const { runner, webDistDir, store } = opts;
+  const { runner, webDistDir, store, broadcaster, network } = opts;
   const app = new Hono<Env>();
 
   const handle = async (c: Context<Env>): Promise<Response> => {
@@ -140,7 +149,7 @@ export function createHonoApp(
     app.get('/dashboard/events', (c) => {
       dbg('SSE open GET /dashboard/events');
       const stream = openRawSse(c);
-      bridgeRunnerToSse(runner, stream);
+      bridgeRunnerToSse(runner, stream, { broadcaster, network });
       return RESPONSE_ALREADY_SENT;
     });
   }

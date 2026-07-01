@@ -41,6 +41,9 @@ importers:
       '@btcr2-aggregation/shared':
         specifier: workspace:*
         version: link:../packages/shared
+      '@did-btcr2/bitcoin':
+        specifier: ^0.8.0
+        version: 0.8.0(@scure/bip32@1.7.0)
       '@did-btcr2/common':
         specifier: ^9.1.0
         version: 9.1.0(@scure/bip32@1.7.0)
