@@ -1,14 +1,16 @@
 import { useParticipant } from '../../stores/participant';
-import { Badge, Card, CopyField, SectionTitle } from '../../ui/primitives';
+import { Badge, Button, Card, CopyField, SectionTitle } from '../../ui/primitives';
 
 /**
  * Shown once the attendee's cohort completes. Surfaces the attendee's own
- * sidecar: the beacon coordinates and the CAS announcement they must keep for
- * future DID resolution. The aggregated signature itself is service-side and
- * appears on the coordinator dashboard.
+ * sidecar: the beacon coordinates, the update hash, and the downloadable
+ * resolution artifacts they keep for future DID resolution. The aggregated
+ * signature itself is service-side and appears on the coordinator dashboard.
  */
 export function ResultCard() {
   const result = useParticipant((s) => s.result);
+  const sidecar = useParticipant((s) => s.sidecar);
+  const downloadSidecar = useParticipant((s) => s.downloadSidecar);
   if (!result) {
     return null;
   }
@@ -31,11 +33,22 @@ export function ResultCard() {
           <Stat label="beacon type" value={result.beaconType} />
           <Stat label="announcement entries" value={String(result.announcementEntries)} />
         </div>
+        {result.updateHashHex && <CopyField label="update hash" value={result.updateHashHex} />}
       </div>
-      <p className="text-xs text-faint">
-        Keep this off-chain announcement: a resolver needs it to reconstruct your updated DID
-        document from the on-chain beacon signal.
-      </p>
+
+      {result.included && sidecar && (
+        <div className="space-y-2 border-t border-edge pt-3">
+          <Button variant="ghost" onClick={downloadSidecar} className="w-full">
+            Download resolution sidecar
+          </Button>
+          <p className="text-xs text-faint">
+            Your sovereign copy of the off-chain artifacts (signed update +{' '}
+            {result.beaconType === 'SMTBeacon' ? 'SMT proof' : 'CAS announcement'}). A resolver needs
+            these to reconstruct your updated DID document from the on-chain beacon signal. Keep it, or
+            hand it to any resolver as <span className="font-mono">sidecar</span> data.
+          </p>
+        </div>
+      )}
     </Card>
   );
 }

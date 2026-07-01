@@ -75,6 +75,8 @@ export function CohortCard({ cohort }: { cohort: CohortState }) {
         </div>
       )}
 
+      {cohort.anchorStatus && <AnchorRow cohort={cohort} />}
+
       {cohort.status === 'failed' && cohort.reason && (
         <p className="rounded-md border border-bad/40 bg-bad/10 px-3 py-2 text-xs text-bad">{cohort.reason}</p>
       )}
@@ -87,6 +89,51 @@ function Counter({ label, value }: { label: string; value: number }) {
     <div className="rounded-lg border border-edge bg-canvas py-2">
       <div className="text-lg font-bold tabular-nums text-ink">{value}</div>
       <div className="text-[0.6rem] uppercase tracking-wider text-faint">{label}</div>
+    </div>
+  );
+}
+
+const ANCHOR_TONE: Record<NonNullable<CohortState['anchorStatus']>, Tone> = {
+  broadcast: 'accent',
+  confirmed: 'good',
+  failed: 'bad',
+};
+
+const ANCHOR_LABEL: Record<NonNullable<CohortState['anchorStatus']>, string> = {
+  broadcast: 'broadcast · unconfirmed',
+  confirmed: 'anchored on-chain',
+  failed: 'broadcast failed',
+};
+
+/** The on-chain anchor state of the beacon tx (live broadcasting only). */
+function AnchorRow({ cohort }: { cohort: CohortState }) {
+  const status = cohort.anchorStatus;
+  if (!status) {
+    return null;
+  }
+  return (
+    <div className="space-y-1.5 border-t border-edge pt-2">
+      <div className="flex items-center gap-2">
+        <StatusDot tone={ANCHOR_TONE[status]} pulse={status === 'broadcast'} label={ANCHOR_LABEL[status]} />
+        <Badge tone={ANCHOR_TONE[status]}>{ANCHOR_LABEL[status]}</Badge>
+        {cohort.anchorTxid && cohort.explorerUrl ? (
+          <a
+            href={cohort.explorerUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="ml-auto shrink-0 text-[0.7rem] text-accent underline decoration-dotted underline-offset-2 hover:brightness-110"
+          >
+            {cohort.anchorTxid.slice(0, 12)}…
+          </a>
+        ) : (
+          cohort.anchorTxid && <Mono className="ml-auto shrink-0 text-faint">{cohort.anchorTxid.slice(0, 12)}…</Mono>
+        )}
+      </div>
+      {status === 'failed' && cohort.anchorError && (
+        <p className="rounded-md border border-bad/40 bg-bad/10 px-2.5 py-1.5 text-[0.7rem] text-bad">
+          {cohort.anchorError}
+        </p>
+      )}
     </div>
   );
 }

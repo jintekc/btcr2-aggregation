@@ -1,8 +1,10 @@
 import { existsSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { BitcoinConnection } from '@did-btcr2/bitcoin';
 import { createParticipant, type Participant } from '@btcr2-aggregation/participant';
-import { buildCohortConfig, createIdentity } from '@btcr2-aggregation/shared';
-import { createService, type Service } from './index.js';
+import { buildCohortConfig, createIdentity, DEFAULT_NETWORK, resolveNetwork } from '@btcr2-aggregation/shared';
+import { createService, MemoryArtifactStore, type Service } from './index.js';
+import { createOfflineBitcoinConnection } from './offline-chain.js';
 
 /**
  * Default location of the built web SPA, resolved relative to this module so it
@@ -39,6 +41,20 @@ export interface DemoServerOptions {
    * to serve the protocol + dashboard only (no UI).
    */
   webDistDir?: string | null;
+  /**
+   * Bitcoin network for resolution + the first-update registration tx proxy.
+   * Defaults to the env `NETWORK` or {@link DEFAULT_NETWORK} (mutinynet). Cohort
+   * co-signing stays on the fixture path regardless; this connection powers only
+   * `GET /resolve/:did` and the `/v1/tx/*` proxy.
+   */
+  network?: string;
+  /**
+   * Use a real esplora connection for the network above. Default false (env
+   * `LIVE=1` also enables it): an offline connection so the gate stays hermetic -
+   * resolution returns the genesis document and the registration proxy reports no
+   * funds. Set true (or `LIVE=1`) for a real self-hosted deployment.
+   */
+  live?: boolean;
   /** Suppress logs. */
   quiet?: boolean;
 }
@@ -71,6 +87,44 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
       ? undefined
       : (opts.webDistDir ?? (existsSync(DEFAULT_WEB_DIST) ? DEFAULT_WEB_DIST : undefined));
 
+  // Content-addressed store + a Bitcoin connection so this origin also serves
+  // `GET /resolve/:did`, the read-only `/cas/*` artifact routes, and the `/v1/tx/*`
+  // registration proxy. The connection is OFFLINE by default (zero network I/O, so
+  // the hermetic gate stays chain-free: resolution returns the genesis document and
+  // the tx proxy reports no funds), and a real esplora connection under `live`/
+  // `LIVE=1`. Cohort co-signing is unaffected - it stays on the fixture tx path
+  // (the injected connection is not passed as `live` to createService, so the
+  // beacon tx is still the fixture; resolvability comes from each controller's own
+  // singleton-beacon registration, not from broadcasting the aggregate tx).
+  const store = new MemoryArtifactStore();
+  const networkName = opts.network ?? process.env.NETWORK ?? DEFAULT_NETWORK;
+  const useLive = opts.live ?? process.env.LIVE === '1';
+  const bitcoin = useLive
+    ? new BitcoinConnection({
+        network: resolveNetwork(networkName).name,
+        rest: { host: resolveNetwork(networkName).esploraHost },
+      })
+    : createOfflineBitcoinConnection();
+
+  // The web bundle derives its addresses/DIDs from a BUILD-TIME network constant
+  // (DEFAULT_NETWORK). Until runtime browser-network injection lands (M3f: network
+  // matrix completion), warn loudly rather than silently mislead when an operator
+  // serves the SPA against a chain whose address params differ from the bundle's:
+  // the in-browser genesis beacon address and DID would not match this chain, so
+  // first-update registration would fail. mutinynet/signet/testnet share params, so
+  // those do not trip this.
+  if (
+    resolvedDist &&
+    resolveNetwork(networkName).scureNetwork !== resolveNetwork(DEFAULT_NETWORK).scureNetwork
+  ) {
+    console.warn(
+      `[demo] WARNING: serving the web UI (built for ${DEFAULT_NETWORK} address params) while the ` +
+        `coordinator targets ${networkName}. In-browser addresses/DIDs will not match this chain and ` +
+        `first-update registration will fail. Rebuild the web app for ${networkName}, run on a network ` +
+        `sharing those params, or serve the protocol only (webDistDir: null). Runtime network injection is M3f.`,
+    );
+  }
+
   const service = createService({
     identity: createIdentity(),
     config: buildCohortConfig(minParticipants),
@@ -80,11 +134,13 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
     cohortTtlMs,
     phaseTimeoutMs,
     webDistDir: resolvedDist,
+    store,
+    bitcoin,
   });
   const { baseUrl } = await service.start(opts.port ?? 8080, opts.host ?? '127.0.0.1');
   log(
     `coordinator listening on ${baseUrl} (minParticipants=${minParticipants}, fillers=${fillers}, ` +
-      `web ${resolvedDist ? 'served' : 'not served'})`,
+      `web ${resolvedDist ? 'served' : 'not served'}, resolve=${networkName}${useLive ? ' (live esplora)' : ' (offline)'})`,
   );
 
   let running = true;

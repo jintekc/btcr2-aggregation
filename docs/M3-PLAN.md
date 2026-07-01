@@ -272,7 +272,32 @@ behavior is opt-in.
   Requires an operator-funded wallet. Behind the `LIVE` flag; fixture remains default.
 - **M3d - resolve round-trip (opt-in chain).** Items 10, 16. `GET /resolve/:did` +
   `BeaconSignalDiscovery` + the e2e asserting both CAS and SMT resolve. DoD.
-- **M3e - web resolve UX + dashboard anchor state.** Items 13, 14, dashboard polish.
+- **M3e - web resolve UX + first-update registration + dashboard anchor state. DONE
+  & VERIFIED 2026-07-01.** Items 13, 14, dashboard polish, plus the KEY self-bootstrap
+  registration flow (the piece ADR 0007 identified as required for a KEY DID's first
+  update to be resolvable, pulled forward from M3f per the controller's model: the
+  first aggregation update adds the aggregate beacon; each controller then announces
+  it through their own genesis SingletonBeacon, after which further updates ride the
+  aggregate beacon). Shipped: browser-safe `genesisP2trBeaconAddress`,
+  `updateHashHex/Bytes`, `base64UrlHashToHex`, and `buildSingletonRegistrationTx`
+  (P2TR key-path spend, OP_RETURN last, in `packages/shared`); `packages/participant`
+  captures the controller's own submitted update body (`getSubmittedUpdate`, since
+  BIP340 signing is non-deterministic); a same-origin Bitcoin tx proxy
+  (`GET /v1/tx/utxos/:address`, `POST /v1/tx/broadcast` with `bodyLimit`) so the key
+  is signed in-browser and only the raw tx is relayed; `createOfflineBitcoinConnection`
+  + `demo-server` wiring a store + offline (or `LIVE=1` esplora) connection so
+  `/resolve`, `/cas/*`, `/v1/tx/*` are live in every deployment while the cohort stays
+  on the fixture path; web `RegisterPanel` (live-only), `ResolvePanel` (server-driven
+  `/resolve/:did`, honest genesis-doc framing), `ResultCard` sidecar download, and
+  dashboard anchor state (txid/confirmed/explorer via the M3c broadcast frames). Gate
+  10/10 green + web tsc + vite build clean + bundle clean; +18 tests (93 total).
+  Adversarial review (4 dims x find -> 2-skeptic) fixed 5 confirmed findings (dashboard
+  resync-on-tab-switch, register re-entrancy, phantom-cohort resurrection, unbounded
+  broadcast body, and a loud warning for the still-build-time browser network). ADR
+  0008 records the decisions; the browser network matrix (runtime injection) stays
+  M3f. Registration's real broadcast is `LIVE=1` + operator-funded; the hermetic gate
+  covers the offline resolve path, tx-proxy validation, registration-tx construction,
+  and the browser resolve UX.
 - **M3f - EXTERNAL-genesis path + network matrix completion + ADRs.**
   `GenesisDocument.create` baked-beacon path + genesis store route; regtest CI node +
   mainnet guard rails; ADRs 0007+ (live beacon tx, durable store + IPFS/sidecar,
