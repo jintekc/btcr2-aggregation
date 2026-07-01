@@ -6,14 +6,15 @@ import {
   type CohortConfig,
 } from '@did-btcr2/aggregation/service';
 import { resolveBtcr2SenderPk } from '@did-btcr2/method';
-import type { Identity } from '@btcr2-aggregation/shared';
+import { assertNetworkAllowed, resolveNetwork, type Identity } from '@btcr2-aggregation/shared';
+import type { BitcoinConnection, FeeEstimator } from '@did-btcr2/bitcoin';
 import { createHonoApp } from './hono-adapter.js';
-import { makeProvideTxData } from './tx.js';
+import { makeProvideTxData, type LiveTxConfig } from './tx.js';
 import { persistCohortArtifacts } from './persist.js';
 import type { ArtifactStore } from './store.js';
 
 export { createHonoApp, type HonoAppOptions } from './hono-adapter.js';
-export { makeProvideTxData } from './tx.js';
+export { makeProvideTxData, type LiveTxConfig } from './tx.js';
 export { bridgeRunnerToSse } from './dashboard-sse.js';
 export { startDemoServer, type DemoServer, type DemoServerOptions } from './demo-server.js';
 export {
@@ -78,6 +79,36 @@ export interface CreateServiceOptions {
    * headless M1 path, which persists nothing.
    */
   store?: ArtifactStore;
+  /**
+   * Opt in to the LIVE beacon-transaction path: instead of the zero-chain fixture
+   * tx, the runner builds a real aggregation beacon tx (`buildAggregationBeaconTx`)
+   * that spends a funded UTXO at the cohort's beacon address. Default false (the
+   * fixture path, which keeps the hermetic gate chain-free). Requires {@link bitcoin}.
+   */
+  live?: boolean;
+  /**
+   * Injected Bitcoin REST (esplora) connection for the live path. Required when
+   * {@link live} is true. Injected (not constructed here) so the live path is
+   * testable with a mock connection and so the operator controls the esplora host.
+   */
+  bitcoin?: BitcoinConnection;
+  /**
+   * Fee estimator forwarded to the runner and honored by the live beacon-tx
+   * builder. Defaults to the runner's static 5 sat/vB; inject a dynamic estimator
+   * (mempool API / Bitcoin Core) for production live runs.
+   */
+  feeEstimator?: FeeEstimator;
+  /**
+   * Change address for the live beacon tx. Defaults to the beacon address; set the
+   * operator funding wallet to avoid reusing the cohort address for change.
+   */
+  changeAddress?: string;
+  /**
+   * Permit a live run against mainnet. Default false: a mainnet {@link config}
+   * network with {@link live} true throws (real funds guard). No effect on the
+   * fixture path.
+   */
+  allowMainnet?: boolean;
 }
 
 export interface StartedService {
@@ -112,6 +143,24 @@ export function createService(opts: CreateServiceOptions): Service {
   });
   transport.registerActor(did, keys);
 
+  // Resolve the opt-in LIVE beacon-tx config. Off by default (the fixture path
+  // keeps the gate chain-free). When on, a BitcoinConnection is required and a
+  // mainnet target must be explicitly allowed (real-funds guard). The scure
+  // network params come from the shared registry (single source of truth) so
+  // address decoding matches everywhere.
+  let live: LiveTxConfig | undefined;
+  if (opts.live) {
+    if (!opts.bitcoin) {
+      throw new Error('createService: live=true requires an injected `bitcoin` connection');
+    }
+    assertNetworkAllowed(opts.config.network, { allowMainnet: opts.allowMainnet ?? false });
+    live = {
+      bitcoin: opts.bitcoin,
+      network: resolveNetwork(opts.config.network).scureNetwork,
+      changeAddress: opts.changeAddress,
+    };
+  }
+
   // `onProvideTxData` reads `runner` lazily (only when signing starts, long after
   // construction), so closing over the const binding here is safe.
   const runner: AggregationServiceRunner = new AggregationServiceRunner({
@@ -119,7 +168,10 @@ export function createService(opts: CreateServiceOptions): Service {
     did,
     keys,
     config: opts.config,
-    onProvideTxData: makeProvideTxData(() => runner),
+    onProvideTxData: makeProvideTxData(() => runner, live),
+    // Forward the fee estimator (else the runner defaults to a static 5 sat/vB);
+    // the live beacon-tx builder reads it via the onProvideTxData info.
+    feeEstimator: opts.feeEstimator,
     // Undefined => disabled (the one-shot M1 path relies on that). The booth
     // passes both so abandoned/stalled cohorts reject instead of wedging.
     cohortTtlMs: opts.cohortTtlMs,
