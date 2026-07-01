@@ -15,6 +15,7 @@
     "e2e:smt": "tsc -b && tsx e2e/headless-cohort.ts --smt",
     "e2e:persist": "tsc -b && tsx e2e/persist-cohort.ts",
     "e2e:live:mock": "tsc -b && tsx e2e/live-mock-cohort.ts",
+    "e2e:live:broadcast": "tsc -b && tsx e2e/live-broadcast-cohort.ts",
     "e2e:browser": "pnpm -r build && tsx e2e/browser-cohort.ts",
     "e2e:browser:prod": "pnpm -r build && tsx e2e/browser-prod-cohort.ts",
     "dev": "pnpm --filter @btcr2-aggregation/web dev",

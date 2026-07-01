@@ -6,16 +6,32 @@ import {
   type CohortConfig,
 } from '@did-btcr2/aggregation/service';
 import { resolveBtcr2SenderPk } from '@did-btcr2/method';
-import { assertNetworkAllowed, resolveNetwork, type Identity } from '@btcr2-aggregation/shared';
+import { assertNetworkAllowed, type Identity, type NetworkConfig } from '@btcr2-aggregation/shared';
 import type { BitcoinConnection, FeeEstimator } from '@did-btcr2/bitcoin';
 import { createHonoApp } from './hono-adapter.js';
 import { makeProvideTxData, type LiveTxConfig } from './tx.js';
 import { persistCohortArtifacts } from './persist.js';
+import {
+  attachBeaconBroadcast,
+  BeaconBroadcaster,
+  type BeaconBroadcastHandle,
+} from './broadcast.js';
 import type { ArtifactStore } from './store.js';
 
 export { createHonoApp, type HonoAppOptions } from './hono-adapter.js';
 export { makeProvideTxData, type LiveTxConfig } from './tx.js';
-export { bridgeRunnerToSse } from './dashboard-sse.js';
+export { bridgeRunnerToSse, type DashboardExtras } from './dashboard-sse.js';
+export {
+  BeaconBroadcaster,
+  attachBeaconBroadcast,
+  broadcastAndConfirm,
+  rawBeaconTxHex,
+  type BeaconAnchorEvents,
+  type BeaconBroadcastHandle,
+  type BroadcastConfirmOptions,
+  type BroadcastResult,
+  type AttachBeaconBroadcastOptions,
+} from './broadcast.js';
 export { startDemoServer, type DemoServer, type DemoServerOptions } from './demo-server.js';
 export {
   ARTIFACT_KINDS,
@@ -109,6 +125,28 @@ export interface CreateServiceOptions {
    * fixture path.
    */
   allowMainnet?: boolean;
+  /**
+   * Broadcast the signed beacon transaction to the network on each
+   * `signing-complete`, then poll for its first confirmation, surfacing the
+   * lifecycle on {@link Service.broadcaster}. Requires {@link live} (broadcasting
+   * the zero-chain fixture tx is meaningless and throws). Default false, so the
+   * live path can build + sign a real tx without pushing it (the hermetic
+   * live-mock e2e relies on that). Broadcast is independent of {@link store}:
+   * persistence fires on `signing-complete` regardless of broadcast success.
+   */
+  broadcast?: boolean;
+  /**
+   * Interval between confirmation polls for a broadcast beacon tx, in ms. Default
+   * 5000. Only used when {@link broadcast} is true.
+   */
+  confirmPollIntervalMs?: number;
+  /**
+   * Overall wait for a broadcast beacon tx's first confirmation, in ms. Default
+   * 180000 (~6 mutinynet blocks). On expiry the tx is still broadcast; the
+   * `beacon-anchored` event reports `confirmed: false`. Only used when
+   * {@link broadcast} is true.
+   */
+  confirmTimeoutMs?: number;
 }
 
 export interface StartedService {
@@ -121,6 +159,12 @@ export interface Service {
   readonly runner: AggregationServiceRunner;
   /** The underlying sans-I/O HTTP server transport. */
   readonly transport: HttpServerTransport;
+  /**
+   * Beacon-tx broadcast emitter, present only when the service runs with
+   * `live` + `broadcast`. Subscribe to observe `beacon-broadcast` /
+   * `beacon-anchored` / `beacon-broadcast-failed` for each cohort's on-chain tx.
+   */
+  readonly broadcaster?: BeaconBroadcaster;
   /** Start listening. Pass port 0 (default) for an ephemeral port. */
   start(port?: number, host?: string): Promise<StartedService>;
   /** Stop the runner, transport, and HTTP server. */
@@ -149,14 +193,18 @@ export function createService(opts: CreateServiceOptions): Service {
   // network params come from the shared registry (single source of truth) so
   // address decoding matches everywhere.
   let live: LiveTxConfig | undefined;
+  let netConfig: NetworkConfig | undefined;
   if (opts.live) {
     if (!opts.bitcoin) {
       throw new Error('createService: live=true requires an injected `bitcoin` connection');
     }
-    assertNetworkAllowed(opts.config.network, { allowMainnet: opts.allowMainnet ?? false });
+    // assertNetworkAllowed returns the resolved config (and enforces the mainnet
+    // opt-in); reuse it for both the scure address params and the dashboard's
+    // explorer URL so the network registry stays the single source of truth.
+    netConfig = assertNetworkAllowed(opts.config.network, { allowMainnet: opts.allowMainnet ?? false });
     live = {
       bitcoin: opts.bitcoin,
-      network: resolveNetwork(opts.config.network).scureNetwork,
+      network: netConfig.scureNetwork,
       changeAddress: opts.changeAddress,
     };
   }
@@ -201,16 +249,42 @@ export function createService(opts: CreateServiceOptions): Service {
     });
   }
 
+  // Opt-in live broadcast: on each `signing-complete`, push the signed beacon tx to
+  // the network and poll for confirmation, surfacing the lifecycle on `broadcaster`.
+  // Independent of persistence (a separate `signing-complete` listener) so a
+  // broadcast failure never blocks the artifact write, and vice versa. Requires the
+  // live path (broadcasting the fixture tx is meaningless), which already guarantees
+  // a `bitcoin` connection.
+  let broadcaster: BeaconBroadcaster | undefined;
+  let broadcastHandle: BeaconBroadcastHandle | undefined;
+  if (opts.broadcast) {
+    if (!live) {
+      throw new Error(
+        'createService: broadcast=true requires live=true (refusing to broadcast the fixture tx)',
+      );
+    }
+    broadcaster = new BeaconBroadcaster();
+    broadcastHandle = attachBeaconBroadcast(runner, {
+      bitcoin: live.bitcoin,
+      broadcaster,
+      pollIntervalMs: opts.confirmPollIntervalMs,
+      confirmTimeoutMs: opts.confirmTimeoutMs,
+    });
+  }
+
   const app = createHonoApp(transport, {
     runner,
     webDistDir: opts.webDistDir,
     store: opts.store,
+    broadcaster,
+    network: netConfig,
   });
   let server: ServerType | undefined;
 
   return {
     runner,
     transport,
+    broadcaster,
     start(port = 0, host = '127.0.0.1'): Promise<StartedService> {
       transport.start();
       return new Promise<StartedService>((resolve, reject) => {
@@ -224,6 +298,8 @@ export function createService(opts: CreateServiceOptions): Service {
       });
     },
     stop(): Promise<void> {
+      // Abort any in-flight confirmation poll before tearing down the runner.
+      broadcastHandle?.stop();
       runner.stop();
       transport.stop();
       return new Promise<void>((resolve) => {
