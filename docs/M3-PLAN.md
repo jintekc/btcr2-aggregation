@@ -298,10 +298,35 @@ behavior is opt-in.
   M3f. Registration's real broadcast is `LIVE=1` + operator-funded; the hermetic gate
   covers the offline resolve path, tx-proxy validation, registration-tx construction,
   and the browser resolve UX.
-- **M3f - EXTERNAL-genesis path + network matrix completion + ADRs.**
-  `GenesisDocument.create` baked-beacon path + genesis store route; regtest CI node +
-  mainnet guard rails; ADRs 0007+ (live beacon tx, durable store + IPFS/sidecar,
-  resolve driver, onboarding models, network matrix).
+- **M3f - EXTERNAL (x1) onboarding. DONE & VERIFIED 2026-07-02** (network matrix
+  completion + mainnet guard rails + in-browser Helia still open). Scoping M3f hit a
+  hard blocker in the published library (an `x1` DID could not authenticate over HTTP,
+  `401` before it could opt in); that was fixed in `@did-btcr2/{method,aggregation}`
+  (library ADR 066) and republished as `method@0.51.0` + `aggregation@0.4.0`. This repo
+  then consumed the surface so `x1` is a first-class cohort member (ADR 0009): `shared`
+  gained `createExternalIdentity`/`buildExternalGenesis` (a genesis whose
+  `capabilityInvocation[0]` is the keypair, declaring a SingletonBeacon at the key's
+  genesis P2TR address) and a genesis-aware `buildSignedUpdate` (`Resolver.external` for
+  x1, k1 byte-identical); `participant` threads `identity.genesisDocument` onto the
+  opt-in; `service` injects `resolveBtcr2SenderPk` + a `maxBodyBytes` bootstrap-body cap;
+  a new `POST /resolve/:did` carries the controller's genesis (re-verified server-side)
+  so an x1 DID resolves; and the web adds a KEY/EXTERNAL toggle (bundle stays
+  browser-clean). **The ADR-0007 prize is now reachable e2e:** an x1 update lands in a
+  real CAS/SMT announcement and resolves via its sidecar genesis
+  (`e2e/resolve-cohort.ts` runs k1 and x1 x CAS and SMT). New coverage: an all-x1 and a
+  mixed k1+x1 headless cohort, a trustless genesis-mismatch negative probe (a
+  self-consistent squatter claiming a victim DID, so the genesis-hash binding is the sole
+  rejecting gate), the `POST /resolve` route (incl. mismatch -> 502), and a mixed k1+x1
+  cohort in **both** browser topologies. Gate now 13 checks green (+ `e2e:x1`,
+  `e2e:mixed`, `e2e:x1:negative`; 111 unit tests) + web tsc + vite build + bundle-clean.
+  Adversarial review (5 dims x find -> 2-skeptic verify) confirmed 1 finding (a
+  false-green in the negative probe), fixed. **Remaining M3f (separate slice):** runtime
+  browser-network injection (`GET /v1/config`), mainnet guard rails on the live path, and
+  optional in-browser Helia publish.
+
+- **M3f (remaining) - network matrix completion + ADRs.** `GenesisDocument.create`
+  baked-beacon path (pre-known aggregate beacon) + genesis store route; regtest CI node +
+  mainnet guard rails; runtime browser-network injection.
 
 ## Spikes required before/within M3c (do not skip)
 

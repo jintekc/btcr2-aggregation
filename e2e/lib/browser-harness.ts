@@ -2,6 +2,7 @@ import { existsSync, readdirSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import type { IdType } from '@btcr2-aggregation/shared';
 import { chromium, type BrowserContext, type Page } from 'playwright-core';
 
 /**
@@ -106,12 +107,28 @@ async function dumpPage(page: Page, label: string): Promise<void> {
   }
 }
 
-/** Drive one attendee page through generate -> join -> anchored, returning its DID. */
-async function runAttendee(page: Page, label: string, baseUrl: string): Promise<string> {
+/**
+ * Drive one attendee page through generate -> join -> anchored, returning its DID.
+ * `idType` selects the onboarding model: a KEY (`k1`) DID (default), or an EXTERNAL
+ * (`x1`) DID (click the EXTERNAL toggle first; its genesis rides the opt-in, ADR 066).
+ */
+async function runAttendee(
+  page: Page,
+  label: string,
+  baseUrl: string,
+  idType: IdType = 'KEY',
+): Promise<string> {
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+  if (idType === 'EXTERNAL') {
+    await page.getByRole('radio', { name: 'EXTERNAL (x1)' }).click();
+  }
   await page.getByRole('button', { name: 'Generate a DID' }).click();
   const did = (await page.locator('text=/^did:btcr2:/').first().textContent())?.trim() ?? '(unknown did)';
-  console.log(`${label}: ${did}`);
+  const expectedPrefix = idType === 'EXTERNAL' ? 'did:btcr2:x1' : 'did:btcr2:k1';
+  if (!did.startsWith(expectedPrefix)) {
+    throw new Error(`${label}: expected a ${expectedPrefix}… DID for ${idType}, got ${did}`);
+  }
+  console.log(`${label} (${idType}): ${did}`);
   await page.getByRole('button', { name: 'Join the cohort' }).click();
   console.log(`${label}: joined, co-signing...`);
   await page.getByText('update included').first().waitFor({ state: 'visible', timeout: STEP_TIMEOUT_MS });
@@ -181,17 +198,26 @@ export async function runCohortScenario(context: BrowserContext, baseUrl: string
     trackPageErrors(pageA, 'attendee-A', pageErrors);
     trackPageErrors(pageB, 'attendee-B', pageErrors);
 
+    // A mixed cohort: attendee-A is a KEY (k1) DID, attendee-B an EXTERNAL (x1) DID.
+    // Both authenticate and co-sign the same cohort in-browser - proving the ADR 066
+    // x1 onboarding path end to end through the real UI (toggle -> genesis on the opt-in).
     const [didA, didB] = await Promise.all([
-      runAttendee(pageA, 'attendee-A', baseUrl),
-      runAttendee(pageB, 'attendee-B', baseUrl),
+      runAttendee(pageA, 'attendee-A', baseUrl, 'KEY'),
+      runAttendee(pageB, 'attendee-B', baseUrl, 'EXTERNAL'),
     ]);
     if (didA === didB) {
       problems.push('both attendees produced the same DID (expected two distinct signers)');
     }
+    if (!didB.startsWith('did:btcr2:x1')) {
+      problems.push(`attendee-B expected an x1 (EXTERNAL) DID, got ${didB}`);
+    }
 
-    // 2b) Exercise the M3e resolve UX on one attendee (server-driven resolve ->
-    //     genesis document, sovereign sidecar download, live-only registration).
+    // 2b) Exercise the resolve UX on BOTH: the k1 attendee (server-driven GET resolve)
+    //     and the x1 attendee (POST resolve carrying its genesis) - each resolving to
+    //     its genesis document over the offline chain, with the sovereign sidecar
+    //     download and the live-only first-update registration.
     await verifyResolveUx(pageA, 'attendee-A', problems);
+    await verifyResolveUx(pageB, 'attendee-B', problems);
 
     // 3) A completed attendee must NOT auto-join the booth's next cohort. Give the
     //    re-advertise a few seconds to reach the (now torn-down) participants.

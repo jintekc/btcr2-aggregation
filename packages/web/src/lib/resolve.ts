@@ -62,14 +62,30 @@ export class ResolveError extends Error {
  *   - 400: malformed did:btcr2 identifier
  *   - 404: the coordinator has resolution disabled (no store/connection configured)
  *   - 502: resolution failed upstream (missing artifact, esplora error, bad DID)
+ *
+ * A KEY (k1) DID resolves from the deterministic genesis, so no sidecar is sent (a
+ * plain `GET`). An EXTERNAL (x1) DID is only a hash commitment to its genesis, which
+ * the coordinator does not hold, so the controller supplies it in-band: pass
+ * `genesisDocument` and this issues a `POST` carrying `{ genesisDocument }`, which the
+ * server resolves with as a sidecar (mirroring how the genesis rides the opt-in).
  */
-export async function resolveDid(baseUrl: string, did: string): Promise<ResolveResponse> {
+export async function resolveDid(
+  baseUrl: string,
+  did: string,
+  genesisDocument?: object,
+): Promise<ResolveResponse> {
   // Encode the DID as a single path segment (its colons become %3A; Hono decodes
   // the param back before its did:btcr2 guard runs).
   const url = `${baseUrl.replace(/\/$/, '')}/resolve/${encodeURIComponent(did)}`;
   let res: Response;
   try {
-    res = await fetch(url, { headers: { accept: 'application/json' } });
+    res = genesisDocument
+      ? await fetch(url, {
+          method: 'POST',
+          headers: { accept: 'application/json', 'content-type': 'application/json' },
+          body: JSON.stringify({ genesisDocument }),
+        })
+      : await fetch(url, { headers: { accept: 'application/json' } });
   } catch (err) {
     throw new ResolveError(
       `could not reach the resolver: ${err instanceof Error ? err.message : String(err)}`,
