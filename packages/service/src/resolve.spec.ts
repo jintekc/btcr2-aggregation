@@ -3,7 +3,7 @@ import { HttpServerTransport } from '@did-btcr2/aggregation/service';
 import { resolveBtcr2SenderPk, type BeaconService, type DataNeed, type ResolverState } from '@did-btcr2/method';
 import { BTCR2MerkleTree } from '@did-btcr2/smt';
 import type { BitcoinConnection } from '@did-btcr2/bitcoin';
-import { createIdentity } from '@btcr2-aggregation/shared';
+import { createExternalIdentity, createIdentity } from '@btcr2-aggregation/shared';
 import { describe, expect, it } from 'vitest';
 import { driveResolution, type ResolverLike } from './resolve.js';
 import { MemoryArtifactStore, putProof, putUpdate, putAnnouncement, putGenesis } from './store.js';
@@ -285,5 +285,66 @@ describe('GET /resolve/:did route', () => {
     const res = await app.request(`/resolve/${createIdentity().did}`);
     // No route, no SPA fallback configured -> Hono's default 404.
     expect(res.status).toBe(404);
+  });
+});
+
+describe('POST /resolve/:did route (EXTERNAL x1, genesis in-band)', () => {
+  function appWith(opts: { bitcoin?: BitcoinConnection }) {
+    const transport = new HttpServerTransport({ resolveSenderPk: resolveBtcr2SenderPk, heartbeatIntervalMs: 0 });
+    return createHonoApp(transport, { store: new MemoryArtifactStore(), bitcoin: opts.bitcoin });
+  }
+
+  function postResolve(app: ReturnType<typeof appWith>, did: string, body: unknown) {
+    return app.request(`/resolve/${did}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: typeof body === 'string' ? body : JSON.stringify(body),
+    });
+  }
+
+  it('resolves an x1 DID to its genesis document from the supplied sidecar genesis', async () => {
+    // An x1 DID is only a commitment to its genesis; the coordinator does not hold it,
+    // so the controller supplies it in-band. With an empty chain (no updates yet) the
+    // resolution completes at the (real-DID-substituted) genesis document.
+    const { did, genesisDocument } = createExternalIdentity();
+    const app = appWith({ bitcoin: mockChain(new Map()) });
+    const res = await postResolve(app, did, { genesisDocument });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { didDocument: { id: string; service: Array<{ type: string }> } };
+    expect(body.didDocument.id).toBe(did);
+    expect(body.didDocument.service.some((s) => s.type === 'SingletonBeacon')).toBe(true);
+  });
+
+  it('rejects a genesis that does not hash to the x1 DID at resolution time (trustless)', async () => {
+    // Victim DID + attacker genesis: the resolver re-verifies the commitment and throws,
+    // surfaced as a generic 502 - a forged genesis cannot fabricate a resolution.
+    const victim = createExternalIdentity();
+    const attacker = createExternalIdentity();
+    const app = appWith({ bitcoin: mockChain(new Map()) });
+    const res = await postResolve(app, victim.did, { genesisDocument: attacker.genesisDocument });
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('resolution failed');
+  });
+
+  it('returns 502 for an x1 DID posted without a genesis (unresolvable)', async () => {
+    // No genesis and none in the store: the resolver cannot build the x1 document.
+    const { did } = createExternalIdentity();
+    const app = appWith({ bitcoin: mockChain(new Map()) });
+    const res = await postResolve(app, did, {});
+    expect(res.status).toBe(502);
+  });
+
+  it('rejects a malformed JSON body with 400', async () => {
+    const { did } = createExternalIdentity();
+    const app = appWith({ bitcoin: mockChain(new Map()) });
+    const res = await postResolve(app, did, 'not json at all');
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a non-did:btcr2 path with 400 before parsing', async () => {
+    const app = appWith({ bitcoin: mockChain(new Map()) });
+    const res = await postResolve(app, 'not-a-did', { genesisDocument: {} });
+    expect(res.status).toBe(400);
   });
 });

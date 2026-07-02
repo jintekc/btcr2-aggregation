@@ -9,6 +9,12 @@
  */
 export interface Sidecar {
   '@context': string;
+  /**
+   * The EXTERNAL (x1) controller's genesis DID document (the `NeedGenesisDocument`
+   * artifact). Required to resolve an `x1` DID (the DID is only a hash commitment to
+   * it); absent for a KEY (k1) DID, whose genesis is deterministic from the DID string.
+   */
+  genesisDocument?: object;
   /** Signed update bodies (the `NeedSignedUpdate` artifacts). */
   updates?: object[];
   /** CAS announcement maps (CAS beacons). */
@@ -22,14 +28,21 @@ const SIDECAR_CONTEXT = 'https://btcr2.dev/context/v1';
 /**
  * Build a resolver-ready sidecar from the controller's own captured artifacts. The
  * `update` body is always included; exactly one of `casAnnouncement` / `smtProof`
- * is present, matching the cohort's beacon type. Omits empty arrays.
+ * is present, matching the cohort's beacon type. For an EXTERNAL (x1) controller the
+ * `genesisDocument` is included so a resolver can reconstruct the DID from its
+ * commitment (a KEY controller omits it - its genesis is deterministic). Omits empty
+ * fields.
  */
 export function buildSidecar(input: {
   update: object;
   casAnnouncement?: Record<string, string>;
   smtProof?: object;
+  genesisDocument?: object;
 }): Sidecar {
   const sidecar: Sidecar = { '@context': SIDECAR_CONTEXT, updates: [input.update] };
+  if (input.genesisDocument) {
+    sidecar.genesisDocument = input.genesisDocument;
+  }
   if (input.casAnnouncement) {
     sidecar.casUpdates = [input.casAnnouncement];
   }

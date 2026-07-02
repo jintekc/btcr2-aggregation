@@ -3,9 +3,11 @@ import { createParticipant } from '@btcr2-aggregation/participant';
 import { createService } from '@btcr2-aggregation/service';
 import {
   buildCohortConfig,
+  createExternalIdentity,
   createIdentity,
   type BeaconType,
   type Identity,
+  type IdType,
 } from '@btcr2-aggregation/shared';
 
 /** Which off-chain resolution artifact a participant received on `cohort-complete`. */
@@ -30,6 +32,8 @@ const PARTICIPANT_MILESTONES = [
 
 export interface ParticipantResult {
   did: string;
+  /** The onboarding model this participant used: KEY (`k1`) or EXTERNAL (`x1`). */
+  idType: IdType;
   milestones: string[];
   /** Beacon type reported in this participant's `cohort-complete` payload. */
   beaconType: string;
@@ -51,8 +55,16 @@ export interface HeadlessResult {
 }
 
 export interface HeadlessOptions {
-  /** Number of participants (default 2). */
+  /** Number of participants (default 2). Ignored when {@link identityTypes} is set. */
   participants?: number;
+  /**
+   * The onboarding model of each participant, in order. Length overrides
+   * {@link participants}. A `KEY` participant uses a `k1` DID (authenticated from its
+   * DID string); an `EXTERNAL` participant uses an `x1` DID (bootstrap-authenticated
+   * from its self-verifying genesis document, ADR 066). Default: all `KEY`, preserving
+   * the original k1-only behavior.
+   */
+  identityTypes?: IdType[];
   /** Beacon type for the cohort (default CAS). */
   beaconType?: BeaconType;
   /** Port to listen on (default 0 = ephemeral). */
@@ -123,16 +135,23 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
  * internally, so each participant receives its true off-chain resolution artifact.
  */
 export async function runHeadlessCohort(options: HeadlessOptions = {}): Promise<HeadlessResult> {
-  const n = options.participants ?? 2;
+  const identityTypes: IdType[] =
+    options.identityTypes ?? Array.from({ length: options.participants ?? 2 }, () => 'KEY');
+  const n = identityTypes.length;
   const beaconType: BeaconType = options.beaconType ?? 'CASBeacon';
   const timeoutMs = options.timeoutMs ?? 30000;
   const log = options.quiet ? () => {} : (msg: string) => console.log(msg);
 
+  // The service is always a KEY (k1) coordinator; participants are KEY or EXTERNAL
+  // (x1) per `identityTypes`. An x1 participant carries its self-verifying genesis
+  // (createExternalIdentity), threaded onto its opt-in by createParticipant.
   const serviceIdentity = createIdentity();
-  const participantIdentities: Identity[] = Array.from({ length: n }, () => createIdentity());
+  const participantIdentities: Identity[] = identityTypes.map((t) =>
+    t === 'EXTERNAL' ? createExternalIdentity() : createIdentity(),
+  );
   log(`service ${serviceIdentity.did}`);
   log(`beaconType ${beaconType}`);
-  participantIdentities.forEach((id, i) => log(`participant ${i} ${id.did}`));
+  participantIdentities.forEach((id, i) => log(`participant ${i} (${identityTypes[i]}) ${id.did}`));
 
   const service = createService({
     identity: serviceIdentity,
@@ -216,6 +235,7 @@ export async function runHeadlessCohort(options: HeadlessOptions = {}): Promise<
       serviceMilestones: orderedFirstOccurrences(serviceEvents, SERVICE_MILESTONES),
       participants: participants.map((_participant, i) => ({
         did: participantIdentities[i].did,
+        idType: identityTypes[i],
         milestones: orderedFirstOccurrences(participantEvents[i], PARTICIPANT_MILESTONES),
         beaconType: participantArtifacts[i].beaconType,
         artifact: participantArtifacts[i].artifact,
@@ -227,6 +247,96 @@ export async function runHeadlessCohort(options: HeadlessOptions = {}): Promise<
     }
     await service.stop();
   }
+}
+
+/** Outcome of the EXTERNAL-genesis-mismatch negative probe. */
+export interface RejectedX1Result {
+  /** Whether the bad-genesis participant ever reached `cohort-joined` (must be false). */
+  joined: boolean;
+  /** Whether the service ever accepted the bad-genesis participant (must be false). */
+  accepted: boolean;
+  /** Whether the participant surfaced an error (informational; opt-in rejection routing). */
+  erroredOut: boolean;
+}
+
+/**
+ * Negative probe (ADR 066 section 5, trustless binding): a realistic squatter that tries
+ * to register as a victim's `x1` DID must be rejected SOLELY by the genesis-hash-to-DID
+ * commitment. The attacker is fully self-consistent - it signs the opt-in with its OWN
+ * key, advertises that key as `communicationPk`, and presents its OWN self-verifying
+ * genesis - but claims the VICTIM's DID. Because the attacker's genesis hashes to the
+ * attacker's DID (not the victim's), the envelope-signature gate and the
+ * `communicationPk == genesis-derived key` gate BOTH pass on their own terms; the only
+ * gate that can reject is the trustless binding "the supplied genesis must hash to the
+ * claimed DID." So this isolates that binding: if it regressed, the server would derive
+ * the attacker's key from the attacker's genesis, the consistency check would pass, and
+ * the attacker would be accepted AS the victim - here it must instead 401 and never join.
+ *
+ * (Pairing the victim's DID with the victim's own key + the attacker's genesis would be a
+ * weaker probe: the `communicationPk` mismatch alone would force the 401, so the test
+ * would stay green even if the hash binding were removed. This variant does not.)
+ *
+ * We start the attacker against a live service and assert that within a generous window it
+ * neither joins nor is accepted. A valid opt-in registers and joins in well under this
+ * window, so the absence is a reliable rejection signal.
+ */
+export async function runRejectedX1(
+  options: { windowMs?: number; quiet?: boolean } = {},
+): Promise<RejectedX1Result> {
+  const windowMs = options.windowMs ?? 2500;
+  const log = options.quiet ? () => {} : (msg: string) => console.log(msg);
+
+  const service = createService({
+    identity: createIdentity(),
+    config: buildCohortConfig(1, 'CASBeacon'),
+  });
+  let accepted = false;
+  service.runner.on('participant-accepted', () => {
+    accepted = true;
+  });
+  // A rejected participant never lets the cohort reach minParticipants, so run() stays
+  // pending; kick it off (to advertise) but never await it, and swallow any rejection.
+  service.runner.on('error', () => {});
+  const { baseUrl } = await service.start(0);
+  void service.runner.run().catch(() => {});
+
+  // The attacker uses its OWN key + genesis (self-consistent: signature and
+  // communicationPk-consistency gates both pass) but claims the VICTIM's DID. The
+  // attacker genesis hashes to the attacker's DID, not the victim's, so ONLY the
+  // trustless genesis-hash binding can reject this - which is exactly what we test.
+  const victim = createExternalIdentity();
+  const attacker = createExternalIdentity();
+  const badIdentity: Identity = {
+    did: victim.did,
+    keys: attacker.keys,
+    genesisDocument: attacker.genesisDocument,
+  };
+  log(`victim   ${victim.did}`);
+  log(`attacker ${attacker.did} (self-consistent key+genesis) claiming the victim DID - must be rejected`);
+
+  const participant = createParticipant({ identity: badIdentity, baseUrl });
+  let joined = false;
+  let erroredOut = false;
+  participant.runner.on('cohort-joined', () => {
+    joined = true;
+  });
+  participant.runner.on('error', () => {
+    erroredOut = true;
+  });
+
+  try {
+    await participant.start();
+    await new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, windowMs);
+      t.unref();
+    });
+  } finally {
+    participant.stop();
+    await service.stop();
+  }
+
+  log(`joined=${joined} accepted=${accepted} erroredOut=${erroredOut}`);
+  return { joined, accepted, erroredOut };
 }
 
 /** Assert the result matches the M1 definition of done. Returns problems (empty = pass). */
@@ -265,12 +375,37 @@ function checkResult(result: HeadlessResult): string[] {
 }
 
 async function main(): Promise<number> {
-  // `--smt` (or `--beacon=SMTBeacon`) drives an SMT cohort; default is CAS.
   const argv = process.argv.slice(2);
+  // `--smt` (or `--beacon=SMTBeacon`) drives an SMT cohort; default is CAS.
   const beaconType: BeaconType =
     argv.includes('--smt') || argv.includes('--beacon=SMTBeacon') ? 'SMTBeacon' : 'CASBeacon';
 
-  const result = await runHeadlessCohort({ beaconType });
+  // `--negative` runs the EXTERNAL genesis-mismatch rejection probe instead of a cohort.
+  if (argv.includes('--negative')) {
+    const { joined, accepted, erroredOut } = await runRejectedX1({});
+    if (joined || accepted) {
+      console.error(
+        `\nE2E FAILED: a mismatched-genesis x1 participant was ${joined ? 'joined' : ''}` +
+          `${accepted ? ' accepted' : ''} - the trustless binding did not reject it.`,
+      );
+      return 1;
+    }
+    console.log(
+      `\nE2E PASSED: an x1 opt-in whose genesis does not hash to the DID was rejected at the ` +
+        `transport (never joined, never accepted${erroredOut ? '; participant surfaced the error' : ''}).`,
+    );
+    return 0;
+  }
+
+  // Identity mix: `--x1` = two EXTERNAL participants; `--mixed` = one KEY + one
+  // EXTERNAL; default = two KEY (the original k1-only behavior).
+  const identityTypes: IdType[] | undefined = argv.includes('--x1')
+    ? ['EXTERNAL', 'EXTERNAL']
+    : argv.includes('--mixed')
+      ? ['KEY', 'EXTERNAL']
+      : undefined;
+
+  const result = await runHeadlessCohort({ beaconType, identityTypes });
   const problems = checkResult(result);
   if (problems.length > 0) {
     console.error('\nE2E FAILED:');
@@ -281,9 +416,10 @@ async function main(): Promise<number> {
   }
   const label = beaconType === 'SMTBeacon' ? 'SMT' : 'CAS';
   const artifact = beaconType === 'SMTBeacon' ? 'SMT inclusion proof' : 'CAS announcement';
+  const mix = result.participants.map((p) => p.idType === 'EXTERNAL' ? 'x1' : 'k1').join('+');
   console.log(
-    `\nE2E PASSED: full ${label} cohort -> 64-byte aggregated Taproot signature over real HTTP, ` +
-      `each participant received its ${artifact}.`,
+    `\nE2E PASSED: full ${label} cohort (${mix}) -> 64-byte aggregated Taproot signature over ` +
+      `real HTTP, each participant received its ${artifact}.`,
   );
   return 0;
 }

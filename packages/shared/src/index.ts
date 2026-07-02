@@ -1,6 +1,13 @@
 import { canonicalHash, canonicalHashBytes, decode, encode } from '@did-btcr2/common';
 import { LocalSigner, SchnorrKeyPair } from '@did-btcr2/keypair';
-import { DidBtcr2, Resolver, Updater } from '@did-btcr2/method';
+import {
+  DidBtcr2,
+  GenesisDocument,
+  Identifier,
+  Resolver,
+  Updater,
+  type GenesisDocumentLike,
+} from '@did-btcr2/method';
 import { bytesToHex } from '@noble/hashes/utils';
 import { Script, Transaction, p2tr } from '@scure/btc-signer';
 import * as musig2 from '@scure/btc-signer/musig2';
@@ -32,10 +39,32 @@ function beaconSlug(beaconType: BeaconType): 'cas' | 'smt' {
  */
 export const NETWORK = DEFAULT_NETWORK;
 
-/** A did:btcr2 KEY identity: the DID string paired with its Schnorr keypair. */
+/**
+ * A did:btcr2 identity: the DID string paired with its Schnorr keypair, plus (for
+ * an EXTERNAL identity) the genesis document the DID commits to.
+ *
+ * - **KEY (`k1`)**: `genesisDocument` is absent. The DID string *is* the key, so a
+ *   verifier derives the communication key by decoding the DID.
+ * - **EXTERNAL (`x1`)**: `genesisDocument` is present and `keys` is the keypair of
+ *   its `capabilityInvocation[0]` verification method. The DID is a hash commitment
+ *   to the (canonicalized) genesis, so the document is self-verifying and a verifier
+ *   derives the communication key from it with zero trust. The genesis rides in-band
+ *   on the cohort opt-in ({@link https://btcr2.dev | ADR 066}); the transport
+ *   bootstrap-authenticates the sender from it.
+ */
 export interface Identity {
   did: string;
   keys: SchnorrKeyPair;
+  /** Present only for an EXTERNAL (x1) identity: the self-verifying genesis document. */
+  genesisDocument?: Record<string, unknown>;
+}
+
+/** The did:btcr2 identifier type this app onboards: KEY (`k1`) or EXTERNAL (`x1`). */
+export type IdType = 'KEY' | 'EXTERNAL';
+
+/** True when `identity` is an EXTERNAL (x1) identity (carries a genesis document). */
+export function isExternalIdentity(identity: Identity): boolean {
+  return identity.genesisDocument !== undefined;
 }
 
 /** Generate a fresh did:btcr2 KEY identity on {@link NETWORK}. */
@@ -43,6 +72,89 @@ export function createIdentity(): Identity {
   const keys = SchnorrKeyPair.generate();
   const did = DidBtcr2.create(keys.publicKey.compressed, { idType: 'KEY', network: NETWORK });
   return { did, keys };
+}
+
+/**
+ * Build the genesis DID document for an EXTERNAL (x1) identity backed by `keys`.
+ *
+ * The document uses the placeholder controller id `did:btcr2:_` (the resolver
+ * substitutes the real DID; {@link GenesisDocument.toGenesisBytes} canonicalizes it
+ * with the placeholder in place, so this exact shape is what the DID commits to). It
+ * declares a single Multikey verification method (the `keys`) referenced by every
+ * relationship, so `capabilityInvocation[0]` - the aggregation communication key and
+ * the DID-update authorization key (ADR 066 decision B) - resolves to `keys`.
+ *
+ * It also declares one `SingletonBeacon` at the key's genesis P2TR address (the same
+ * address {@link genesisP2trBeaconAddress} funds for a KEY DID's first-update
+ * registration), so an x1 controller can publish its first aggregated update through
+ * its own genesis beacon exactly as a KEY controller does, making the DID resolvable.
+ *
+ * Pure function of `keys` (+ network), so the derived x1 DID is deterministic and an
+ * identity re-imported from the same secret yields the same DID.
+ */
+export function buildExternalGenesis(
+  keys: SchnorrKeyPair,
+  network: NetworkConfig = resolveNetwork(NETWORK),
+): Record<string, unknown> {
+  const beaconAddress = genesisP2trBeaconAddress(keys, network);
+  return {
+    'id': 'did:btcr2:_',
+    '@context': ['https://www.w3.org/ns/did/v1.1', 'https://btcr2.dev/context/v1'],
+    'verificationMethod': [
+      {
+        id: 'did:btcr2:_#key-0',
+        type: 'Multikey',
+        controller: 'did:btcr2:_',
+        publicKeyMultibase: keys.publicKey.multibase.encoded,
+      },
+    ],
+    'authentication': ['did:btcr2:_#key-0'],
+    'assertionMethod': ['did:btcr2:_#key-0'],
+    'capabilityInvocation': ['did:btcr2:_#key-0'],
+    'capabilityDelegation': ['did:btcr2:_#key-0'],
+    'service': [
+      {
+        id: 'did:btcr2:_#service-0',
+        type: 'SingletonBeacon',
+        serviceEndpoint: `bitcoin:${beaconAddress}`,
+      },
+    ],
+  };
+}
+
+/**
+ * Derive the EXTERNAL (x1) DID for a genesis document: a bech32m commitment to the
+ * hash of the canonicalized genesis. Deterministic given the genesis.
+ */
+export function externalDidFromGenesis(genesisDocument: Record<string, unknown>): string {
+  return DidBtcr2.create(GenesisDocument.toGenesisBytes(genesisDocument as GenesisDocumentLike), {
+    idType: 'EXTERNAL',
+    network: NETWORK,
+  });
+}
+
+/**
+ * Generate a fresh did:btcr2 EXTERNAL (x1) identity on {@link NETWORK}: a Schnorr
+ * keypair, a self-verifying genesis document whose `capabilityInvocation[0]` is that
+ * keypair, and the x1 DID committing to the genesis. This is the "bring your own DID"
+ * onboarding path made first-class by ADR 066 (x1 can now authenticate and co-sign on
+ * every transport, previously KEY-only over HTTP).
+ */
+export function createExternalIdentity(): Identity {
+  const keys = SchnorrKeyPair.generate();
+  const genesisDocument = buildExternalGenesis(keys);
+  return { did: externalDidFromGenesis(genesisDocument), keys, genesisDocument };
+}
+
+/**
+ * Reconstruct an EXTERNAL (x1) identity from its 32-byte secret (hex string or raw
+ * bytes). The genesis (and therefore the DID) is a pure function of the key, so this
+ * re-derives the exact same x1 DID - the EXTERNAL analogue of {@link importIdentity}.
+ */
+export function importExternalIdentity(secret: string | Uint8Array): Identity {
+  const keys = SchnorrKeyPair.fromSecret(secret);
+  const genesisDocument = buildExternalGenesis(keys);
+  return { did: externalDidFromGenesis(genesisDocument), keys, genesisDocument };
 }
 
 /**
@@ -106,20 +218,30 @@ export function buildCohortConfig(
  * cohort's beacon type, with distinct fragments (`#beacon-cas` vs `#beacon-smt`)
  * so a DID that ever rides both a CAS and an SMT cohort never collides on
  * `/service/-`.
+ *
+ * KEY (`k1`) and EXTERNAL (`x1`) identities differ only in how the current document
+ * is resolved before the patch is applied: a KEY DID resolves deterministically from
+ * its public key; an EXTERNAL DID resolves from its (self-verifying) `genesisDocument`.
+ * Either way the update is signed with `capabilityInvocation[0]` - which is
+ * `doc.verificationMethod[0]` for both (a KEY DID's sole key, or the x1 genesis's
+ * `#key-0` that every relationship references) - so the signer `kp` MUST be that key.
  */
 export function buildSignedUpdate(
   did: string,
   kp: SchnorrKeyPair,
   beaconAddress: string,
   beaconType: BeaconType = 'CASBeacon',
+  genesisDocument?: Record<string, unknown>,
 ) {
-  const doc = Resolver.deterministic({
-    genesisBytes: kp.publicKey.compressed,
-    hrp: 'k',
-    idType: 'KEY',
-    version: 1,
-    network: NETWORK,
-  });
+  const doc = genesisDocument
+    ? Resolver.external(Identifier.decode(did), genesisDocument)
+    : Resolver.deterministic({
+        genesisBytes: kp.publicKey.compressed,
+        hrp: 'k',
+        idType: 'KEY',
+        version: 1,
+        network: NETWORK,
+      });
   const vm = doc.verificationMethod[0];
   const unsigned = Updater.construct(
     doc,

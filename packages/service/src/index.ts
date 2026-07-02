@@ -75,6 +75,15 @@ export interface CreateServiceOptions {
    */
   heartbeatIntervalMs?: number;
   /**
+   * Maximum accepted request-body size (in body-string length) for the transport's
+   * authenticated POST routes. Bounds the work an unauthenticated party can force
+   * before the EXTERNAL (x1) genesis-bootstrap hash check runs, so a large fake
+   * genesis cannot be parsed and hashed (a request over the cap gets 413 before its
+   * body is parsed). Defaults to the transport's own default (64 KiB), well above a
+   * real genesis document. See ADR 066 section 5 (bootstrap DoS surface).
+   */
+  maxBodyBytes?: number;
+  /**
    * Per-cohort overall TTL, in ms. Left undefined the runner NEVER times a
    * cohort out, so a participant who joins then walks away mid-flow leaves the
    * cohort's completion promise pending forever (it can neither complete nor
@@ -181,16 +190,26 @@ export interface Service {
 /**
  * Create an aggregation service: an {@link HttpServerTransport} mounted under Hono
  * on a real port, driven by an {@link AggregationServiceRunner} configured with the
- * fixture beacon-tx callback. did:btcr2 KEY senders are authenticated by resolving
- * their DID to a public key (`resolveBtcr2SenderPk`); SSE heartbeats are disabled
- * so the process exits cleanly once a cohort completes.
+ * fixture beacon-tx callback. Senders are authenticated by resolving their DID to a
+ * communication public key (`resolveBtcr2SenderPk`): a KEY (`k1`) DID decodes to its
+ * key directly, and an EXTERNAL (`x1`) DID is bootstrap-authenticated from the
+ * self-verifying genesis document on its opt-in (ADR 066), so both onboarding models
+ * are first-class. SSE heartbeats are disabled so the process exits cleanly once a
+ * cohort completes.
  */
 export function createService(opts: CreateServiceOptions): Service {
   const { did, keys } = opts.identity;
 
   const transport = new HttpServerTransport({
+    // Genesis-aware sender resolution: a KEY (k1) sender's key is decoded from its
+    // DID; an EXTERNAL (x1) sender that is not yet a registered peer is
+    // bootstrap-authenticated from the self-verifying `genesisDocument` carried on
+    // its opt-in (ADR 066). k1 behavior is unchanged (no genesis -> decode the DID).
     resolveSenderPk: resolveBtcr2SenderPk,
     heartbeatIntervalMs: opts.heartbeatIntervalMs ?? 0,
+    // Bound the opt-in body before the genesis hash check (default 64 KiB); passed
+    // through only when set so the transport default otherwise applies.
+    ...(opts.maxBodyBytes !== undefined ? { maxBodyBytes: opts.maxBodyBytes } : {}),
   });
   transport.registerActor(did, keys);
 

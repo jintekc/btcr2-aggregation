@@ -22,3 +22,5 @@ minimumReleaseAgeExclude:
   - '@tailwindcss/oxide@4.3.2'
   - '@tailwindcss/vite@4.3.2'
   - tailwindcss@4.3.2
+  - '@did-btcr2/aggregation@0.4.0'
+  - '@did-btcr2/method@0.51.0'

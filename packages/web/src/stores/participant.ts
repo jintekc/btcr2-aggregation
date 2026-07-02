@@ -5,14 +5,18 @@ import {
 } from '@btcr2-aggregation/participant';
 import {
   buildSingletonRegistrationTx,
+  createExternalIdentity,
   createIdentity,
   genesisP2trBeaconAddress,
   identitySecretHex,
+  importExternalIdentity,
   importIdentity,
+  isExternalIdentity,
   MIN_REGISTRATION_FUNDING_SATS,
   updateHashBytes,
   updateHashHex,
   type Identity,
+  type IdType,
 } from '@btcr2-aggregation/shared';
 import { elapsed } from '../lib/clock';
 import {
@@ -59,6 +63,8 @@ export interface ParticipantResult {
 interface ParticipantState {
   identity: Identity | null;
   did: string | null;
+  /** Onboarding model of the current identity: KEY (`k1`) or EXTERNAL (`x1`). */
+  idType: IdType;
   /** Hex secret for the current identity (so the attendee can save/re-import it). */
   secret: string | null;
   status: ParticipantStatus;
@@ -81,10 +87,17 @@ interface ParticipantState {
   resolution: ResolveResponse | null;
   resolveError: string | null;
 
-  /** Generate a fresh did:btcr2 KEY identity in-browser. */
-  generate(): void;
-  /** Reconstruct an identity from a saved secret (hex). Returns an error string on failure. */
-  importSecret(hex: string): string | null;
+  /**
+   * Generate a fresh did:btcr2 identity in-browser: a KEY (`k1`) DID, or an EXTERNAL
+   * (`x1`) DID with a self-verifying genesis document (default KEY).
+   */
+  generate(kind?: IdType): void;
+  /**
+   * Reconstruct an identity of `kind` (default KEY) from a saved 32-byte secret (hex).
+   * Returns an error string on failure. An x1 identity re-derives the same genesis (and
+   * therefore the same DID) from the secret, mirroring the KEY path.
+   */
+  importSecret(hex: string, kind?: IdType): string | null;
   /** The one explicit user gate: connect to the service and auto-drive the protocol. */
   join(baseUrl: string): Promise<void>;
   /** Tear down the live participant and return to a fresh-but-identified state. */
@@ -214,12 +227,16 @@ export const useParticipant = create<ParticipantState>((set, get) => {
     set({
       identity,
       did: identity.did,
+      idType: isExternalIdentity(identity) ? 'EXTERNAL' : 'KEY',
       secret: identitySecretHex(identity),
       status: 'ready',
       steps: { ...INITIAL_STEPS },
       cohortId: null,
       beaconAddress: null,
       error: null,
+      // The first-update SingletonBeacon address to fund is the key's genesis P2TR
+      // address for both models: for k1 it is one of the deterministic genesis beacons,
+      // for x1 it is the one declared in the identity's genesis document (same address).
       beaconRegAddress: genesisP2trBeaconAddress(identity.keys),
       ...INITIAL_OUTCOME,
     });
@@ -228,6 +245,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
   return {
     identity: null,
     did: null,
+    idType: 'KEY',
     secret: null,
     status: 'no-identity',
     steps: { ...INITIAL_STEPS },
@@ -238,21 +256,21 @@ export const useParticipant = create<ParticipantState>((set, get) => {
     beaconRegAddress: null,
     ...INITIAL_OUTCOME,
 
-    generate() {
-      const identity = createIdentity();
+    generate(kind = 'KEY') {
+      const identity = kind === 'EXTERNAL' ? createExternalIdentity() : createIdentity();
       adopt(identity);
-      append('good', `generated identity ${identity.did}`);
+      append('good', `generated ${kind === 'EXTERNAL' ? 'EXTERNAL (x1)' : 'KEY (k1)'} identity ${identity.did}`);
     },
 
-    importSecret(hex) {
+    importSecret(hex, kind = 'KEY') {
       const clean = hex.trim().toLowerCase().replace(/^0x/, '');
       if (!/^[0-9a-f]{64}$/.test(clean)) {
         return 'Secret must be 64 hex characters (32 bytes).';
       }
       try {
-        const identity = importIdentity(clean);
+        const identity = kind === 'EXTERNAL' ? importExternalIdentity(clean) : importIdentity(clean);
         adopt(identity);
-        append('good', `imported identity ${identity.did}`);
+        append('good', `imported ${kind === 'EXTERNAL' ? 'EXTERNAL (x1)' : 'KEY (k1)'} identity ${identity.did}`);
         return null;
       } catch (err) {
         return err instanceof Error ? err.message : String(err);
@@ -334,6 +352,9 @@ export const useParticipant = create<ParticipantState>((set, get) => {
             update: body,
             casAnnouncement: info.casAnnouncement,
             smtProof: info.smtProof,
+            // For an EXTERNAL (x1) controller, carry the genesis so the sidecar can
+            // resolve the DID (it is only a commitment to the genesis); undefined for k1.
+            genesisDocument: get().identity?.genesisDocument,
           });
         }
 
@@ -485,14 +506,16 @@ export const useParticipant = create<ParticipantState>((set, get) => {
     },
 
     async resolve(baseUrl) {
-      const { did } = get();
+      const { did, identity } = get();
       if (!did) {
         return;
       }
       set({ resolveStatus: 'resolving', resolveError: null });
       append('info', `resolving ${did}`);
       try {
-        const resolution = await resolveDid(baseUrl, did);
+        // An EXTERNAL (x1) DID needs its genesis supplied to the resolver (the server
+        // does not hold it); a KEY (k1) DID resolves without one.
+        const resolution = await resolveDid(baseUrl, did, identity?.genesisDocument);
         set({ resolveStatus: 'resolved', resolution });
         const beacon = findAppendedBeacon(resolution.didDocument, did);
         append(

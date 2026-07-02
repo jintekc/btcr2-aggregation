@@ -16,6 +16,7 @@ import { bridgeRunnerToSse } from './dashboard-sse.js';
 import { mountStaticSite } from './static-site.js';
 import { mountArtifactRoutes, type ArtifactStore } from './store.js';
 import { resolveBtcr2 } from './resolve.js';
+import type { Sidecar } from '@did-btcr2/method';
 import type { BeaconBroadcaster } from './broadcast.js';
 
 type Env = { Bindings: HttpBindings };
@@ -175,29 +176,59 @@ export function createHonoApp(
   // Registered before the SPA catch-all so a valid `did:btcr2:...` segment resolves
   // rather than falling through to index.html.
   if (bitcoin && store) {
-    app.get('/resolve/:did', async (c) => {
-      // Hono decodes the path param; guard the shape before touching the resolver so
-      // obviously-malformed input is a cheap 400 and never reaches (nor leaks the
-      // internals of) the DID parser. The suffix after `did:btcr2:` is bech32m, whose
-      // charset is lowercase alphanumeric - reject anything else up front.
-      const did = c.req.param('did');
+    // Shared resolution + error handling. The suffix after `did:btcr2:` is bech32m
+    // (lowercase alphanumeric); guard the shape before the resolver so malformed input
+    // is a cheap 400 that never reaches (nor leaks the internals of) the DID parser. A
+    // 502 (not 500) on failure: the fault is upstream (the chain or the artifact
+    // source), not the route; the detail is logged server-side and a generic message
+    // is returned so resolver internals are not disclosed to an untrusted caller.
+    const resolveResult = async (
+      did: string,
+      sidecar?: Sidecar,
+    ): Promise<{ status: 200 | 400 | 502; body: object }> => {
       if (!/^did:btcr2:[a-z0-9]+$/.test(did)) {
-        return c.json({ error: 'not a valid did:btcr2 identifier' }, 400);
+        return { status: 400, body: { error: 'not a valid did:btcr2 identifier' } };
       }
       try {
-        const { didDocument, metadata } = await resolveBtcr2(did, { bitcoin, store });
-        return c.json({ didDocument, didDocumentMetadata: metadata });
+        const { didDocument, metadata } = await resolveBtcr2(did, { bitcoin, store, sidecar });
+        return { status: 200, body: { didDocument, didDocumentMetadata: metadata } };
       } catch (err) {
-        // Resolution failed: a missing artifact, an unresolvable DID (bad checksum),
-        // or an esplora error. 502 (not 500): the failure is in an upstream dependency
-        // (the chain or the artifact source), not the route itself. Log the detail
-        // server-side; return a generic message so resolver/parser internals are not
-        // disclosed to an untrusted caller.
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[resolve] ${did} failed: ${message}`);
-        return c.json({ error: 'resolution failed' }, 502);
+        return { status: 502, body: { error: 'resolution failed' } };
       }
+    };
+
+    // KEY (k1): the genesis is deterministic from the DID, so no sidecar is needed.
+    app.get('/resolve/:did', async (c) => {
+      const { status, body } = await resolveResult(c.req.param('did'));
+      return c.json(body, status);
     });
+
+    // EXTERNAL (x1): the DID is only a hash commitment to its genesis, which the
+    // coordinator does not hold, so the controller supplies it in-band - exactly as it
+    // does on the aggregation opt-in (ADR 066). The resolver re-verifies that the
+    // supplied genesis hashes to the DID, so an untrusted body cannot forge a
+    // resolution; the body is bounded before it is parsed (a real genesis is ~1 KB).
+    app.post(
+      '/resolve/:did',
+      bodyLimit({ maxSize: 64 * 1024, onError: (c) => c.json({ error: 'request too large' }, 413) }),
+      async (c) => {
+        const did = c.req.param('did');
+        let genesisDocument: unknown;
+        try {
+          ({ genesisDocument } = await c.req.json<{ genesisDocument?: unknown }>());
+        } catch {
+          return c.json({ error: 'expected a JSON body { genesisDocument }' }, 400);
+        }
+        const sidecar =
+          genesisDocument && typeof genesisDocument === 'object'
+            ? ({ genesisDocument } as Sidecar)
+            : undefined;
+        const { status, body } = await resolveResult(did, sidecar);
+        return c.json(body, status);
+      },
+    );
   }
 
   // Same-origin Bitcoin tx proxy for the browser's first-update singleton-beacon

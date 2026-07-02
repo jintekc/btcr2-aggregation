@@ -6,11 +6,13 @@ import { createParticipant } from '@btcr2-aggregation/participant';
 import { createService, MemoryArtifactStore, resolveBtcr2 } from '@btcr2-aggregation/service';
 import {
   buildCohortConfig,
+  createExternalIdentity,
   createIdentity,
   NETWORK,
   resolveNetwork,
   type BeaconType,
   type Identity,
+  type IdType,
 } from '@btcr2-aggregation/shared';
 
 /**
@@ -135,8 +137,12 @@ async function waitForUpdates(store: MemoryArtifactStore, count: number, timeout
   }
 }
 
-/** Drive one hermetic resolve round-trip of `beaconType`; return any problems. */
-async function runResolveCohort(beaconType: BeaconType, quiet: boolean): Promise<string[]> {
+/** Drive one hermetic resolve round-trip of `beaconType` (KEY or EXTERNAL); return any problems. */
+async function runResolveCohort(
+  beaconType: BeaconType,
+  quiet: boolean,
+  idType: IdType = 'KEY',
+): Promise<string[]> {
   const n = 2;
   const log = quiet ? () => {} : (msg: string) => console.log(msg);
   const slug = beaconType === 'SMTBeacon' ? 'smt' : 'cas';
@@ -151,7 +157,12 @@ async function runResolveCohort(beaconType: BeaconType, quiet: boolean): Promise
   service.runner.on('signing-complete', (result) => { cohortId = result.cohortId; });
 
   const { baseUrl } = await service.start(0);
-  const identities: Identity[] = Array.from({ length: n }, () => createIdentity());
+  // KEY (k1) participants resolve from their deterministic genesis; EXTERNAL (x1)
+  // participants carry a self-verifying genesis document (createExternalIdentity),
+  // supplied to the resolver out-of-band via the sidecar below (NeedGenesisDocument).
+  const identities: Identity[] = Array.from({ length: n }, () =>
+    idType === 'EXTERNAL' ? createExternalIdentity() : createIdentity(),
+  );
   const participants = identities.map((identity) => createParticipant({ identity, baseUrl, beaconType }));
   const complete = participants.map(
     (p) => new Promise<void>((resolve) => p.runner.on('cohort-complete', () => resolve())),
@@ -183,10 +194,20 @@ async function runResolveCohort(beaconType: BeaconType, quiet: boolean): Promise
     }
     const update = cohort.pendingUpdates.get(did)!;
     const updateHashHex = canonicalHash(update, { encoding: 'hex' });
+    // Both onboarding models publish the first update through a SingletonBeacon at the
+    // controller's genesis P2TR address: for k1 it is one of the deterministic genesis
+    // beacons; for x1 it is the one declared in the (sidecar-supplied) genesis document
+    // - and buildExternalGenesis puts it at this exact key-derived address.
     const genesisBeaconAddr = genesisP2trAddress(identity);
     const chain = mockResolveChain(new Map([[genesisBeaconAddr, updateHashHex]]));
 
-    const { didDocument, metadata } = await resolveBtcr2(did, { bitcoin: chain, store });
+    // EXTERNAL resolution needs the genesis document out-of-band (the DID is only a
+    // hash commitment to it); the controller supplies it in the sidecar. KEY resolution
+    // needs no sidecar (the genesis is deterministic from the DID string).
+    const sidecar = identity.genesisDocument
+      ? { genesisDocument: identity.genesisDocument }
+      : undefined;
+    const { didDocument, metadata } = await resolveBtcr2(did, { bitcoin: chain, store, sidecar });
     const doc = didDocument as unknown as ResolvedDoc;
     const services = doc.service ?? [];
 
@@ -211,8 +232,9 @@ async function runResolveCohort(beaconType: BeaconType, quiet: boolean): Promise
     }
     if (problems.length === 0) {
       log(
-        `[ok] ${beaconType}: resolved ${did} (version ${metadata.versionId}) -> document contains the ` +
-          `appended ${beaconType} at bitcoin:${cohort.beaconAddress}, reconstructed from the persisted store`,
+        `[ok] ${idType} ${beaconType}: resolved ${did} (version ${metadata.versionId}) -> document ` +
+          `contains the appended ${beaconType} at bitcoin:${cohort.beaconAddress}, reconstructed from ` +
+          `the persisted store${sidecar ? ' + sidecar genesis' : ''}`,
       );
     }
     return problems;
@@ -244,9 +266,19 @@ async function runLiveResolveNote(): Promise<void> {
 
 async function main(): Promise<number> {
   const quiet = process.argv.includes('--quiet');
-  const cas = await runResolveCohort('CASBeacon', quiet);
-  const smt = await runResolveCohort('SMTBeacon', quiet);
-  const problems = [...cas.map((p) => `CAS: ${p}`), ...smt.map((p) => `SMT: ${p}`)];
+  // Both onboarding models x both beacon types. The x1 runs prove the ADR-0007 prize
+  // now reachable end to end (ADR 066): an EXTERNAL controller co-signs, its update
+  // lands in the real CAS/SMT announcement, and it resolves via its sidecar genesis.
+  const casK1 = await runResolveCohort('CASBeacon', quiet, 'KEY');
+  const smtK1 = await runResolveCohort('SMTBeacon', quiet, 'KEY');
+  const casX1 = await runResolveCohort('CASBeacon', quiet, 'EXTERNAL');
+  const smtX1 = await runResolveCohort('SMTBeacon', quiet, 'EXTERNAL');
+  const problems = [
+    ...casK1.map((p) => `k1 CAS: ${p}`),
+    ...smtK1.map((p) => `k1 SMT: ${p}`),
+    ...casX1.map((p) => `x1 CAS: ${p}`),
+    ...smtX1.map((p) => `x1 SMT: ${p}`),
+  ];
 
   if (process.env.LIVE === '1') {
     await runLiveResolveNote();
@@ -260,9 +292,10 @@ async function main(): Promise<number> {
     return 1;
   }
   console.log(
-    '\nRESOLVE E2E PASSED: real CAS and SMT cohorts persisted their artifacts, and resolveBtcr2 ' +
-      'reconstructed each participant\'s DID document - containing the appended aggregate beacon ' +
-      'service - from the store, driven server-side over a mock chain (no live network).',
+    '\nRESOLVE E2E PASSED: real CAS and SMT cohorts - for both KEY (k1) and EXTERNAL (x1) ' +
+      'controllers - persisted their artifacts, and resolveBtcr2 reconstructed each ' +
+      "participant's DID document (containing the appended aggregate beacon service) from the " +
+      'persisted store (x1 via its sidecar genesis), driven server-side over a mock chain (no live network).',
   );
   return 0;
 }

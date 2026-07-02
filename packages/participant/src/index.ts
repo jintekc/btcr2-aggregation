@@ -56,9 +56,15 @@ export interface Participant {
  * appending a beacon service whose type (CAS or SMT) matches the cohort it joined.
  * This module uses no Node-only APIs, so the same code drives the in-browser
  * participant in M2.
+ *
+ * Works for both onboarding models transparently: a KEY (`k1`) identity authenticates
+ * from its DID string, while an EXTERNAL (`x1`) identity carries its self-verifying
+ * `genesisDocument` (read from {@link CreateParticipantOptions.identity}) on the opt-in
+ * so the service can bootstrap-authenticate it (ADR 066). The caller picks the model by
+ * constructing the identity; nothing here branches on it.
  */
 export function createParticipant(opts: CreateParticipantOptions): Participant {
-  const { did, keys } = opts.identity;
+  const { did, keys, genesisDocument } = opts.identity;
   const defaultBeaconType: BeaconType = opts.beaconType ?? 'CASBeacon';
 
   const transport = new HttpClientTransport({
@@ -87,6 +93,12 @@ export function createParticipant(opts: CreateParticipantOptions): Participant {
     transport,
     did,
     keys,
+    // Present only for an EXTERNAL (x1) identity. The runner threads it onto the
+    // opt-in so the service can bootstrap-authenticate this not-yet-registered
+    // sender from its self-verifying genesis (ADR 066). Omitted (undefined) for a
+    // KEY (k1) identity, whose key the service derives from the DID string, so the
+    // k1 opt-in is byte-identical to before.
+    genesisDocument,
     shouldJoin: async (advert: CohortAdvert) => {
       cohortBeaconTypes.set(advert.cohortId, normalizeBeaconType(advert.beaconType));
       return true;
@@ -97,6 +109,10 @@ export function createParticipant(opts: CreateParticipantOptions): Participant {
         keys,
         beaconAddress,
         cohortBeaconTypes.get(cohortId) ?? defaultBeaconType,
+        // For x1, the current document is resolved from this genesis before the
+        // beacon-service patch is applied; for k1 it is undefined (deterministic
+        // resolution from the key), leaving the k1 update path unchanged.
+        genesisDocument,
       );
       submittedUpdates.set(cohortId, update);
       return update;
