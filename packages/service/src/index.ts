@@ -17,6 +17,7 @@ import {
   type BeaconBroadcastHandle,
 } from './broadcast.js';
 import type { ArtifactStore } from './store.js';
+import type { IpfsNode } from './ipfs.js';
 
 export { createHonoApp, type HonoAppOptions } from './hono-adapter.js';
 export { makeProvideTxData, MIN_LIVE_FUNDING_SATS, type LiveTxConfig } from './tx.js';
@@ -61,6 +62,16 @@ export {
   type ResolverLike,
 } from './resolve.js';
 export { createOfflineBitcoinConnection } from './offline-chain.js';
+export {
+  createIpfsNode,
+  validatePinRequest,
+  DEFAULT_PIN_TIMEOUT_MS,
+  MAX_PIN_REQUEST,
+  type IpfsNode,
+  type IpfsNodeOptions,
+  type PinOutcome,
+  type PinSource,
+} from './ipfs.js';
 
 export interface CreateServiceOptions {
   /** Service identity (the coordinator). */
@@ -163,6 +174,14 @@ export interface CreateServiceOptions {
    * {@link broadcast} is true.
    */
   confirmTimeoutMs?: number;
+  /**
+   * Opt-in IPFS pinning node (ADR 0011), created with `createIpfsNode` and
+   * injected like {@link bitcoin} - the caller owns its lifecycle. Enables
+   * `GET /v1/ipfs` (as enabled) and `POST /v1/ipfs/pin`, which sources verified
+   * bytes from {@link store} or fetches them over bitswap from the publishing
+   * peer. Independent of the live path: pinning moves data, never funds.
+   */
+  ipfs?: IpfsNode;
 }
 
 export interface StartedService {
@@ -314,6 +333,7 @@ export function createService(opts: CreateServiceOptions): Service {
     // store is enough to serve `GET /resolve/:did`. Passed whenever a connection is
     // injected, so an operator can offer resolution without broadcasting.
     bitcoin: opts.bitcoin,
+    ipfs: opts.ipfs,
   });
   let server: ServerType | undefined;
 

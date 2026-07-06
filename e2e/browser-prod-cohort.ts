@@ -1,10 +1,12 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { startDemoServer, type DemoServer } from '@btcr2-aggregation/service';
 import {
   STEP_TIMEOUT_MS,
   launchBrowser,
   runCohortScenario,
+  runIpfsPublishScenario,
   runMainnetRailsScenario,
 } from './lib/browser-harness.js';
 import type { Browser } from 'playwright-core';
@@ -28,15 +30,64 @@ const WEB_DIST = fileURLToPath(new URL('../packages/web/dist', import.meta.url))
 /** A non-default network so the browser must derive it from GET /v1/config, not the bundle. */
 const SERVED_NETWORK = 'signet';
 
+/**
+ * Bundle-cleanliness gate (ADR 0002 as superseded by ADR 0011), automated so the
+ * invariants cannot rot into a manual-grep ritual:
+ *  - nothing browser-breaking anywhere in dist (level/classic-level, @web5/dids,
+ *    quoted `node:` module specifiers);
+ *  - helia/libp2p live ONLY in the lazy ipfs-node chunk, never the eager bundle
+ *    (one accidental top-level import of lib/ipfs-node would eager-load ~487 kB
+ *    and both browser e2es would still pass - this is the check that fails);
+ *  - the lazy chunk actually exists (so a rename cannot silently skip the check).
+ */
+function checkBundleCleanliness(distDir: string): string[] {
+  const problems: string[] = [];
+  const assets = join(distDir, 'assets');
+  const files = readdirSync(assets).filter((f) => f.endsWith('.js'));
+  const eager = files.filter((f) => f.startsWith('index-'));
+  const lazyIpfs = files.filter((f) => f.startsWith('ipfs-node-'));
+  if (eager.length === 0) {
+    problems.push('bundle check: no eager index-*.js chunk found');
+  }
+  if (lazyIpfs.length === 0) {
+    problems.push('bundle check: the lazy ipfs-node-*.js chunk is missing (was the dynamic import removed?)');
+  }
+  for (const file of files) {
+    const text = readFileSync(join(assets, file), 'utf8');
+    for (const banned of ['classic-level', '@web5/dids', '"node:', "'node:"]) {
+      if (text.includes(banned)) {
+        problems.push(`bundle check: ${file} contains banned module reference ${JSON.stringify(banned)}`);
+      }
+    }
+  }
+  for (const file of eager) {
+    const text = readFileSync(join(assets, file), 'utf8');
+    for (const heavy of ['libp2p', 'bitswap', 'blockstore']) {
+      if (text.includes(heavy)) {
+        problems.push(
+          `bundle check: eager chunk ${file} references "${heavy}" - helia/libp2p must stay in the lazy ipfs-node chunk`,
+        );
+      }
+    }
+  }
+  return problems;
+}
+
 async function main(): Promise<number> {
   let coordinator: DemoServer | undefined;
   let mainnetCoordinator: DemoServer | undefined;
+  let ipfsCoordinator: DemoServer | undefined;
   let browser: Browser | undefined;
   let problems: string[] = [];
 
   try {
     if (!existsSync(WEB_DIST)) {
       throw new Error(`web build not found at ${WEB_DIST} (run \`pnpm -r build\` first)`);
+    }
+
+    problems.push(...checkBundleCleanliness(WEB_DIST));
+    if (problems.length === 0) {
+      console.log('bundle cleanliness verified: eager chunk helia-free, lazy ipfs-node chunk present, no banned modules');
     }
 
     console.log('starting demo coordinator on an ephemeral port (prod topology: Hono serves the web build)...');
@@ -73,12 +124,30 @@ async function main(): Promise<number> {
     });
     const mainnetContext = await browser.newContext();
     problems.push(...(await runMainnetRailsScenario(mainnetContext, mainnetCoordinator.baseUrl)));
+
+    // IPFS publish (ADR 0011), through the real UI: a third coordinator running
+    // the opt-in pinning node (in-memory, localhost ws listener), solo cohorts so
+    // the publish panel appears after one attendee. The scenario proves the lazy
+    // Helia chunk loads in Chromium, the browser node dials the coordinator, and
+    // the x1 genesis crosses over real bitswap ('pinned (network)').
+    console.log('starting IPFS-enabled coordinator for the publish scenario...');
+    ipfsCoordinator = await startDemoServer({
+      port: 0,
+      minParticipants: 1,
+      fillers: 0,
+      ipfs: true,
+      webDistDir: WEB_DIST,
+      quiet: true,
+    });
+    const ipfsContext = await browser.newContext();
+    problems.push(...(await runIpfsPublishScenario(ipfsContext, ipfsCoordinator.baseUrl)));
   } catch (err) {
     problems.push(err instanceof Error ? (err.stack ?? err.message) : String(err));
   } finally {
     if (browser) await browser.close().catch(() => {});
     if (coordinator) await coordinator.stop().catch(() => {});
     if (mainnetCoordinator) await mainnetCoordinator.stop().catch(() => {});
+    if (ipfsCoordinator) await ipfsCoordinator.stop().catch(() => {});
   }
 
   if (problems.length > 0) {
@@ -88,7 +157,8 @@ async function main(): Promise<number> {
   }
   console.log(
     '\nBROWSER E2E (prod topology) PASSED: Hono served the SPA + protocol + dashboard from one origin; ' +
-      'two attendees reached a real aggregated Taproot signature, and the mainnet guard rails held in the UI.',
+      'two attendees reached a real aggregated Taproot signature, the mainnet guard rails held in the UI, ' +
+      'and the in-browser IPFS publish pinned the x1 genesis over real bitswap.',
   );
   return 0;
 }

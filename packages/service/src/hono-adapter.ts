@@ -22,6 +22,7 @@ import { bridgeRunnerToSse } from './dashboard-sse.js';
 import { mountStaticSite } from './static-site.js';
 import { mountArtifactRoutes, type ArtifactStore } from './store.js';
 import { resolveBtcr2 } from './resolve.js';
+import { validatePinRequest, type IpfsNode, type PinOutcome } from './ipfs.js';
 import type { Sidecar } from '@did-btcr2/method';
 import type { BeaconBroadcaster } from './broadcast.js';
 
@@ -131,6 +132,14 @@ export interface HonoAppOptions {
    * resolver's `level`/`classic-level` dependencies.
    */
   bitcoin?: BitcoinConnection;
+  /**
+   * Opt-in IPFS pinning node (ADR 0011). When supplied, `GET /v1/ipfs` reports it
+   * as enabled with its dialable multiaddrs, and `POST /v1/ipfs/pin` pins a
+   * publish plan's digests (sourcing bytes from {@link store} when the digest
+   * verifies, else over bitswap from the connected publisher). The probe route is
+   * mounted unconditionally so the browser can cheaply discover availability.
+   */
+  ipfs?: IpfsNode;
 }
 
 /**
@@ -149,7 +158,7 @@ export function createHonoApp(
   transport: HttpServerTransport,
   opts: HonoAppOptions = {},
 ): Hono<Env> {
-  const { runner, webDistDir, store, broadcaster, network, networkName, bitcoin } = opts;
+  const { runner, webDistDir, store, broadcaster, network, networkName, bitcoin, ipfs } = opts;
   const app = new Hono<Env>();
 
   // Precompute the served network DTO once at construction (resolveNetwork throws on
@@ -183,6 +192,45 @@ export function createHonoApp(
   // rather than baking DEFAULT_NETWORK in at build time. Only the JSON-safe DTO is
   // returned (the client rebuilds the full config via `resolveNetwork(network)`).
   app.get('/v1/config', (c) => c.json(networkDto));
+
+  // IPFS publish surface (ADR 0011). The probe is unconditional (mirrors
+  // /v1/config) so the SPA can discover availability with one same-origin fetch;
+  // the pin route exists only when a node is actually running.
+  app.get('/v1/ipfs', (c) =>
+    c.json(
+      ipfs
+        ? { enabled: true as const, peerId: ipfs.peerId, multiaddrs: ipfs.multiaddrs() }
+        : { enabled: false as const },
+    ),
+  );
+  if (ipfs) {
+    app.post(
+      '/v1/ipfs/pin',
+      // A pin request is at most MAX_PIN_REQUEST 64-char digests; 4 KiB is ample
+      // and bounds the unauthenticated body during streaming.
+      bodyLimit({ maxSize: 4 * 1024, onError: (c) => c.json({ error: 'request too large' }, 413) }),
+      async (c) => {
+        let body: unknown;
+        try {
+          body = await c.req.json();
+        } catch {
+          return c.json({ error: 'expected a JSON body { hashes: string[] }' }, 400);
+        }
+        const validated = validatePinRequest(body);
+        if ('problem' in validated) {
+          return c.json({ error: validated.problem }, 400);
+        }
+        // Sequential on purpose: a publish plan is tiny (<= MAX_PIN_REQUEST) and
+        // one bitswap session at a time keeps the fetch path simple to reason
+        // about. Per-hash failures land in the outcome, not an HTTP error.
+        const results: PinOutcome[] = [];
+        for (const hash of validated.hashes) {
+          results.push(await ipfs.pin(hash, store));
+        }
+        return c.json({ results });
+      },
+    );
+  }
 
   if (runner) {
     app.get('/dashboard/events', (c) => {

@@ -1,3 +1,7 @@
+import { existsSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { startDemoServer } from '@btcr2-aggregation/service';
 import { DEFAULT_NETWORK, deriveRecoveryKey, type NetworkConfigDTO } from '@btcr2-aggregation/shared';
@@ -44,11 +48,23 @@ export async function runConfigCheck(network: string, allowMainnet?: boolean): P
   }
 }
 
+/** Fetch and parse the coordinator's `GET /v1/ipfs` probe. */
+async function getIpfsInfo(baseUrl: string): Promise<{ enabled: boolean; peerId?: string; multiaddrs?: string[] }> {
+  const res = await fetch(`${baseUrl}/v1/ipfs`, { headers: { accept: 'application/json' } });
+  if (!res.ok) {
+    throw new Error(`GET /v1/ipfs -> HTTP ${res.status}`);
+  }
+  return (await res.json()) as { enabled: boolean; peerId?: string; multiaddrs?: string[] };
+}
+
 async function main(): Promise<void> {
   // Hermeticity: these env vars are the operator interface under test below; an
   // ambient value from the invoking shell must not leak into the assertions.
   delete process.env.ALLOW_MAINNET;
   delete process.env.RECOVERY_KEY;
+  delete process.env.IPFS;
+  delete process.env.IPFS_DIR;
+  delete process.env.IPFS_ANNOUNCE;
 
   // The default network, then an operator override, both over a real HTTP socket.
   const def = await runConfigCheck(DEFAULT_NETWORK);
@@ -119,6 +135,99 @@ async function main(): Promise<void> {
     delete process.env.RECOVERY_KEY;
   }
   console.log('recovery: RECOVERY_KEY env validated at boot (invalid refused, valid boots)');
+
+  // IPFS opt-in (ADR 0011): the default boot serves the probe as DISABLED (the
+  // route is unconditional so the SPA can always ask), and the env form `IPFS=1`
+  // - the operator interface (`IPFS=1 pnpm demo`) - boots a pinning node whose
+  // peer id and dialable multiaddrs are served. Exercised through the env
+  // exactly as an operator would set it, so the env parse cannot silently
+  // regress while option-based tests stay green.
+  {
+    const server = await startDemoServer({ port: 0, webDistDir: null, quiet: true });
+    try {
+      const off = await getIpfsInfo(server.baseUrl);
+      if (off.enabled !== false || off.multiaddrs !== undefined) {
+        throw new Error(`expected a disabled IPFS probe by default, got ${JSON.stringify(off)}`);
+      }
+    } finally {
+      await server.stop();
+    }
+  }
+  process.env.IPFS = '1';
+  try {
+    const server = await startDemoServer({ port: 0, webDistDir: null, quiet: true });
+    try {
+      const on = await getIpfsInfo(server.baseUrl);
+      if (!on.enabled || !on.peerId || !on.multiaddrs?.length) {
+        throw new Error(`expected an enabled IPFS probe under IPFS=1, got ${JSON.stringify(on)}`);
+      }
+      if (!on.multiaddrs[0].includes(on.peerId)) {
+        throw new Error(`served multiaddr does not carry the peer id: ${on.multiaddrs[0]}`);
+      }
+    } finally {
+      await server.stop();
+    }
+  } finally {
+    delete process.env.IPFS;
+  }
+  console.log('ipfs: probe disabled by default, IPFS=1 env boots a dialable pinning node');
+
+  // IPFS_DIR env: the durable-storage operator interface. A regression that drops
+  // the env threading silently degrades an operator's "durable" node to in-memory
+  // (probe looks identical; pins vanish on restart), so assert the env actually
+  // lands: the node creates its block/pin store directories under the dir.
+  {
+    const dir = await mkdtemp(join(tmpdir(), 'btcr2-e2e-ipfs-dir-'));
+    process.env.IPFS = '1';
+    process.env.IPFS_DIR = dir;
+    try {
+      const server = await startDemoServer({ port: 0, webDistDir: null, quiet: true });
+      try {
+        const on = await getIpfsInfo(server.baseUrl);
+        if (!on.enabled) {
+          throw new Error('IPFS_DIR boot did not enable the node');
+        }
+        if (!existsSync(join(dir, 'blocks')) || !existsSync(join(dir, 'data'))) {
+          throw new Error(`IPFS_DIR=${dir} did not reach the node (no blocks/data dirs created)`);
+        }
+      } finally {
+        await server.stop();
+      }
+    } finally {
+      delete process.env.IPFS;
+      delete process.env.IPFS_DIR;
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+  console.log('ipfs: IPFS_DIR env threads through to durable fs-backed stores');
+
+  // IPFS_ANNOUNCE env: the wss-behind-TLS deployment interface (a browser on an
+  // https page can only dial wss, so the operator announces the proxied address
+  // instead of the raw listen address). Assert the comma-split env values are
+  // exactly what the probe serves - these are the addresses every browser dials,
+  // so a parse regression bricks remote publishes with the gate otherwise green.
+  {
+    const wss = '/dns4/agg.example.org/tcp/443/wss';
+    const ws = '/dns4/agg.internal/tcp/8081/ws';
+    process.env.IPFS = '1';
+    process.env.IPFS_ANNOUNCE = ` ${wss}, ${ws} `;
+    try {
+      const server = await startDemoServer({ port: 0, webDistDir: null, quiet: true });
+      try {
+        const on = await getIpfsInfo(server.baseUrl);
+        const addrs = on.multiaddrs ?? [];
+        if (addrs.length !== 2 || !addrs[0].startsWith(`${wss}/p2p/`) || !addrs[1].startsWith(`${ws}/p2p/`)) {
+          throw new Error(`IPFS_ANNOUNCE did not shape the served multiaddrs: ${JSON.stringify(addrs)}`);
+        }
+      } finally {
+        await server.stop();
+      }
+    } finally {
+      delete process.env.IPFS;
+      delete process.env.IPFS_ANNOUNCE;
+    }
+  }
+  console.log('ipfs: IPFS_ANNOUNCE env replaces the served multiaddrs (wss-behind-TLS interface)');
 
   console.log('e2e:config PASS (runtime network injection + mainnet guard over a real socket)');
 }

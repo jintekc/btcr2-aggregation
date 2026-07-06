@@ -3,6 +3,7 @@ import { Card } from '../../ui/primitives';
 import { LogPanel } from '../LogPanel';
 import { FlowStepper } from './FlowStepper';
 import { KeyGenPanel } from './KeyGenPanel';
+import { PublishPanel } from './PublishPanel';
 import { RegisterPanel } from './RegisterPanel';
 import { ResolvePanel } from './ResolvePanel';
 import { ResultCard } from './ResultCard';
@@ -27,6 +28,7 @@ export function ParticipantView({ baseUrl }: { baseUrl: string }) {
         {hasResult && (
           <>
             <ResultCard />
+            <PublishPanel baseUrl={baseUrl} />
             <RegisterPanel baseUrl={baseUrl} />
             <ResolvePanel baseUrl={baseUrl} />
           </>
