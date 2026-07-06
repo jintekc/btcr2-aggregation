@@ -11,9 +11,17 @@ import type { Browser } from 'playwright-core';
  * The browser talks to that origin directly (same-origin, zero CORS), exactly as
  * a deployed conference demo would. Headless Chromium drives a dashboard page
  * plus two attendees to a real 128-hex key-path aggregated signature.
+ *
+ * This topology runs on a NON-DEFAULT network (signet) on purpose: it forces the SPA
+ * to consume GET /v1/config at runtime (the header label and every minted DID must be
+ * signet, not the build-time mutinynet default), so the runtime-network-injection proof
+ * is real and not a false-green. The dev topology covers the default network.
  */
 
 const WEB_DIST = fileURLToPath(new URL('../packages/web/dist', import.meta.url));
+
+/** A non-default network so the browser must derive it from GET /v1/config, not the bundle. */
+const SERVED_NETWORK = 'signet';
 
 async function main(): Promise<number> {
   let coordinator: DemoServer | undefined;
@@ -30,15 +38,17 @@ async function main(): Promise<number> {
       port: 0,
       minParticipants: 2,
       fillers: 0,
+      network: SERVED_NETWORK, // non-default: the SPA must consume it from GET /v1/config
       webDistDir: WEB_DIST, // single-origin: Hono serves the SPA + protocol + dashboard
     });
-    console.log(`coordinator + web served at ${coordinator.baseUrl}`);
+    console.log(`coordinator + web served at ${coordinator.baseUrl} (network=${SERVED_NETWORK})`);
 
     browser = await launchBrowser();
     const context = await browser.newContext();
     console.log(`step timeout ${STEP_TIMEOUT_MS}ms`);
-    // Same origin as the coordinator: no proxy, no CORS.
-    problems = await runCohortScenario(context, coordinator.baseUrl);
+    // Same origin as the coordinator: no proxy, no CORS. Assert the browser mints on
+    // the served (non-default) network, proving runtime injection end to end.
+    problems = await runCohortScenario(context, coordinator.baseUrl, SERVED_NETWORK);
   } catch (err) {
     problems.push(err instanceof Error ? (err.stack ?? err.message) : String(err));
   } finally {

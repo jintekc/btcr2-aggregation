@@ -8,7 +8,13 @@ import {
   type HttpServerTransport,
   type SseStream,
 } from '@did-btcr2/aggregation/service';
-import type { NetworkConfig } from '@btcr2-aggregation/shared';
+import {
+  DEFAULT_NETWORK,
+  resolveNetwork,
+  toNetworkConfigDTO,
+  type NetworkConfig,
+  type NetworkName,
+} from '@btcr2-aggregation/shared';
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { BitcoinConnection } from '@did-btcr2/bitcoin';
@@ -110,6 +116,14 @@ export interface HonoAppOptions {
   /** Network config used to derive the anchored tx's block-explorer URL. */
   network?: NetworkConfig;
   /**
+   * The Bitcoin network name this coordinator targets, served on `GET /v1/config`
+   * so the browser derives its addresses/DIDs at runtime instead of from the
+   * build-time {@link DEFAULT_NETWORK}. Always available (unlike {@link network},
+   * which is live-only), so the config route is unconditional. Defaults to
+   * {@link DEFAULT_NETWORK}.
+   */
+  networkName?: NetworkName;
+  /**
    * Bitcoin REST (esplora) connection. When supplied together with {@link store},
    * a read-only `GET /resolve/:did` route resolves a did:btcr2 identifier
    * server-side (discovering beacon signals over this connection, fetching off-chain
@@ -135,8 +149,14 @@ export function createHonoApp(
   transport: HttpServerTransport,
   opts: HonoAppOptions = {},
 ): Hono<Env> {
-  const { runner, webDistDir, store, broadcaster, network, bitcoin } = opts;
+  const { runner, webDistDir, store, broadcaster, network, networkName, bitcoin } = opts;
   const app = new Hono<Env>();
+
+  // Precompute the served network DTO once at construction (resolveNetwork throws on
+  // an unknown name, so an operator misconfiguration fails fast at boot rather than
+  // per-request). Defaults to the app default when no name is threaded in (tests, the
+  // headless path).
+  const networkDto = toNetworkConfigDTO(resolveNetwork(networkName ?? DEFAULT_NETWORK));
 
   const handle = async (c: Context<Env>): Promise<Response> => {
     const reqLike = await toRequestLike(c);
@@ -156,6 +176,13 @@ export function createHonoApp(
     return openTransportSse(c, transport);
   });
   app.get('/v1/.well-known/aggregation', handle);
+
+  // Runtime network config for the browser. Read-only, unauthenticated, and always
+  // mounted (no store/bitcoin/live dependency) so the same-origin SPA can fetch the
+  // coordinator's Bitcoin network on load and derive its addresses/DIDs from it,
+  // rather than baking DEFAULT_NETWORK in at build time. Only the JSON-safe DTO is
+  // returned (the client rebuilds the full config via `resolveNetwork(network)`).
+  app.get('/v1/config', (c) => c.json(networkDto));
 
   if (runner) {
     app.get('/dashboard/events', (c) => {

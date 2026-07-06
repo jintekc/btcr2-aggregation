@@ -6,7 +6,7 @@ import {
   type CohortConfig,
 } from '@did-btcr2/aggregation/service';
 import { resolveBtcr2SenderPk } from '@did-btcr2/method';
-import { assertNetworkAllowed, type Identity, type NetworkConfig } from '@btcr2-aggregation/shared';
+import { assertNetworkAllowed, resolveNetwork, type Identity, type NetworkConfig } from '@btcr2-aggregation/shared';
 import type { BitcoinConnection, FeeEstimator } from '@did-btcr2/bitcoin';
 import { createHonoApp } from './hono-adapter.js';
 import { makeProvideTxData, type LiveTxConfig } from './tx.js';
@@ -304,6 +304,11 @@ export function createService(opts: CreateServiceOptions): Service {
     store: opts.store,
     broadcaster,
     network: netConfig,
+    // The always-present network name served on `GET /v1/config` so the browser
+    // derives its addresses/DIDs at runtime. Sourced from the cohort config (the
+    // single source of truth for this coordinator's chain) and validated by
+    // resolveNetwork, independent of the live/broadcast path.
+    networkName: resolveNetwork(opts.config.network).name,
     // The read-only resolve route is independent of the live/broadcast path: a
     // Bitcoin connection alone (to run the beacon-signal indexer) plus the artifact
     // store is enough to serve `GET /resolve/:did`. Passed whenever a connection is

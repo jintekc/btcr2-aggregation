@@ -7,18 +7,22 @@ import {
   buildSingletonRegistrationTx,
   createExternalIdentity,
   createIdentity,
+  DEFAULT_NETWORK,
   genesisP2trBeaconAddress,
   identitySecretHex,
   importExternalIdentity,
   importIdentity,
   isExternalIdentity,
   MIN_REGISTRATION_FUNDING_SATS,
+  resolveNetwork,
   updateHashBytes,
   updateHashHex,
   type Identity,
   type IdType,
+  type NetworkName,
 } from '@btcr2-aggregation/shared';
 import { elapsed } from '../lib/clock';
+import { fetchNetworkConfig } from '../lib/config';
 import {
   findAppendedBeacon,
   resolveDid,
@@ -44,6 +48,15 @@ export type RegistrationStatus =
 /** Lifecycle of a server-driven DID resolution. */
 export type ResolutionStatus = 'idle' | 'resolving' | 'resolved' | 'failed';
 
+/**
+ * Load state of the runtime network config (`GET /v1/config`). Identity generation
+ * is gated until this is 'ready' so a DID/address is never minted on the wrong chain
+ * during the (brief, same-origin) config fetch. A fetch failure degrades to 'ready'
+ * on the {@link DEFAULT_NETWORK} default so an older coordinator without the endpoint
+ * still works.
+ */
+export type ConfigStatus = 'loading' | 'ready';
+
 /** What the attendee keeps after their update is included in a cohort. */
 export interface ParticipantResult {
   cohortId: string;
@@ -63,6 +76,15 @@ export interface ParticipantResult {
 interface ParticipantState {
   identity: Identity | null;
   did: string | null;
+  /**
+   * The coordinator's Bitcoin network, fetched at runtime from `GET /v1/config`
+   * (defaults to {@link DEFAULT_NETWORK} until loaded). Every in-browser address /
+   * DID derivation reads this, so the SPA tracks whatever chain the coordinator
+   * targets instead of a build-time constant.
+   */
+  network: NetworkName;
+  /** Load state of the runtime network config; gates identity generation. */
+  configStatus: ConfigStatus;
   /** Onboarding model of the current identity: KEY (`k1`) or EXTERNAL (`x1`). */
   idType: IdType;
   /** Hex secret for the current identity (so the attendee can save/re-import it). */
@@ -87,6 +109,13 @@ interface ParticipantState {
   resolution: ResolveResponse | null;
   resolveError: string | null;
 
+  /**
+   * Fetch the coordinator's runtime network (`GET /v1/config`) once and adopt it, so
+   * in-browser DIDs/addresses target the coordinator's chain. Idempotent-ish: safe to
+   * call on mount. Falls back to the current default network (and still flips to
+   * 'ready') if the endpoint is unavailable, so generation is never blocked.
+   */
+  loadConfig(baseUrl: string): Promise<void>;
   /**
    * Generate a fresh did:btcr2 identity in-browser: a KEY (`k1`) DID, or an EXTERNAL
    * (`x1`) DID with a self-verifying genesis document (default KEY).
@@ -237,7 +266,8 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       // The first-update SingletonBeacon address to fund is the key's genesis P2TR
       // address for both models: for k1 it is one of the deterministic genesis beacons,
       // for x1 it is the one declared in the identity's genesis document (same address).
-      beaconRegAddress: genesisP2trBeaconAddress(identity.keys),
+      // Derived on the runtime network so the address matches the coordinator's chain.
+      beaconRegAddress: genesisP2trBeaconAddress(identity.keys, resolveNetwork(get().network)),
       ...INITIAL_OUTCOME,
     });
   }
@@ -245,6 +275,8 @@ export const useParticipant = create<ParticipantState>((set, get) => {
   return {
     identity: null,
     did: null,
+    network: DEFAULT_NETWORK,
+    configStatus: 'loading',
     idType: 'KEY',
     secret: null,
     status: 'no-identity',
@@ -256,8 +288,24 @@ export const useParticipant = create<ParticipantState>((set, get) => {
     beaconRegAddress: null,
     ...INITIAL_OUTCOME,
 
+    async loadConfig(baseUrl) {
+      try {
+        const dto = await fetchNetworkConfig(baseUrl);
+        set({ network: dto.network, configStatus: 'ready' });
+        append('info', `coordinator network: ${dto.label} (${dto.network})`);
+      } catch (err) {
+        // Degrade gracefully: keep the default network and unblock generation. An
+        // older coordinator without /v1/config, or a transient failure, must not
+        // wedge the UI in a permanent 'loading' state.
+        const msg = err instanceof Error ? err.message : String(err);
+        set({ configStatus: 'ready' });
+        append('warn', `could not load coordinator network (${msg}); using default ${get().network}`);
+      }
+    },
+
     generate(kind = 'KEY') {
-      const identity = kind === 'EXTERNAL' ? createExternalIdentity() : createIdentity();
+      const net = resolveNetwork(get().network);
+      const identity = kind === 'EXTERNAL' ? createExternalIdentity(net) : createIdentity(net);
       adopt(identity);
       append('good', `generated ${kind === 'EXTERNAL' ? 'EXTERNAL (x1)' : 'KEY (k1)'} identity ${identity.did}`);
     },
@@ -268,7 +316,8 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         return 'Secret must be 64 hex characters (32 bytes).';
       }
       try {
-        const identity = kind === 'EXTERNAL' ? importExternalIdentity(clean) : importIdentity(clean);
+        const net = resolveNetwork(get().network);
+        const identity = kind === 'EXTERNAL' ? importExternalIdentity(clean, net) : importIdentity(clean, net);
         adopt(identity);
         append('good', `imported ${kind === 'EXTERNAL' ? 'EXTERNAL (x1)' : 'KEY (k1)'} identity ${identity.did}`);
         return null;
@@ -482,6 +531,9 @@ export const useParticipant = create<ParticipantState>((set, get) => {
           keys: identity.keys,
           utxo: fundable,
           updateHash: captured.updateHashBytes,
+          // Sign for the coordinator's runtime network so the funded genesis beacon
+          // address and the tx's P2TR script agree with the chain being spent on.
+          network: resolveNetwork(get().network),
         });
         rawHex = tx.rawHex;
         txid = tx.txid;

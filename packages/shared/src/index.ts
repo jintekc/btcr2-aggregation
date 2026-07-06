@@ -12,7 +12,7 @@ import { bytesToHex } from '@noble/hashes/utils';
 import { Script, Transaction, p2tr } from '@scure/btc-signer';
 import * as musig2 from '@scure/btc-signer/musig2';
 import type { CohortConfig, SigningTxData } from '@did-btcr2/aggregation/service';
-import { DEFAULT_NETWORK, resolveNetwork, type NetworkConfig } from './networks.js';
+import { DEFAULT_NETWORK, resolveNetwork, type NetworkConfig, type NetworkName } from './networks.js';
 
 export type { CohortConfig, SigningTxData } from '@did-btcr2/aggregation/service';
 export * from './networks.js';
@@ -67,10 +67,14 @@ export function isExternalIdentity(identity: Identity): boolean {
   return identity.genesisDocument !== undefined;
 }
 
-/** Generate a fresh did:btcr2 KEY identity on {@link NETWORK}. */
-export function createIdentity(): Identity {
+/**
+ * Generate a fresh did:btcr2 KEY identity. Defaults to the app {@link NETWORK}; pass
+ * a {@link NetworkConfig} (e.g. from the runtime `GET /v1/config`) so the DID's
+ * network segment reflects the chain the coordinator actually targets.
+ */
+export function createIdentity(network: NetworkConfig = resolveNetwork(NETWORK)): Identity {
   const keys = SchnorrKeyPair.generate();
-  const did = DidBtcr2.create(keys.publicKey.compressed, { idType: 'KEY', network: NETWORK });
+  const did = DidBtcr2.create(keys.publicKey.compressed, { idType: 'KEY', network: network.name });
   return { did, keys };
 }
 
@@ -124,49 +128,64 @@ export function buildExternalGenesis(
 
 /**
  * Derive the EXTERNAL (x1) DID for a genesis document: a bech32m commitment to the
- * hash of the canonicalized genesis. Deterministic given the genesis.
+ * hash of the canonicalized genesis, on `network` (default {@link NETWORK}). The
+ * genesis bytes are network-independent (placeholder DID), but the DID string's
+ * network segment reflects the target chain, so pass the same {@link NetworkConfig}
+ * used to build the genesis. Deterministic given the genesis + network.
  */
-export function externalDidFromGenesis(genesisDocument: Record<string, unknown>): string {
+export function externalDidFromGenesis(
+  genesisDocument: Record<string, unknown>,
+  network: NetworkConfig = resolveNetwork(NETWORK),
+): string {
   return DidBtcr2.create(GenesisDocument.toGenesisBytes(genesisDocument as GenesisDocumentLike), {
     idType: 'EXTERNAL',
-    network: NETWORK,
+    network: network.name,
   });
 }
 
 /**
- * Generate a fresh did:btcr2 EXTERNAL (x1) identity on {@link NETWORK}: a Schnorr
- * keypair, a self-verifying genesis document whose `capabilityInvocation[0]` is that
- * keypair, and the x1 DID committing to the genesis. This is the "bring your own DID"
- * onboarding path made first-class by ADR 066 (x1 can now authenticate and co-sign on
- * every transport, previously KEY-only over HTTP).
+ * Generate a fresh did:btcr2 EXTERNAL (x1) identity: a Schnorr keypair, a
+ * self-verifying genesis document whose `capabilityInvocation[0]` is that keypair,
+ * and the x1 DID committing to the genesis. Defaults to the app {@link NETWORK}; pass
+ * a {@link NetworkConfig} (e.g. the runtime `GET /v1/config`) so both the genesis
+ * beacon address and the DID's network segment target the coordinator's chain. This
+ * is the "bring your own DID" onboarding path made first-class by ADR 066 (x1 can now
+ * authenticate and co-sign on every transport, previously KEY-only over HTTP).
  */
-export function createExternalIdentity(): Identity {
+export function createExternalIdentity(network: NetworkConfig = resolveNetwork(NETWORK)): Identity {
   const keys = SchnorrKeyPair.generate();
-  const genesisDocument = buildExternalGenesis(keys);
-  return { did: externalDidFromGenesis(genesisDocument), keys, genesisDocument };
+  const genesisDocument = buildExternalGenesis(keys, network);
+  return { did: externalDidFromGenesis(genesisDocument, network), keys, genesisDocument };
 }
 
 /**
  * Reconstruct an EXTERNAL (x1) identity from its 32-byte secret (hex string or raw
- * bytes). The genesis (and therefore the DID) is a pure function of the key, so this
- * re-derives the exact same x1 DID - the EXTERNAL analogue of {@link importIdentity}.
+ * bytes) on `network` (default {@link NETWORK}). The genesis (and therefore the DID)
+ * is a pure function of the key + network, so this re-derives the exact same x1 DID -
+ * the EXTERNAL analogue of {@link importIdentity}.
  */
-export function importExternalIdentity(secret: string | Uint8Array): Identity {
+export function importExternalIdentity(
+  secret: string | Uint8Array,
+  network: NetworkConfig = resolveNetwork(NETWORK),
+): Identity {
   const keys = SchnorrKeyPair.fromSecret(secret);
-  const genesisDocument = buildExternalGenesis(keys);
-  return { did: externalDidFromGenesis(genesisDocument), keys, genesisDocument };
+  const genesisDocument = buildExternalGenesis(keys, network);
+  return { did: externalDidFromGenesis(genesisDocument, network), keys, genesisDocument };
 }
 
 /**
  * Reconstruct a did:btcr2 KEY identity from its 32-byte secret (hex string or
- * raw bytes). This is the "bring your own DID" path: an attendee who saved the
- * secret from a prior {@link createIdentity} re-derives the exact same DID
- * without re-running keygen. The DID is a pure function of the secret, so the
- * result is deterministic.
+ * raw bytes) on `network` (default {@link NETWORK}). This is the "bring your own DID"
+ * path: an attendee who saved the secret from a prior {@link createIdentity}
+ * re-derives the exact same DID without re-running keygen. The DID is a pure function
+ * of the secret + network, so the result is deterministic.
  */
-export function importIdentity(secret: string | Uint8Array): Identity {
+export function importIdentity(
+  secret: string | Uint8Array,
+  network: NetworkConfig = resolveNetwork(NETWORK),
+): Identity {
   const keys = SchnorrKeyPair.fromSecret(secret);
-  const did = DidBtcr2.create(keys.publicKey.compressed, { idType: 'KEY', network: NETWORK });
+  const did = DidBtcr2.create(keys.publicKey.compressed, { idType: 'KEY', network: network.name });
   return { did, keys };
 }
 
@@ -195,16 +214,19 @@ export function deriveRecoveryKey(): string {
  * (default CAS). recoveryKey and recoverySequence are required by the protocol and
  * easy to miss, so they are set here once for the whole app. The protocol drives
  * CAS and SMT cohorts identically; the cohort builds the matching artifact (CAS
- * announcement map or SMT tree) internally.
+ * announcement map or SMT tree) internally. `network` defaults to the app
+ * {@link NETWORK}; the coordinator passes its operator-configured network so the
+ * cohort and the browser's runtime `GET /v1/config` agree on one chain.
  */
 export function buildCohortConfig(
   participants: number,
   beaconType: BeaconType = 'CASBeacon',
+  network: NetworkName = NETWORK,
 ): CohortConfig {
   return {
     beaconType,
     minParticipants: participants,
-    network: NETWORK,
+    network,
     recoveryKey: deriveRecoveryKey(),
     recoverySequence: 144,
   };
@@ -240,7 +262,14 @@ export function buildSignedUpdate(
         hrp: 'k',
         idType: 'KEY',
         version: 1,
-        network: NETWORK,
+        // Reconstruct the deterministic document on the DID's OWN network, decoded from
+        // the identifier - NOT the build-time default. A k1 DID minted on a non-default
+        // runtime network (via GET /v1/config: signet/regtest/...) must resolve to a
+        // document whose `id` and verificationMethod ids match the DID; using the
+        // constant here would build the update against the wrong-network document, so
+        // its proof would reference a DID the resolver never reconstructs. Byte-identical
+        // on the default network (decode('...mutinynet...') === NETWORK).
+        network: Identifier.decode(did).network,
       });
   const vm = doc.verificationMethod[0];
   const unsigned = Updater.construct(

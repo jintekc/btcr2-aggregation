@@ -110,6 +110,29 @@ export const NETWORKS: Record<NetworkName, NetworkConfig> = {
 /** The public default network: fast, free coins, verifiable, no real-money risk. */
 export const DEFAULT_NETWORK: NetworkName = 'mutinynet';
 
+/**
+ * The JSON-serializable projection of a {@link NetworkConfig} served on
+ * `GET /v1/config` so the browser can derive its network at runtime instead of
+ * from the build-time {@link DEFAULT_NETWORK}. Deliberately just the name plus two
+ * display fields: {@link NetworkConfig.explorerTxUrl} is a function (dropped by
+ * `JSON.stringify`) and {@link NetworkConfig.scureNetwork} is reconstructed on the
+ * client via {@link resolveNetwork}(`network`) from the same shared registry, so the
+ * `name` is the single join key and nothing derivable is put on the wire.
+ */
+export interface NetworkConfigDTO {
+  /** Canonical network name; the client passes this to {@link resolveNetwork}. */
+  network: NetworkName;
+  /** Human label for UI/logs. */
+  label: string;
+  /** True for real-money mainnet (lets the client show a guard before live actions). */
+  isMainnet: boolean;
+}
+
+/** Serialize a {@link NetworkConfig} to its wire {@link NetworkConfigDTO} (drops the function). */
+export function toNetworkConfigDTO(config: NetworkConfig): NetworkConfigDTO {
+  return { network: config.name, label: config.label, isMainnet: config.isMainnet };
+}
+
 /** True if `name` is a network this app knows how to target. */
 export function isNetworkName(name: string): name is NetworkName {
   return Object.prototype.hasOwnProperty.call(NETWORKS, name);

@@ -2,7 +2,8 @@ import { existsSync, readdirSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { IdType } from '@btcr2-aggregation/shared';
+import { resolveNetwork, type IdType, type NetworkName } from '@btcr2-aggregation/shared';
+import { Identifier } from '@did-btcr2/method';
 import { chromium, type BrowserContext, type Page } from 'playwright-core';
 
 /**
@@ -117,6 +118,7 @@ async function runAttendee(
   label: string,
   baseUrl: string,
   idType: IdType = 'KEY',
+  expectedNetwork: NetworkName = 'mutinynet',
 ): Promise<string> {
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
   if (idType === 'EXTERNAL') {
@@ -128,7 +130,17 @@ async function runAttendee(
   if (!did.startsWith(expectedPrefix)) {
     throw new Error(`${label}: expected a ${expectedPrefix}… DID for ${idType}, got ${did}`);
   }
-  console.log(`${label} (${idType}): ${did}`);
+  // The DID must be minted on the coordinator's RUNTIME network (from GET /v1/config),
+  // not the build-time default. Decoding the identifier's network segment is what makes
+  // the runtime-injection proof real: on a non-default coordinator this fails if the
+  // browser generated the DID on the build-time constant instead of the served network.
+  const didNetwork = Identifier.decode(did).network;
+  if (didNetwork !== expectedNetwork) {
+    throw new Error(
+      `${label}: DID minted on network "${didNetwork}", expected the coordinator's "${expectedNetwork}" (runtime network not consumed?)`,
+    );
+  }
+  console.log(`${label} (${idType}) on ${didNetwork}: ${did}`);
   await page.getByRole('button', { name: 'Join the cohort' }).click();
   console.log(`${label}: joined, co-signing...`);
   await page.getByText('update included').first().waitFor({ state: 'visible', timeout: STEP_TIMEOUT_MS });
@@ -176,7 +188,11 @@ async function verifyResolveUx(page: Page, label: string, problems: string[]): P
  * plus two independent attendees) and return a list of problems (empty = pass).
  * `baseUrl` is the only thing that differs between the dev and prod topologies.
  */
-export async function runCohortScenario(context: BrowserContext, baseUrl: string): Promise<string[]> {
+export async function runCohortScenario(
+  context: BrowserContext,
+  baseUrl: string,
+  expectedNetwork: NetworkName = 'mutinynet',
+): Promise<string[]> {
   const problems: string[] = [];
   const pageErrors: string[] = [];
   const livePages: Array<{ page: Page; label: string }> = [];
@@ -187,6 +203,35 @@ export async function runCohortScenario(context: BrowserContext, baseUrl: string
     livePages.push({ page: dash, label: 'dashboard' });
     trackPageErrors(dash, 'dashboard', pageErrors);
     await dash.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+
+    // Runtime network injection (M3f): the SPA fetches the coordinator's Bitcoin
+    // network from GET /v1/config on load and derives its addresses/DIDs from it,
+    // instead of a build-time constant. Prove it same-origin, in dev (proxied) and prod
+    // (Hono): the endpoint is reachable AND the App rendered the SERVED network's label.
+    // When expectedNetwork differs from the build-time default, this label check is a
+    // genuine runtime-consumption proof (a build-time-constant SPA would render the
+    // wrong label); the DID-network check in runAttendee proves minting uses it too.
+    const expected = resolveNetwork(expectedNetwork);
+    const cfg = (await dash.evaluate(async () => {
+      const r = await fetch('/v1/config', { headers: { accept: 'application/json' } });
+      return r.ok ? ((await r.json()) as { network: string; label: string; isMainnet: boolean }) : null;
+    })) as { network: string; label: string; isMainnet: boolean } | null;
+    if (!cfg) {
+      problems.push('GET /v1/config was not reachable from the browser (same-origin)');
+    } else {
+      if (cfg.network !== expected.name) {
+        problems.push(`GET /v1/config served network "${cfg.network}", expected "${expected.name}"`);
+      }
+      if (cfg.isMainnet !== expected.isMainnet) {
+        problems.push(`GET /v1/config reported isMainnet=${cfg.isMainnet}, expected ${expected.isMainnet}`);
+      }
+      // The header badge renders the runtime label, proving the App consumed the config.
+      if ((await dash.getByText(expected.label, { exact: false }).count()) < 1) {
+        problems.push(`header did not render the runtime network label "${expected.label}"`);
+      }
+      console.log(`browser consumed GET /v1/config: ${cfg.network} (${cfg.label})`);
+    }
+
     await dash.getByRole('button', { name: 'Coordinator' }).click();
     await dash.getByText('connected', { exact: false }).first().waitFor({ timeout: STEP_TIMEOUT_MS });
     console.log('dashboard connected to coordinator feed');
@@ -202,8 +247,8 @@ export async function runCohortScenario(context: BrowserContext, baseUrl: string
     // Both authenticate and co-sign the same cohort in-browser - proving the ADR 066
     // x1 onboarding path end to end through the real UI (toggle -> genesis on the opt-in).
     const [didA, didB] = await Promise.all([
-      runAttendee(pageA, 'attendee-A', baseUrl, 'KEY'),
-      runAttendee(pageB, 'attendee-B', baseUrl, 'EXTERNAL'),
+      runAttendee(pageA, 'attendee-A', baseUrl, 'KEY', expectedNetwork),
+      runAttendee(pageB, 'attendee-B', baseUrl, 'EXTERNAL', expectedNetwork),
     ]);
     if (didA === didB) {
       problems.push('both attendees produced the same DID (expected two distinct signers)');

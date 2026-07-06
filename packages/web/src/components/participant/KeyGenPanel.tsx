@@ -20,6 +20,7 @@ export function KeyGenPanel({ baseUrl }: { baseUrl: string }) {
   const secret = useParticipant((s) => s.secret);
   const status = useParticipant((s) => s.status);
   const error = useParticipant((s) => s.error);
+  const configStatus = useParticipant((s) => s.configStatus);
   const generate = useParticipant((s) => s.generate);
   const importSecret = useParticipant((s) => s.importSecret);
   const join = useParticipant((s) => s.join);
@@ -32,6 +33,9 @@ export function KeyGenPanel({ baseUrl }: { baseUrl: string }) {
 
   const connected = status === 'connecting' || status === 'live' || status === 'complete' || status === 'failed';
   const joining = status === 'connecting';
+  // Gate generation/import until the coordinator's network is known, so a DID is
+  // never minted on the wrong chain during the (brief) `GET /v1/config` fetch.
+  const configLoading = configStatus !== 'ready';
 
   function doImport() {
     const err = importSecret(importValue, kind);
@@ -87,8 +91,10 @@ export function KeyGenPanel({ baseUrl }: { baseUrl: string }) {
               : 'KEY (k1): the DID is your public key; nothing extra to carry.'}
           </p>
           <div className="flex flex-wrap gap-2">
-            <Button onClick={() => generate(kind)}>Generate a DID</Button>
-            <Button variant="ghost" onClick={() => setShowImport((v) => !v)}>
+            <Button onClick={() => generate(kind)} disabled={configLoading}>
+              {configLoading ? 'Loading network…' : 'Generate a DID'}
+            </Button>
+            <Button variant="ghost" onClick={() => setShowImport((v) => !v)} disabled={configLoading}>
               Import a secret
             </Button>
           </div>
