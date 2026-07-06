@@ -6,7 +6,7 @@ import { buildCohortConfig, createIdentity, resolveNetwork } from '@btcr2-aggreg
 import type { AggregationServiceRunner, CohortConfig } from '@did-btcr2/aggregation/service';
 import type { BitcoinConnection } from '@did-btcr2/bitcoin';
 import { describe, expect, it } from 'vitest';
-import { makeProvideTxData } from './tx.js';
+import { makeProvideTxData, MIN_LIVE_FUNDING_SATS } from './tx.js';
 import { createService } from './index.js';
 
 const NETWORK: BTC_NETWORK = resolveNetwork('regtest').scureNetwork;
@@ -26,13 +26,21 @@ function makeBeacon(): { beaconAddress: string; internalKey: Uint8Array } {
   return { beaconAddress, internalKey };
 }
 
+/** One mocked UTXO at the beacon address; `height` orders the builder's depth pick. */
+interface MockUtxoSpec {
+  value: number;
+  confirmed?: boolean;
+  height?: number;
+}
+
 /**
- * A mock esplora connection. `funded` true => `getUtxos` returns one confirmed
- * UTXO backed by a real prev tx that pays the queried address (so
- * `buildAggregationBeaconTx`'s nonWitnessUtxo/txid/witnessUtxo all reconcile);
- * `funded` false => `getUtxos` returns []. Broadcast is disabled.
+ * A mock esplora connection. `funded` true => `getUtxos` returns the given UTXOs
+ * (one confirmed 100k-sat UTXO by default), each backed by a real prev tx that pays
+ * the queried address (so `buildAggregationBeaconTx`'s nonWitnessUtxo/txid/witnessUtxo
+ * all reconcile); `funded` false => `getUtxos` returns []. Broadcast is disabled.
  */
-function mockBitcoin(funded: boolean, valueSats = 100000): BitcoinConnection {
+function mockBitcoin(funded: boolean, utxos: number | MockUtxoSpec[] = 100000, confirmed = true): BitcoinConnection {
+  const specs: MockUtxoSpec[] = typeof utxos === 'number' ? [{ value: utxos, confirmed }] : utxos;
   const prevByTxid = new Map<string, string>();
   return {
     rest: {
@@ -42,11 +50,20 @@ function mockBitcoin(funded: boolean, valueSats = 100000): BitcoinConnection {
             return [];
           }
           const script = OutScript.encode(Address(NETWORK).decode(addr));
-          const prev = new Transaction({ allowUnknownOutputs: true, allowUnknownInputs: true, version: 2 });
-          prev.addOutput({ script, amount: BigInt(valueSats) });
-          prev.addInput({ txid: new Uint8Array(32), index: 0xffffffff, sequence: 0xffffffff, finalScriptSig: hexToBytes('00') });
-          prevByTxid.set(prev.id, prev.hex);
-          return [{ txid: prev.id, vout: 0, value: valueSats, status: { confirmed: true, block_height: 100 } }];
+          return specs.map((spec, i) => {
+            // Distinct lockTime => distinct txid even for equal values.
+            const prev = new Transaction({ allowUnknownOutputs: true, allowUnknownInputs: true, version: 2, lockTime: i });
+            prev.addOutput({ script, amount: BigInt(spec.value) });
+            prev.addInput({ txid: new Uint8Array(32), index: 0xffffffff, sequence: 0xffffffff, finalScriptSig: hexToBytes('00') });
+            prevByTxid.set(prev.id, prev.hex);
+            const isConfirmed = spec.confirmed ?? true;
+            return {
+              txid: prev.id,
+              vout: 0,
+              value: spec.value,
+              status: { confirmed: isConfirmed, block_height: isConfirmed ? (spec.height ?? 100) : undefined },
+            };
+          });
         },
       },
       transaction: {
@@ -99,6 +116,77 @@ describe('makeProvideTxData - live path', () => {
     await expect(
       provide({ cohortId: 'c1', beaconAddress, signalBytes: SIGNAL, feeEstimator }),
     ).rejects.toThrow(new RegExp(`no UTXOs.*${beaconAddress}|${beaconAddress}.*no UTXOs`));
+  });
+
+  it('refuses a dust-only beacon balance (below the library 546-sat spendable limit)', async () => {
+    const { beaconAddress, internalKey } = makeBeacon();
+    const provide = makeProvideTxData(() => fakeRunner({ internalKey }), {
+      bitcoin: mockBitcoin(true, 500),
+      network: NETWORK,
+    });
+    await expect(
+      provide({ cohortId: 'c1', beaconAddress, signalBytes: SIGNAL, feeEstimator }),
+    ).rejects.toThrow(/no spendable UTXO.*dust/);
+  });
+
+  it('refuses a selectable-but-underfunded UTXO before signing starts (funding floor)', async () => {
+    const { beaconAddress, internalKey } = makeBeacon();
+    // 600 sats: above the library's 546-sat spendable limit (so it WOULD be
+    // selected and die mid-build on fees) but below the app floor.
+    const provide = makeProvideTxData(() => fakeRunner({ internalKey }), {
+      bitcoin: mockBitcoin(true, 600),
+      network: NETWORK,
+    });
+    await expect(
+      provide({ cohortId: 'c1', beaconAddress, signalBytes: SIGNAL, feeEstimator }),
+    ).rejects.toThrow(new RegExp(`600 sats.*below the ${MIN_LIVE_FUNDING_SATS}-sat funding floor`));
+  });
+
+  it('floors the UTXO the builder will SPEND (deepest), not the largest balance', async () => {
+    const { beaconAddress, internalKey } = makeBeacon();
+    // The builder deterministically spends the DEEPEST confirmed non-dust UTXO. A
+    // deep 600-sat test-send plus a shallower 100k-sat real funding must therefore
+    // FAIL the floor (the 600-sat UTXO is what gets spent) - a largest-balance
+    // check would wave this through and the cohort would die after keygen.
+    const provide = makeProvideTxData(() => fakeRunner({ internalKey }), {
+      bitcoin: mockBitcoin(true, [
+        { value: 600, height: 50 },
+        { value: 100000, height: 100 },
+      ]),
+      network: NETWORK,
+    });
+    await expect(
+      provide({ cohortId: 'c1', beaconAddress, signalBytes: SIGNAL, feeEstimator }),
+    ).rejects.toThrow(/600 sats - the deepest confirmed/);
+  });
+
+  it('refuses an unconfirmed-only balance (the builder spends confirmed UTXOs)', async () => {
+    const { beaconAddress, internalKey } = makeBeacon();
+    const provide = makeProvideTxData(() => fakeRunner({ internalKey }), {
+      bitcoin: mockBitcoin(true, 100000, false),
+      network: NETWORK,
+    });
+    await expect(
+      provide({ cohortId: 'c1', beaconAddress, signalBytes: SIGNAL, feeEstimator }),
+    ).rejects.toThrow(/no spendable UTXO.*unconfirmed/);
+  });
+
+  it('builds at exactly the funding floor and refuses one sat below it (boundary)', async () => {
+    const { beaconAddress, internalKey } = makeBeacon();
+    const at = makeProvideTxData(() => fakeRunner({ internalKey }), {
+      bitcoin: mockBitcoin(true, MIN_LIVE_FUNDING_SATS),
+      network: NETWORK,
+    });
+    const data = await at({ cohortId: 'c1', beaconAddress, signalBytes: SIGNAL, feeEstimator });
+    expect(data.prevOutValues).toEqual([BigInt(MIN_LIVE_FUNDING_SATS)]);
+
+    const below = makeProvideTxData(() => fakeRunner({ internalKey }), {
+      bitcoin: mockBitcoin(true, MIN_LIVE_FUNDING_SATS - 1),
+      network: NETWORK,
+    });
+    await expect(
+      below({ cohortId: 'c1', beaconAddress, signalBytes: SIGNAL, feeEstimator }),
+    ).rejects.toThrow(/funding floor/);
   });
 
   it('builds a real aggregation beacon tx spending the funded beacon UTXO', async () => {

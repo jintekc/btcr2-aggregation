@@ -55,6 +55,25 @@ export interface DemoServerOptions {
    * funds. Set true (or `LIVE=1`) for a real self-hosted deployment.
    */
   live?: boolean;
+  /**
+   * Permit running the coordinator on Bitcoin mainnet. Default false (env
+   * `ALLOW_MAINNET=1` also enables it): a mainnet {@link network} throws at boot
+   * without this explicit opt-in, because a mainnet coordinator deals in real
+   * money end to end - the browser mints mainnet DIDs and beacon addresses it
+   * invites the controller to FUND, and under {@link live} the `/v1/tx/broadcast`
+   * proxy relays real signed transactions to the chain. Test networks and regtest
+   * pass through. See docs/adr/0010-mainnet-guard-rails.md.
+   */
+  allowMainnet?: boolean;
+  /**
+   * Operator-held x-only recovery public key (64 hex chars) for every cohort this
+   * coordinator advertises (env `RECOVERY_KEY` also sets it). When omitted, each
+   * cohort gets a THROWAWAY recovery key whose secret is discarded - inert here
+   * because demo cohorts sign the zero-chain fixture tx and the cohort beacon
+   * address is never funded, but any deployment that funds beacons for real MUST
+   * set this to a key whose secret it holds offline (ADR 042 recovery leaf).
+   */
+  recoveryKey?: string;
   /** Suppress logs. */
   quiet?: boolean;
 }
@@ -105,6 +124,35 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
   const net = resolveNetwork(opts.network ?? process.env.NETWORK ?? DEFAULT_NETWORK);
   const networkName = net.name;
   const useLive = opts.live ?? process.env.LIVE === '1';
+
+  // Mainnet guard rail: real money end to end, so it never happens by accident.
+  // Guarded even offline - an offline mainnet coordinator still hands the browser
+  // mainnet DIDs and a genesis beacon address it invites the controller to fund.
+  const allowMainnet = opts.allowMainnet ?? process.env.ALLOW_MAINNET === '1';
+  if (net.isMainnet && !allowMainnet) {
+    throw new Error(
+      `Refusing to start the coordinator on ${net.label} without an explicit opt-in ` +
+        '(ALLOW_MAINNET=1 or allowMainnet: true). Mainnet moves real funds: the browser ' +
+        'derives real beacon addresses to fund, and a LIVE coordinator relays real ' +
+        'transactions. Default to a test network (mutinynet/signet/regtest).',
+    );
+  }
+  // Operator recovery key for the ADR 042 recovery leaf of every advertised cohort.
+  // Optional here (demo cohorts sign the fixture tx, so the cohort beacon address is
+  // never funded); required practice for any deployment that funds beacons for real.
+  const recoveryKey = opts.recoveryKey ?? process.env.RECOVERY_KEY;
+  if (net.isMainnet) {
+    log(`!!! ${net.label.toUpperCase()}: REAL FUNDS !!!`);
+    log('  - every address/DID the browser mints is a real mainnet object; funding one spends real bitcoin');
+    log(`  - first-update registration txs pay a real ${useLive ? 'on-chain' : '(when live)'} fee from the controller's UTXO`);
+    log(`  - the /v1/tx/broadcast proxy ${useLive ? 'RELAYS raw signed txs to mainnet' : 'is offline (LIVE unset), broadcasts are refused'}`);
+    log(
+      recoveryKey
+        ? '  - cohort recovery key: operator-supplied (RECOVERY_KEY)'
+        : '  - cohort recovery key: THROWAWAY (secret discarded); inert for fixture cohorts, but set RECOVERY_KEY before funding any cohort beacon',
+    );
+  }
+
   const bitcoin = useLive
     ? new BitcoinConnection({ network: net.name, rest: { host: net.esploraHost } })
     : createOfflineBitcoinConnection();
@@ -116,7 +164,7 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
 
   const service = createService({
     identity: createIdentity(net),
-    config: buildCohortConfig(minParticipants, 'CASBeacon', net.name),
+    config: buildCohortConfig(minParticipants, 'CASBeacon', net.name, recoveryKey),
     // Long-lived booth: keep advert/inbox SSE alive between attendees, and bound
     // every cohort so an abandoned one rejects and the loop advertises the next.
     heartbeatIntervalMs: 15000,
@@ -140,7 +188,7 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
       round += 1;
       const peers: Participant[] = [];
       const { cohortId, completion } = service.runner.advertiseCohort(
-        buildCohortConfig(minParticipants, 'CASBeacon', net.name),
+        buildCohortConfig(minParticipants, 'CASBeacon', net.name, recoveryKey),
       );
       log(`round ${round}: advertised cohort ${cohortId}; waiting for ${minParticipants} participant(s)`);
 

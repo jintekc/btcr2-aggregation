@@ -8,6 +8,7 @@ import {
   buildSingletonRegistrationTx,
   createIdentity,
   genesisP2trBeaconAddress,
+  MAX_REGISTRATION_FEE_SATS,
   MIN_REGISTRATION_FUNDING_SATS,
   REGISTRATION_FEE_SATS,
   updateHashBytes,
@@ -97,5 +98,22 @@ describe('buildSingletonRegistrationTx', () => {
     expect(() =>
       buildSingletonRegistrationTx({ keys, utxo, updateHash: new Uint8Array(31) }),
     ).toThrow(/32 bytes/);
+  });
+
+  it('rejects a fee above the burn-guard cap (real-money fat-finger protection)', () => {
+    const { keys } = createIdentity();
+    const bigUtxo = { ...utxo, value: 10_000_000 };
+    expect(() =>
+      buildSingletonRegistrationTx({ keys, utxo: bigUtxo, updateHash, fee: MAX_REGISTRATION_FEE_SATS + 1n }),
+    ).toThrow(/cap/);
+    // The cap itself is still buildable.
+    const tx = buildSingletonRegistrationTx({ keys, utxo: bigUtxo, updateHash, fee: MAX_REGISTRATION_FEE_SATS });
+    expect(tx.fee).toBe(MAX_REGISTRATION_FEE_SATS);
+  });
+
+  it('rejects a non-positive fee (a zero-fee tx never relays)', () => {
+    const { keys } = createIdentity();
+    expect(() => buildSingletonRegistrationTx({ keys, utxo, updateHash, fee: 0n })).toThrow(/positive/);
+    expect(() => buildSingletonRegistrationTx({ keys, utxo, updateHash, fee: -1000n })).toThrow(/positive/);
   });
 });

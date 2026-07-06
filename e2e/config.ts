@@ -1,6 +1,6 @@
 import { pathToFileURL } from 'node:url';
 import { startDemoServer } from '@btcr2-aggregation/service';
-import { DEFAULT_NETWORK, type NetworkConfigDTO } from '@btcr2-aggregation/shared';
+import { DEFAULT_NETWORK, deriveRecoveryKey, type NetworkConfigDTO } from '@btcr2-aggregation/shared';
 
 /**
  * Runtime network config over a real socket - the operator-network-injection proof.
@@ -25,9 +25,11 @@ async function getConfig(baseUrl: string): Promise<NetworkConfigDTO> {
 /**
  * Boot a coordinator on `network` (offline, no web) and assert `GET /v1/config`
  * reports that exact network. Returns the served DTO for the caller to log/assert.
+ * `allowMainnet` left undefined falls through to the ALLOW_MAINNET env inside
+ * startDemoServer - exactly the operator interface, so the env path is testable.
  */
-export async function runConfigCheck(network: string): Promise<NetworkConfigDTO> {
-  const server = await startDemoServer({ port: 0, network, webDistDir: null, quiet: true });
+export async function runConfigCheck(network: string, allowMainnet?: boolean): Promise<NetworkConfigDTO> {
+  const server = await startDemoServer({ port: 0, network, webDistDir: null, quiet: true, allowMainnet });
   try {
     const dto = await getConfig(server.baseUrl);
     if (dto.network !== network) {
@@ -43,6 +45,11 @@ export async function runConfigCheck(network: string): Promise<NetworkConfigDTO>
 }
 
 async function main(): Promise<void> {
+  // Hermeticity: these env vars are the operator interface under test below; an
+  // ambient value from the invoking shell must not leak into the assertions.
+  delete process.env.ALLOW_MAINNET;
+  delete process.env.RECOVERY_KEY;
+
   // The default network, then an operator override, both over a real HTTP socket.
   const def = await runConfigCheck(DEFAULT_NETWORK);
   console.log(`default: GET /v1/config -> ${def.network} (${def.label}), isMainnet=${def.isMainnet}`);
@@ -50,14 +57,70 @@ async function main(): Promise<void> {
   const override = await runConfigCheck('signet');
   console.log(`override: GET /v1/config -> ${override.network} (${override.label})`);
 
-  // A mainnet coordinator must flag isMainnet so the client can guard live actions.
-  const mainnet = await runConfigCheck('bitcoin');
+  // Mainnet guard rail: a bitcoin-network coordinator must REFUSE to boot without
+  // the explicit operator opt-in (real funds), and boot with it.
+  let refused = false;
+  try {
+    await runConfigCheck('bitcoin');
+  } catch (err) {
+    refused = true;
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!/ALLOW_MAINNET|allowMainnet/.test(msg)) {
+      throw new Error(`mainnet refusal did not name the opt-in: ${msg}`);
+    }
+    console.log('mainnet: boot without opt-in refused (as required)');
+  }
+  if (!refused) {
+    throw new Error('a mainnet coordinator booted WITHOUT the ALLOW_MAINNET opt-in');
+  }
+
+  // With the opt-in, it boots and must flag isMainnet so the client can guard
+  // live actions (the register panel acknowledgment, the real-funds badge).
+  const mainnet = await runConfigCheck('bitcoin', true);
   if (!mainnet.isMainnet) {
     throw new Error('expected isMainnet=true for the bitcoin network');
   }
-  console.log(`mainnet: GET /v1/config -> ${mainnet.network}, isMainnet=${mainnet.isMainnet}`);
+  console.log(`mainnet: opt-in boot, GET /v1/config -> ${mainnet.network}, isMainnet=${mainnet.isMainnet}`);
 
-  console.log('e2e:config PASS (runtime network injection over a real socket)');
+  // The ENV form of the opt-in (ALLOW_MAINNET=1) is the interface real operators
+  // use (`NETWORK=bitcoin ALLOW_MAINNET=1 pnpm demo`); exercise it explicitly so
+  // the env parse cannot silently regress while the option-based tests stay green.
+  process.env.ALLOW_MAINNET = '1';
+  try {
+    const viaEnv = await runConfigCheck('bitcoin');
+    if (!viaEnv.isMainnet) {
+      throw new Error('expected isMainnet=true for the env-opted-in bitcoin boot');
+    }
+  } finally {
+    delete process.env.ALLOW_MAINNET;
+  }
+  console.log('mainnet: ALLOW_MAINNET=1 env opt-in boots (operator interface)');
+
+  // RECOVERY_KEY env threading: an invalid key must fail at boot (proof the env
+  // reaches buildCohortConfig's validation), and a valid x-only key must boot.
+  process.env.RECOVERY_KEY = 'not-a-key';
+  try {
+    let recoveryRefused = false;
+    try {
+      await runConfigCheck(DEFAULT_NETWORK);
+    } catch (err) {
+      recoveryRefused = true;
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/64 hex/.test(msg)) {
+        throw new Error(`invalid RECOVERY_KEY refusal had the wrong reason: ${msg}`);
+      }
+    }
+    if (!recoveryRefused) {
+      throw new Error('a coordinator booted with an invalid RECOVERY_KEY');
+    }
+    process.env.RECOVERY_KEY = deriveRecoveryKey();
+    await runConfigCheck(DEFAULT_NETWORK);
+  } finally {
+    delete process.env.RECOVERY_KEY;
+  }
+  console.log('recovery: RECOVERY_KEY env validated at boot (invalid refused, valid boots)');
+
+  console.log('e2e:config PASS (runtime network injection + mainnet guard over a real socket)');
 }
 
 const invokedDirectly =

@@ -52,6 +52,42 @@ pnpm lint         # eslint
 `pnpm e2e` and `pnpm test` build first (`tsc -b`), so they work from a clean
 checkout. Set `SSE_DEBUG=1` to log adapter requests and SSE writes.
 
+## Networks and mainnet guard rails
+
+The Bitcoin network is config-driven, never hardcoded: the coordinator resolves one
+network at boot and serves it to the browser on `GET /v1/config`, so the SPA mints
+its DIDs and beacon addresses on whatever chain the operator runs.
+
+```bash
+NETWORK=mutinynet pnpm demo             # default: fast, free coins, no real money
+NETWORK=signet LIVE=1 pnpm demo         # real esplora connection (resolve + tx proxy)
+NETWORK=bitcoin pnpm demo               # REFUSED: mainnet needs an explicit opt-in
+NETWORK=bitcoin ALLOW_MAINNET=1 LIVE=1 RECOVERY_KEY=<x-only hex> pnpm demo
+```
+
+Operator env vars:
+
+- `NETWORK` - registry network name (`mutinynet` default; `signet`, `testnet3/4`,
+  `regtest`, `bitcoin`). An unknown name fails at boot.
+- `LIVE=1` - use a real esplora connection (server-driven resolution + the
+  same-origin `/v1/tx/*` registration proxy). Off by default: the offline
+  connection keeps everything chain-free.
+- `ALLOW_MAINNET=1` - required for `NETWORK=bitcoin`, even offline. Mainnet moves
+  real funds: the browser derives real addresses it invites the controller to fund,
+  and a LIVE coordinator relays real signed transactions.
+- `RECOVERY_KEY` - operator-held x-only public key for every cohort's ADR 042
+  recovery leaf (spendable by its holder after `recoverySequence` = 144 blocks,
+  about one day). Without it cohorts get a throwaway key whose secret is discarded -
+  fine for fixture cohorts, a funds-loss mode for any beacon funded with real value.
+  Derive it offline; only the public key belongs on the server.
+
+The browser adds its own rails on mainnet (a red REAL FUNDS badge, and the
+first-update registration requires an explicit acknowledgment before it will
+broadcast). The live-broadcast e2e refuses mainnet unless fresh, non-default
+participant/recovery secrets are supplied (the built-in ones are public, making a
+funded beacon anyone-can-spend). Full rationale and the layered opt-in matrix:
+[docs/adr/0010-mainnet-guard-rails.md](docs/adr/0010-mainnet-guard-rails.md).
+
 ## How M1 works
 
 1. `e2e/headless-cohort.ts` generates a service identity and N=2 participant KEY

@@ -135,9 +135,12 @@ interface ParticipantState {
   downloadSidecar(): void;
   /**
    * LIVE only: check the beacon address for funds and, when funded, build + sign +
-   * broadcast the first-update singleton-beacon registration transaction.
+   * broadcast the first-update singleton-beacon registration transaction. On
+   * mainnet this spends real bitcoin, so it refuses unless the caller passes
+   * `acknowledgeMainnet: true` (the RegisterPanel checkbox) - a defense-in-depth
+   * gate beneath the UI, driven by the runtime `isMainnet` flag.
    */
-  register(baseUrl: string): Promise<void>;
+  register(baseUrl: string, opts?: { acknowledgeMainnet?: boolean }): Promise<void>;
   /** Resolve this DID via the coordinator (`GET /resolve/:did`) and keep the document. */
   resolve(baseUrl: string): Promise<void>;
 }
@@ -483,13 +486,24 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       append('info', 'downloaded resolution sidecar');
     },
 
-    async register(baseUrl) {
+    async register(baseUrl, opts) {
       const { identity, did, beaconRegAddress, result, regStatus } = get();
       // Re-entrancy guard: the button's disabled state lags a React commit, so a
       // sub-frame double-click could fire two concurrent registrations that spend
       // the same UTXO; the second (conflicting) broadcast would fail and clobber the
       // first's 'registered' state. One attempt at a time.
       if (regStatus === 'checking' || regStatus === 'broadcasting') {
+        return;
+      }
+      // Mainnet guard rail: this action spends real bitcoin, so it must never fire
+      // without the user's explicit acknowledgment. Enforced here (not only in the
+      // panel) so no future caller can skip it; first, before any network I/O.
+      if (resolveNetwork(get().network).isMainnet && !opts?.acknowledgeMainnet) {
+        set({
+          regStatus: 'failed',
+          regError: 'Bitcoin mainnet: confirm the real-funds acknowledgment before broadcasting.',
+        });
+        append('warn', 'registration blocked: mainnet requires the real-funds acknowledgment');
         return;
       }
       if (!identity || !did || !beaconRegAddress || !captured || captured.did !== did) {
