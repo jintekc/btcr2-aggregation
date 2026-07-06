@@ -1,8 +1,6 @@
-import { NETWORK, resolveNetwork } from '@btcr2-aggregation/shared';
+import { resolveNetwork } from '@btcr2-aggregation/shared';
 import { useParticipant } from '../../stores/participant';
 import { Badge, Button, Card, CopyField, Mono, SectionTitle } from '../../ui/primitives';
-
-const NET = resolveNetwork(NETWORK);
 
 const STATUS_TONE = {
   idle: 'neutral',
@@ -43,6 +41,9 @@ export function RegisterPanel({ baseUrl }: { baseUrl: string }) {
   const regTxid = useParticipant((s) => s.regTxid);
   const regError = useParticipant((s) => s.regError);
   const register = useParticipant((s) => s.register);
+  // The coordinator's runtime network (GET /v1/config), so the funding label and the
+  // explorer link match the chain the beacon address was derived on.
+  const NET = resolveNetwork(useParticipant((s) => s.network));
 
   // Only meaningful once this DID has an included first update to register.
   if (!result?.included || !beaconRegAddress) {

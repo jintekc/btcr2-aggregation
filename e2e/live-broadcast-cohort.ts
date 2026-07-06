@@ -333,7 +333,7 @@ async function main(): Promise<number> {
     return 1;
   }
   const recoverySecret = process.env.LIVE_RECOVERY_SECRET ?? DEFAULT_RECOVERY_SECRET;
-  const identities = participantSecrets.map(importIdentity);
+  const identities = participantSecrets.map((secret) => importIdentity(secret));
   const config = buildDeterministicConfig(beaconType, recoverySecret);
 
   const bitcoin = new BitcoinConnection({

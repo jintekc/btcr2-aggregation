@@ -1,6 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { resolveNetwork } from '@btcr2-aggregation/shared';
 import { DashboardView } from './components/dashboard/DashboardView';
 import { ParticipantView } from './components/participant/ParticipantView';
+import { useParticipant } from './stores/participant';
 
 type Tab = 'participant' | 'dashboard';
 
@@ -19,6 +21,16 @@ export function App() {
   const [tab, setTab] = useState<Tab>('participant');
   const baseUrl = window.location.origin;
 
+  // Fetch the coordinator's Bitcoin network once on load so every in-browser DID /
+  // address derivation targets the chain the coordinator actually runs, instead of a
+  // build-time constant (GET /v1/config). Runs once; the store gates identity
+  // generation until this resolves.
+  const loadConfig = useParticipant((s) => s.loadConfig);
+  const netLabel = useParticipant((s) => resolveNetwork(s.network).label);
+  useEffect(() => {
+    void loadConfig(baseUrl);
+  }, [loadConfig, baseUrl]);
+
   return (
     <div className="mx-auto flex min-h-full max-w-6xl flex-col px-4 py-6 sm:px-6">
       <header className="mb-6">
@@ -33,7 +45,7 @@ export function App() {
             </p>
           </div>
           <span className="rounded-full border border-edge bg-surface px-3 py-1 text-xs text-faint">
-            mutinynet · key-path Taproot
+            {netLabel} · key-path Taproot
           </span>
         </div>
 

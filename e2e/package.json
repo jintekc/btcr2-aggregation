@@ -11,6 +11,7 @@
     "e2e:x1:negative": "tsx headless-cohort.ts --negative",
     "e2e:persist": "tsx persist-cohort.ts",
     "e2e:resolve": "tsx resolve-cohort.ts",
+    "e2e:config": "tsx config.ts",
     "e2e:live:mock": "tsx live-mock-cohort.ts",
     "e2e:live:broadcast": "tsx live-broadcast-cohort.ts",
     "e2e:browser": "tsx browser-cohort.ts",

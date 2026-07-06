@@ -97,37 +97,26 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
   // beacon tx is still the fixture; resolvability comes from each controller's own
   // singleton-beacon registration, not from broadcasting the aggregate tx).
   const store = new MemoryArtifactStore();
-  const networkName = opts.network ?? process.env.NETWORK ?? DEFAULT_NETWORK;
+  // Resolve the operator's network once (validates the name for both the live and
+  // offline paths; resolveNetwork throws on an unknown name so a typo fails fast).
+  // This one network drives the cohort config, the coordinator identity, the live
+  // esplora connection, and the network the browser fetches from `GET /v1/config` -
+  // one source of truth end to end.
+  const net = resolveNetwork(opts.network ?? process.env.NETWORK ?? DEFAULT_NETWORK);
+  const networkName = net.name;
   const useLive = opts.live ?? process.env.LIVE === '1';
   const bitcoin = useLive
-    ? new BitcoinConnection({
-        network: resolveNetwork(networkName).name,
-        rest: { host: resolveNetwork(networkName).esploraHost },
-      })
+    ? new BitcoinConnection({ network: net.name, rest: { host: net.esploraHost } })
     : createOfflineBitcoinConnection();
 
-  // The web bundle derives its addresses/DIDs from a BUILD-TIME network constant
-  // (DEFAULT_NETWORK). Until runtime browser-network injection lands (M3f: network
-  // matrix completion), warn loudly rather than silently mislead when an operator
-  // serves the SPA against a chain whose address params differ from the bundle's:
-  // the in-browser genesis beacon address and DID would not match this chain, so
-  // first-update registration would fail. mutinynet/signet/testnet share params, so
-  // those do not trip this.
-  if (
-    resolvedDist &&
-    resolveNetwork(networkName).scureNetwork !== resolveNetwork(DEFAULT_NETWORK).scureNetwork
-  ) {
-    console.warn(
-      `[demo] WARNING: serving the web UI (built for ${DEFAULT_NETWORK} address params) while the ` +
-        `coordinator targets ${networkName}. In-browser addresses/DIDs will not match this chain and ` +
-        `first-update registration will fail. Rebuild the web app for ${networkName}, run on a network ` +
-        `sharing those params, or serve the protocol only (webDistDir: null). Runtime network injection is M3f.`,
-    );
-  }
+  // The browser derives its addresses/DIDs at runtime from `GET /v1/config` (served
+  // with this coordinator's network, below), so the SPA and the chain always agree -
+  // no build-time DEFAULT_NETWORK mismatch to warn about anymore (was the M3e
+  // placeholder; runtime injection is M3f).
 
   const service = createService({
-    identity: createIdentity(),
-    config: buildCohortConfig(minParticipants),
+    identity: createIdentity(net),
+    config: buildCohortConfig(minParticipants, 'CASBeacon', net.name),
     // Long-lived booth: keep advert/inbox SSE alive between attendees, and bound
     // every cohort so an abandoned one rejects and the loop advertises the next.
     heartbeatIntervalMs: 15000,
@@ -150,11 +139,16 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
     while (running) {
       round += 1;
       const peers: Participant[] = [];
-      const { cohortId, completion } = service.runner.advertiseCohort(buildCohortConfig(minParticipants));
+      const { cohortId, completion } = service.runner.advertiseCohort(
+        buildCohortConfig(minParticipants, 'CASBeacon', net.name),
+      );
       log(`round ${round}: advertised cohort ${cohortId}; waiting for ${minParticipants} participant(s)`);
 
       for (let i = 0; i < fillers; i += 1) {
-        const peer = createParticipant({ identity: createIdentity(), baseUrl });
+        // Fillers mint on the SAME operator network as the cohort/coordinator, else a
+        // non-default deployment (NETWORK=signet FILLERS>0) would seat a mutinynet DID
+        // in a signet cohort - the exact cross-network mismatch this slice prevents.
+        const peer = createParticipant({ identity: createIdentity(net), baseUrl });
         peers.push(peer);
         await peer.start();
       }

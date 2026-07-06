@@ -18,6 +18,7 @@
     "e2e:x1:negative": "tsc -b && tsx e2e/headless-cohort.ts --negative",
     "e2e:persist": "tsc -b && tsx e2e/persist-cohort.ts",
     "e2e:resolve": "tsc -b && tsx e2e/resolve-cohort.ts",
+    "e2e:config": "tsc -b && tsx e2e/config.ts",
     "e2e:live:mock": "tsc -b && tsx e2e/live-mock-cohort.ts",
     "e2e:live:broadcast": "tsc -b && tsx e2e/live-broadcast-cohort.ts",
     "e2e:browser": "pnpm -r build && tsx e2e/browser-cohort.ts",
