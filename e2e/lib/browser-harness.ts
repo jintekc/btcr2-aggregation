@@ -370,6 +370,82 @@ export async function runMainnetRailsScenario(
   return problems;
 }
 
+/**
+ * Drive the opt-in IPFS publish (ADR 0011) end to end through the real UI
+ * against an IPFS-enabled coordinator: an EXTERNAL (x1) attendee completes a
+ * solo cohort, clicks "Publish to IPFS" (loading the lazy Helia chunk, booting
+ * the in-browser node, dialing the coordinator's websocket multiaddr), and the
+ * panel must report every artifact pinned - with the GENESIS pinned via
+ * 'network', the path-unique proof that a real bitswap transfer crossed from
+ * the browser (the coordinator never holds an x1 genesis; its store could
+ * satisfy the other artifacts, so only the genesis proves the browser leg).
+ */
+export async function runIpfsPublishScenario(
+  context: BrowserContext,
+  baseUrl: string,
+): Promise<string[]> {
+  const problems: string[] = [];
+  const pageErrors: string[] = [];
+  const page = await context.newPage();
+  trackPageErrors(page, 'ipfs-attendee', pageErrors);
+
+  try {
+    // EXTERNAL identity on purpose: the genesis is the artifact whose pin can
+    // only come over the wire. Solo cohort (minParticipants=1 coordinator).
+    const did = await runAttendee(page, 'ipfs-attendee', baseUrl, 'EXTERNAL', 'mutinynet');
+    if (!did.startsWith('did:btcr2:x1')) {
+      problems.push(`ipfs attendee expected an x1 DID, got ${did}`);
+    }
+
+    const publishBtn = page.getByRole('button', { name: /^Publish to IPFS$|^Publish again$/ });
+    await publishBtn.first().waitFor({ state: 'visible', timeout: STEP_TIMEOUT_MS });
+    if (!(await publishBtn.first().isEnabled())) {
+      problems.push('publish button is disabled although the coordinator runs an IPFS node');
+      return problems;
+    }
+    await publishBtn.first().click();
+
+    // The Badge flips to exactly 'published' on success ('not published' fails
+    // the exact match, so this cannot false-green on the idle state).
+    await page
+      .getByText('published', { exact: true })
+      .first()
+      .waitFor({ state: 'visible', timeout: STEP_TIMEOUT_MS });
+
+    // Three artifacts (update + CAS announcement + genesis), each rendering its
+    // raw CIDv1 (base32 'bafkrei' + 52 chars) in the panel's copy field. The
+    // locator matches elements whose ENTIRE text is one bare CID, so this is
+    // attributable to the panel's CopyFields: activity-log lines embed CIDs in
+    // longer sentences and cannot satisfy it (a body-text regex could - the
+    // false-green a panel-drop regression would slip through).
+    const cidCount = await page.locator('text=/^bafkrei[a-z2-7]{52}$/').count();
+    if (cidCount < 3) {
+      problems.push(`expected 3 artifact-CID copy fields in the publish panel, found ${cidCount}`);
+    }
+    const body = (await page.locator('body').textContent()) ?? '';
+    // The per-row pin badges (log lines phrase it differently, so these are
+    // panel-only strings).
+    const pinnedCount = (body.match(/pinned \((store|network|local|already-pinned)\)/g) ?? []).length;
+    if (pinnedCount < 3) {
+      problems.push(`expected 3 pinned artifact rows, found ${pinnedCount}`);
+    }
+    // The path-unique signal: the genesis block crossed over bitswap (the badge
+    // requires ALL rows pinned for 'published', and the genesis is never in the
+    // coordinator's store, so its pin can only be a real transfer).
+    if (!body.includes('pinned (network)')) {
+      problems.push("no artifact was pinned via 'network' - the browser->coordinator bitswap leg never ran");
+    }
+    console.log(`ipfs publish verified: ${cidCount} CID copy fields, genesis pinned over bitswap`);
+
+    problems.push(...pageErrors);
+  } catch (err) {
+    problems.push(err instanceof Error ? (err.stack ?? err.message) : String(err));
+    await dumpPage(page, 'ipfs-attendee');
+  }
+
+  return problems;
+}
+
 /** Launch headless Chromium against the cached binary. */
 export async function launchBrowser() {
   const chromePath = resolveChromium();

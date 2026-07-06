@@ -4,6 +4,7 @@ import {
   type Participant,
 } from '@btcr2-aggregation/participant';
 import {
+  buildPublishPlan,
   buildSingletonRegistrationTx,
   createExternalIdentity,
   createIdentity,
@@ -20,9 +21,12 @@ import {
   type Identity,
   type IdType,
   type NetworkName,
+  type PublishableArtifactKind,
 } from '@btcr2-aggregation/shared';
 import { elapsed } from '../lib/clock';
 import { fetchNetworkConfig } from '../lib/config';
+import { fetchIpfsInfo, requestPin, type IpfsInfoDTO } from '../lib/ipfs';
+import type { BrowserIpfsNode } from '../lib/ipfs-node';
 import {
   findAppendedBeacon,
   resolveDid,
@@ -47,6 +51,22 @@ export type RegistrationStatus =
 
 /** Lifecycle of a server-driven DID resolution. */
 export type ResolutionStatus = 'idle' | 'resolving' | 'resolved' | 'failed';
+
+/** Lifecycle of the opt-in IPFS publish (ADR 0011). */
+export type IpfsPublishStatus = 'idle' | 'publishing' | 'published' | 'failed';
+
+/** One published artifact row: the plan entry merged with the coordinator's pin outcome. */
+export interface IpfsPublishRow {
+  kind: PublishableArtifactKind;
+  label: string;
+  hashHex: string;
+  cid: string;
+  /** True once the coordinator pinned the block. */
+  pinned: boolean;
+  /** Coordinator-side source: 'store' | 'network' | 'local' | 'already-pinned'. */
+  source?: string;
+  error?: string;
+}
 
 /**
  * Load state of the runtime network config (`GET /v1/config`). Identity generation
@@ -110,6 +130,17 @@ interface ParticipantState {
   resolveError: string | null;
 
   /**
+   * The coordinator's IPFS publish surface (`GET /v1/ipfs`), probed once
+   * alongside the network config. Null until probed; `{ enabled: false }` when
+   * the coordinator runs without a pinning node.
+   */
+  ipfsInfo: IpfsInfoDTO | null;
+  ipfsStatus: IpfsPublishStatus;
+  /** Per-artifact publish outcomes (once attempted). */
+  ipfsResults: IpfsPublishRow[] | null;
+  ipfsError: string | null;
+
+  /**
    * Fetch the coordinator's runtime network (`GET /v1/config`) once and adopt it, so
    * in-browser DIDs/addresses target the coordinator's chain. Idempotent-ish: safe to
    * call on mount. Falls back to the current default network (and still flips to
@@ -133,6 +164,14 @@ interface ParticipantState {
   leave(): void;
   /** Download the resolution sidecar JSON (the artifacts a resolver needs). */
   downloadSidecar(): void;
+  /**
+   * Opt-in: publish this controller's resolution artifacts to IPFS (ADR 0011).
+   * Lazily boots an in-browser Helia node holding the canonical blocks, dials
+   * the coordinator's node, and asks it to pin them. Sidecar-download remains
+   * the default hand-off; this adds public discoverability (anyone with the
+   * on-chain hash - or, for x1, just the DID - can derive the CID and fetch).
+   */
+  publishIpfs(baseUrl: string): Promise<void>;
   /**
    * LIVE only: check the beacon address for funds and, when funded, build + sign +
    * broadcast the first-update singleton-beacon registration transaction. On
@@ -160,6 +199,30 @@ interface Captured {
   updateHashBytes: Uint8Array;
 }
 let captured: Captured | null = null;
+
+// The in-browser IPFS node (heavy, lazily created on first publish). Module
+// scope like `live`: a long-lived object with sockets, not a value React should
+// diff. It keeps serving the controller's blocks over bitswap until the round
+// resets (leave / new identity / re-join), mirroring teardownLive's symmetry.
+let ipfsLive: BrowserIpfsNode | null = null;
+
+// Round token for the async publish flow. publishIpfs spans long awaits (lazy
+// chunk load, node boot, a bounded-60s pin request); if the round resets
+// mid-flight (leave / re-join / new identity), the stale continuation must not
+// write the OLD round's results into the fresh state, resurrect a node the
+// teardown already dispatched, or dereference the nulled handle. Every teardown
+// bumps the epoch; the flow re-checks it after each await.
+let ipfsEpoch = 0;
+
+function teardownIpfs(): void {
+  ipfsEpoch += 1;
+  if (ipfsLive) {
+    ipfsLive.stop().catch(() => {
+      // best-effort teardown
+    });
+    ipfsLive = null;
+  }
+}
 
 // Watchdog for a join that never discovers a cohort (coordinator unreachable):
 // without it, transport.start() resolves and the SSE loops retry forever, so the
@@ -208,6 +271,9 @@ const INITIAL_OUTCOME = {
   resolveStatus: 'idle' as ResolutionStatus,
   resolution: null,
   resolveError: null,
+  ipfsStatus: 'idle' as IpfsPublishStatus,
+  ipfsResults: null,
+  ipfsError: null,
 } as const;
 
 /** Clear the module-level captured artifacts (paired with an INITIAL_OUTCOME reset). */
@@ -256,6 +322,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
 
   function adopt(identity: Identity): void {
     clearCaptured();
+    teardownIpfs();
     set({
       identity,
       did: identity.did,
@@ -289,9 +356,16 @@ export const useParticipant = create<ParticipantState>((set, get) => {
     error: null,
     log: [],
     beaconRegAddress: null,
+    ipfsInfo: null,
     ...INITIAL_OUTCOME,
 
     async loadConfig(baseUrl) {
+      // Probe IPFS availability in parallel: purely additive (the publish panel's
+      // enablement), so its failure must never delay or block the network config.
+      const ipfsProbe = fetchIpfsInfo(baseUrl).then(
+        (info) => set({ ipfsInfo: info }),
+        () => set({ ipfsInfo: { enabled: false } }),
+      );
       try {
         const dto = await fetchNetworkConfig(baseUrl);
         set({ network: dto.network, configStatus: 'ready' });
@@ -304,6 +378,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         set({ configStatus: 'ready' });
         append('warn', `could not load coordinator network (${msg}); using default ${get().network}`);
       }
+      await ipfsProbe;
     },
 
     generate(kind = 'KEY') {
@@ -337,8 +412,10 @@ export const useParticipant = create<ParticipantState>((set, get) => {
 
       // Re-join after a completed/failed round: tear down the prior participant
       // first so we never leak its SSE streams or leave two runners listening.
+      // The IPFS node goes too: its blocks belong to the finished round.
       clearWatchdog();
       teardownLive();
+      teardownIpfs();
       clearCaptured();
       set({ status: 'connecting', error: null, steps: { ...INITIAL_STEPS }, ...INITIAL_OUTCOME });
       append('info', `connecting to coordinator at ${baseUrl}`);
@@ -420,6 +497,13 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         };
         set({ result, sidecar, status: 'complete', beaconAddress: info.beaconAddress });
         append('good', `cohort ${info.cohortId} anchored; your update was ${info.included ? 'included' : 'not included'}`);
+        // Refresh the IPFS availability just as the publish panel appears: the
+        // page-load probe may predate a coordinator restart that enabled (or
+        // moved) the pinning node, and this is the moment the answer matters.
+        void fetchIpfsInfo(baseUrl).then(
+          (ipfs) => set({ ipfsInfo: ipfs }),
+          () => {},
+        );
         // Stop here: one cohort per Join. Otherwise the still-live runner would
         // auto-join the booth's next advert and reuse this key unbidden.
         clearWatchdog();
@@ -464,6 +548,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
     leave() {
       clearWatchdog();
       teardownLive();
+      teardownIpfs();
       clearCaptured();
       const { identity } = get();
       set({
@@ -484,6 +569,125 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       }
       downloadJson(`btcr2-sidecar-${didSlug(did)}.json`, sidecar);
       append('info', 'downloaded resolution sidecar');
+    },
+
+    async publishIpfs(baseUrl) {
+      const { ipfsInfo, ipfsStatus, sidecar, result } = get();
+      // Re-entrancy guard first (the button's disabled state lags a React commit).
+      if (ipfsStatus === 'publishing') {
+        return;
+      }
+      if (!ipfsInfo?.enabled) {
+        set({ ipfsStatus: 'failed', ipfsError: 'the coordinator does not run an IPFS pinning node' });
+        return;
+      }
+      if (!result?.included || !sidecar?.updates?.[0]) {
+        set({ ipfsStatus: 'failed', ipfsError: 'no artifacts to publish (this DID was not included)' });
+        return;
+      }
+
+      // Round token: if leave/re-join/regenerate resets the round while any await
+      // below is in flight, every later step must become a no-op (no stale rows
+      // in the new round's state, no resurrected node, no nulled-handle deref).
+      const epoch = ipfsEpoch;
+      const stale = () => epoch !== ipfsEpoch;
+
+      set({ ipfsStatus: 'publishing', ipfsError: null });
+      append('info', 'publishing resolution artifacts to IPFS');
+      try {
+        // The plan is built from the sidecar - the exact artifact set the
+        // controller keeps. SMT proofs are deliberately absent: they are keyed by
+        // the cohort's shared root, not their own digest, so no on-chain-derivable
+        // CID can address them; they stay in the sidecar (see shared/src/ipfs.ts).
+        const plan = buildPublishPlan({
+          update: sidecar.updates[0],
+          casAnnouncement: sidecar.casUpdates?.[0] as Record<string, string> | undefined,
+          genesisDocument: sidecar.genesisDocument as Record<string, unknown> | undefined,
+        });
+
+        // Re-probe the coordinator NOW rather than trusting the page-load cache:
+        // its pinning node listens on an ephemeral port with a fresh peer id per
+        // boot, so after a coordinator restart the cached multiaddrs are dead
+        // (and a manual reload was previously the only cure).
+        const info = await fetchIpfsInfo(baseUrl).catch(() => null);
+        if (stale()) {
+          return;
+        }
+        if (info) {
+          set({ ipfsInfo: info });
+        }
+        if (!info?.enabled || !info.multiaddrs?.length) {
+          set({ ipfsStatus: 'failed', ipfsError: 'the coordinator no longer reports an IPFS pinning node' });
+          return;
+        }
+
+        // Lazy-load the heavy Helia/libp2p chunk only now, on the explicit opt-in:
+        // the eager bundle never carries it. Work on a LOCAL handle: the module
+        // slot may be nulled by a mid-flight teardown, and the epoch check decides
+        // whether this flow's node lives on or is discarded.
+        const { createBrowserIpfsNode } = await import('../lib/ipfs-node');
+        if (stale()) {
+          return;
+        }
+        let node = ipfsLive;
+        if (!node) {
+          node = await createBrowserIpfsNode();
+          if (stale()) {
+            // The round was torn down while the node booted; it must not outlive it.
+            node.stop().catch(() => {});
+            return;
+          }
+          ipfsLive = node;
+          append('info', `started in-browser IPFS node ${node.peerId}`);
+        }
+        await node.dialAny(info.multiaddrs);
+        if (stale()) {
+          return;
+        }
+        await node.publish(plan);
+        if (stale()) {
+          return;
+        }
+        append('good', `holding ${plan.length} artifact block(s); asking the coordinator to pin`);
+
+        const pinResults = await requestPin(baseUrl, plan.map((p) => p.hashHex));
+        if (stale()) {
+          return;
+        }
+        const rows: IpfsPublishRow[] = plan.map((p) => {
+          const r = pinResults.find((x) => x.hash === p.hashHex);
+          return {
+            kind: p.kind,
+            label: p.label,
+            hashHex: p.hashHex,
+            cid: p.cid,
+            pinned: r?.pinned ?? false,
+            source: r?.source,
+            error: r?.error,
+          };
+        });
+        const allPinned = rows.every((r) => r.pinned);
+        set({
+          ipfsStatus: allPinned ? 'published' : 'failed',
+          ipfsResults: rows,
+          ipfsError: allPinned ? null : 'the coordinator could not pin every artifact',
+        });
+        for (const row of rows) {
+          append(
+            row.pinned ? 'good' : 'bad',
+            row.pinned
+              ? `${row.label} pinned by the coordinator (${row.source}) as ${row.cid}`
+              : `${row.label} pin failed: ${row.error ?? 'unknown'}`,
+          );
+        }
+      } catch (err) {
+        if (stale()) {
+          return;
+        }
+        const msg = err instanceof Error ? err.message : String(err);
+        set({ ipfsStatus: 'failed', ipfsError: msg });
+        append('bad', `IPFS publish failed: ${msg}`);
+      }
     },
 
     async register(baseUrl, opts) {

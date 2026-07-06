@@ -3,7 +3,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { BitcoinConnection } from '@did-btcr2/bitcoin';
 import { createParticipant, type Participant } from '@btcr2-aggregation/participant';
 import { buildCohortConfig, createIdentity, DEFAULT_NETWORK, resolveNetwork } from '@btcr2-aggregation/shared';
-import { createService, MemoryArtifactStore, type Service } from './index.js';
+import { createIpfsNode, createService, MemoryArtifactStore, type IpfsNode, type Service } from './index.js';
 import { createOfflineBitcoinConnection } from './offline-chain.js';
 
 /**
@@ -74,6 +74,27 @@ export interface DemoServerOptions {
    * set this to a key whose secret it holds offline (ADR 042 recovery leaf).
    */
   recoveryKey?: string;
+  /**
+   * Run an IPFS (Helia) pinning node so browser participants can opt in to
+   * publishing their resolution artifacts (ADR 0011). Default false (env
+   * `IPFS=1` also enables it): the default gate stays IPFS-free. Data-only -
+   * publishing artifacts never moves funds, so this is independent of `live`
+   * and the mainnet rails.
+   */
+  ipfs?: boolean;
+  /**
+   * Directory for the IPFS node's durable block/pin storage (env `IPFS_DIR`).
+   * Omit for in-memory storage (pins last for the process lifetime).
+   */
+  ipfsDir?: string;
+  /**
+   * Multiaddrs the IPFS node announces instead of its listen address (env
+   * `IPFS_ANNOUNCE`, comma-separated), e.g. `/dns4/host/tcp/443/wss` behind a
+   * TLS proxy so a browser on another machine (https page) can dial it.
+   */
+  ipfsAnnounce?: string[];
+  /** Per-pin bitswap fetch bound, ms (tests shorten it; default 15s). */
+  ipfsPinTimeoutMs?: number;
   /** Suppress logs. */
   quiet?: boolean;
 }
@@ -157,6 +178,28 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
     ? new BitcoinConnection({ network: net.name, rest: { host: net.esploraHost } })
     : createOfflineBitcoinConnection();
 
+  // Opt-in IPFS pinning node (ADR 0011). Created before the service so the pin
+  // routes exist from the first request; this server owns its lifecycle (stop()
+  // below), mirroring the injected Bitcoin connection.
+  const useIpfs = opts.ipfs ?? process.env.IPFS === '1';
+  const ipfsAnnounce =
+    opts.ipfsAnnounce ??
+    (process.env.IPFS_ANNOUNCE ? process.env.IPFS_ANNOUNCE.split(',').map((a) => a.trim()).filter(Boolean) : undefined);
+  const ipfs: IpfsNode | undefined = useIpfs
+    ? await createIpfsNode({
+        dir: opts.ipfsDir ?? process.env.IPFS_DIR,
+        announce: ipfsAnnounce,
+        pinTimeoutMs: opts.ipfsPinTimeoutMs,
+      })
+    : undefined;
+  if (ipfs) {
+    const dir = opts.ipfsDir ?? process.env.IPFS_DIR;
+    log(`ipfs: pinning node ${ipfs.peerId} (${dir ? `durable at ${dir}` : 'in-memory'})`);
+    for (const addr of ipfs.multiaddrs()) {
+      log(`ipfs:   dialable at ${addr}`);
+    }
+  }
+
   // The browser derives its addresses/DIDs at runtime from `GET /v1/config` (served
   // with this coordinator's network, below), so the SPA and the chain always agree -
   // no build-time DEFAULT_NETWORK mismatch to warn about anymore (was the M3e
@@ -173,6 +216,7 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
     webDistDir: resolvedDist,
     store,
     bitcoin,
+    ipfs,
   });
   const { baseUrl } = await service.start(opts.port ?? 8080, opts.host ?? '127.0.0.1');
   log(
@@ -225,6 +269,9 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
     async stop() {
       running = false;
       await service.stop();
+      // After the HTTP server: no request can reach the pin routes once the
+      // service is down, so the node can close its stores safely.
+      await ipfs?.stop();
     },
   };
 }

@@ -324,9 +324,27 @@ behavior is opt-in.
   browser-network injection (`GET /v1/config`), mainnet guard rails on the live path, and
   optional in-browser Helia publish.
 
+- **M3f - in-browser IPFS (Helia) publish. DONE & VERIFIED 2026-07-06** (ADR 0011).
+  The deferred M3b-2 spike is now shipped: `shared` gained the browser-clean
+  digest-identity CID module (`cidFromHashHex`, golden-vectored) + `buildPublishPlan`
+  (update + CAS announcement + x1 genesis; SMT proofs deliberately sidecar-only - they
+  are root-keyed, so no on-chain-derivable CID exists); `service` gained an injected,
+  opt-in Helia pinning node (`IPFS=1`, `IPFS_DIR`, `IPFS_ANNOUNCE`) composed
+  native-free from `@helia/utils` + `@helia/block-brokers` + a minimal ws-only libp2p
+  (the `helia` meta-package eagerly drags the `node-datachannel` native addon on Node,
+  which the repo's build policy refuses), with `GET /v1/ipfs` (unconditional probe) and
+  a bounded, digest-re-verifying `POST /v1/ipfs/pin`; the web app boots the same
+  composed node in-browser behind the app's first lazy chunk (eager bundle unchanged;
+  helia never in it) and publishes the sidecar's artifact set on an explicit opt-in
+  click, the coordinator pinning as convenience. Proof is path-unique both times: the
+  x1 GENESIS (never in the coordinator's store) must pin via `source: 'network'` -
+  a real browser->coordinator bitswap transfer - and a third node fetches it back by
+  the CID derived from the DID alone. Gate now 15 checks (+ `e2e:ipfs`; e2e:config
+  covers the `IPFS=1` env form; the prod browser e2e adds the publish scenario).
+
 - **M3f (remaining) - network matrix completion + ADRs.** `GenesisDocument.create`
-  baked-beacon path (pre-known aggregate beacon) + genesis store route; regtest CI node +
-  mainnet guard rails; runtime browser-network injection.
+  baked-beacon path (pre-known aggregate beacon) + genesis store route; regtest CI node
+  for an automated live-path gate.
 
 ## Spikes required before/within M3c (do not skip)
 

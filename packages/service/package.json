@@ -17,15 +17,30 @@
   "dependencies": {
     "@btcr2-aggregation/participant": "workspace:*",
     "@btcr2-aggregation/shared": "workspace:*",
+    "@chainsafe/libp2p-noise": "16.1.5",
+    "@chainsafe/libp2p-yamux": "7.0.4",
     "@did-btcr2/aggregation": "^0.4.0",
     "@did-btcr2/bitcoin": "^0.8.0",
     "@did-btcr2/common": "^9.1.0",
     "@did-btcr2/keypair": "^0.13.1",
     "@did-btcr2/method": "^0.51.0",
     "@did-btcr2/smt": "^0.3.0",
+    "@helia/block-brokers": "4.2.4",
+    "@helia/interface": "5.4.0",
+    "@helia/utils": "1.4.0",
     "@hono/node-server": "^1",
+    "@libp2p/identify": "3.0.39",
+    "@libp2p/interface": "2.11.0",
+    "@libp2p/websockets": "9.2.19",
+    "@multiformats/multiaddr": "12.5.1",
     "@noble/hashes": "^1.8.0",
     "@scure/btc-signer": "^1.8.1",
-    "hono": "^4"
+    "blockstore-core": "5.0.4",
+    "blockstore-fs": "2.0.5",
+    "datastore-core": "10.0.4",
+    "datastore-fs": "10.0.6",
+    "hono": "^4",
+    "libp2p": "2.10.0",
+    "multiformats": "13.4.2"
   }
 }
