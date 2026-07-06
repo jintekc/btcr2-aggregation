@@ -27,6 +27,7 @@ export function App() {
   // generation until this resolves.
   const loadConfig = useParticipant((s) => s.loadConfig);
   const netLabel = useParticipant((s) => resolveNetwork(s.network).label);
+  const isMainnet = useParticipant((s) => resolveNetwork(s.network).isMainnet);
   useEffect(() => {
     void loadConfig(baseUrl);
   }, [loadConfig, baseUrl]);
@@ -44,8 +45,14 @@ export function App() {
               transaction.
             </p>
           </div>
-          <span className="rounded-full border border-edge bg-surface px-3 py-1 text-xs text-faint">
-            {netLabel} · key-path Taproot
+          <span
+            className={
+              isMainnet
+                ? 'rounded-full border border-bad/50 bg-bad/10 px-3 py-1 text-xs font-semibold text-bad'
+                : 'rounded-full border border-edge bg-surface px-3 py-1 text-xs text-faint'
+            }
+          >
+            {isMainnet ? `${netLabel} · REAL FUNDS` : `${netLabel} · key-path Taproot`}
           </span>
         </div>
 

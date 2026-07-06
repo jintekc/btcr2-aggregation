@@ -19,7 +19,7 @@ import {
 import type { ArtifactStore } from './store.js';
 
 export { createHonoApp, type HonoAppOptions } from './hono-adapter.js';
-export { makeProvideTxData, type LiveTxConfig } from './tx.js';
+export { makeProvideTxData, MIN_LIVE_FUNDING_SATS, type LiveTxConfig } from './tx.js';
 export { bridgeRunnerToSse, type DashboardExtras } from './dashboard-sse.js';
 export {
   BeaconBroadcaster,

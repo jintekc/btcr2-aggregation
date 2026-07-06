@@ -8,7 +8,7 @@ import {
   Updater,
   type GenesisDocumentLike,
 } from '@did-btcr2/method';
-import { bytesToHex } from '@noble/hashes/utils';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { Script, Transaction, p2tr } from '@scure/btc-signer';
 import * as musig2 from '@scure/btc-signer/musig2';
 import type { CohortConfig, SigningTxData } from '@did-btcr2/aggregation/service';
@@ -217,17 +217,41 @@ export function deriveRecoveryKey(): string {
  * announcement map or SMT tree) internally. `network` defaults to the app
  * {@link NETWORK}; the coordinator passes its operator-configured network so the
  * cohort and the browser's runtime `GET /v1/config` agree on one chain.
+ *
+ * `recoveryKey` is the x-only public key of the cohort's ADR 042 recovery leaf: a
+ * Taproot script path that lets the recovery-key holder sweep the beacon UTXO alone
+ * once `recoverySequence` blocks (a BIP-68 relative timelock; 144 is roughly one day)
+ * have passed since the funding confirmed. When omitted, a THROWAWAY key is derived
+ * and its secret immediately discarded, so the recovery path exists structurally but
+ * nobody can ever spend it. That is fine on test networks and for the zero-chain
+ * fixture path; an operator funding a beacon with real value MUST pass a recovery
+ * key whose secret they actually hold (derived offline; only the public key belongs
+ * here). See docs/adr/0010-mainnet-guard-rails.md.
  */
 export function buildCohortConfig(
   participants: number,
   beaconType: BeaconType = 'CASBeacon',
   network: NetworkName = NETWORK,
+  recoveryKey?: string,
 ): CohortConfig {
+  if (recoveryKey !== undefined) {
+    if (!/^[0-9a-f]{64}$/i.test(recoveryKey)) {
+      throw new Error('recoveryKey must be 64 hex chars (an x-only Schnorr public key)');
+    }
+    try {
+      // Fail fast on a key that is not a valid x-only point: p2tr's BIP341 tweak
+      // lifts the x coordinate and throws for an off-curve key, which would otherwise
+      // only surface deep in cohort keygen at beacon-address computation.
+      p2tr(hexToBytes(recoveryKey.toLowerCase()));
+    } catch {
+      throw new Error('recoveryKey is not a valid x-only Schnorr public key (off-curve x coordinate)');
+    }
+  }
   return {
     beaconType,
     minParticipants: participants,
     network,
-    recoveryKey: deriveRecoveryKey(),
+    recoveryKey: recoveryKey?.toLowerCase() ?? deriveRecoveryKey(),
     recoverySequence: 144,
   };
 }
@@ -384,9 +408,16 @@ export interface RegistrationTx {
 /** Default fee for a 1-in / (change + OP_RETURN)-out P2TR registration tx (sats). */
 export const REGISTRATION_FEE_SATS = 1000n;
 /** P2TR dust threshold (sats); a change output below this is uneconomical. */
-const P2TR_DUST_SATS = 330n;
+export const P2TR_DUST_SATS = 330n;
 /** Minimum funding a beacon address needs to build a registration tx (fee + dust-safe change). */
 export const MIN_REGISTRATION_FUNDING_SATS = REGISTRATION_FEE_SATS + P2TR_DUST_SATS;
+/**
+ * Hard cap on a registration tx fee (sats). The tx is ~150 vB, so this is well over
+ * 100 sat/vB - beyond any sane priority rate for a one-output OP_RETURN announce.
+ * A fee above it is a fat-fingered override that would burn the funding UTXO; on
+ * mainnet that is real money, so the builder refuses instead of signing it away.
+ */
+export const MAX_REGISTRATION_FEE_SATS = 20_000n;
 
 /**
  * Build and sign the controller's first-update singleton-beacon registration
@@ -401,7 +432,8 @@ export const MIN_REGISTRATION_FUNDING_SATS = REGISTRATION_FEE_SATS + P2TR_DUST_S
  * passed and the library does the tweak. Nothing here leaves the browser: the caller
  * broadcasts `rawHex` via the same-origin `/v1/tx/broadcast` proxy.
  *
- * @throws if the UTXO cannot cover the fee plus a dust-safe change output.
+ * @throws if the UTXO cannot cover the fee plus a dust-safe change output, or the
+ * fee is non-positive or above {@link MAX_REGISTRATION_FEE_SATS} (mainnet burn guard).
  */
 export function buildSingletonRegistrationTx(opts: {
   keys: SchnorrKeyPair;
@@ -414,6 +446,15 @@ export function buildSingletonRegistrationTx(opts: {
 }): RegistrationTx {
   const network = opts.network ?? resolveNetwork(NETWORK);
   const fee = opts.fee ?? REGISTRATION_FEE_SATS;
+  if (fee <= 0n) {
+    throw new Error(`fee must be positive, got ${fee} sats (a zero-fee tx never relays)`);
+  }
+  if (fee > MAX_REGISTRATION_FEE_SATS) {
+    throw new Error(
+      `fee ${fee} sats exceeds the ${MAX_REGISTRATION_FEE_SATS}-sat registration cap; ` +
+        'a ~150 vB registration tx never needs this much - refusing to burn the funding UTXO',
+    );
+  }
   const value = BigInt(opts.utxo.value);
   if (value < fee + P2TR_DUST_SATS) {
     throw new Error(

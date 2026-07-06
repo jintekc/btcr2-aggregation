@@ -309,6 +309,67 @@ export async function runCohortScenario(
   return problems;
 }
 
+/**
+ * Drive the MAINNET guard rails end to end through the real UI against a
+ * mainnet-configured (offline) coordinator: the header must show the REAL FUNDS
+ * badge, a solo cohort completes on the fixture path, and the first-update
+ * registration must be checkbox-gated - button disabled until the real-funds
+ * acknowledgment is ticked, then the acknowledged flow reaches the funds check
+ * (offline chain: reports no funds, so no tx can move). This pins the RegisterPanel
+ * wiring the store-level ack gate alone cannot see (a regression hardcoding
+ * `acknowledgeMainnet: true` or dropping the checkbox fails here).
+ */
+export async function runMainnetRailsScenario(
+  context: BrowserContext,
+  baseUrl: string,
+): Promise<string[]> {
+  const problems: string[] = [];
+  const pageErrors: string[] = [];
+  const page = await context.newPage();
+  trackPageErrors(page, 'mainnet-attendee', pageErrors);
+
+  try {
+    await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+
+    // The runtime isMainnet flag (GET /v1/config) must flip the header badge.
+    await page.getByText('REAL FUNDS', { exact: false }).first().waitFor({ timeout: STEP_TIMEOUT_MS });
+
+    // Solo cohort (minParticipants=1 coordinator) so the RegisterPanel appears.
+    await page.getByRole('button', { name: 'Generate a DID' }).click();
+    const did = (await page.locator('text=/^did:btcr2:/').first().textContent())?.trim() ?? '';
+    const didNetwork = Identifier.decode(did).network;
+    if (didNetwork !== 'bitcoin') {
+      problems.push(`mainnet attendee minted a DID on "${didNetwork}", expected "bitcoin"`);
+    }
+    await page.getByRole('button', { name: 'Join the cohort' }).click();
+    await page.getByText('update included').first().waitFor({ state: 'visible', timeout: STEP_TIMEOUT_MS });
+
+    // The register panel must warn about real funds and gate the button behind
+    // the acknowledgment checkbox.
+    await page.getByText(/spends real bitcoin/i).first().waitFor({ state: 'visible', timeout: STEP_TIMEOUT_MS });
+    const registerBtn = page.getByRole('button', { name: 'Check funds & register' });
+    if (await registerBtn.isEnabled()) {
+      problems.push('mainnet register button was ENABLED before the real-funds acknowledgment');
+    }
+    await page.getByRole('checkbox').check();
+    if (!(await registerBtn.isEnabled())) {
+      problems.push('mainnet register button stayed disabled after the acknowledgment was ticked');
+    }
+    // The acknowledged click must pass the store gate and reach the funds check;
+    // the offline chain reports no funds, so registration stops there (no tx).
+    await registerBtn.click();
+    await page.getByText(/No spendable funds/).first().waitFor({ state: 'visible', timeout: STEP_TIMEOUT_MS });
+    console.log('mainnet rails verified: badge, warning, checkbox-gated registration -> funds check');
+
+    problems.push(...pageErrors);
+  } catch (err) {
+    problems.push(err instanceof Error ? (err.stack ?? err.message) : String(err));
+    await dumpPage(page, 'mainnet-attendee');
+  }
+
+  return problems;
+}
+
 /** Launch headless Chromium against the cached binary. */
 export async function launchBrowser() {
   const chromePath = resolveChromium();

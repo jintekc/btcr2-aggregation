@@ -1,4 +1,5 @@
-import { resolveNetwork } from '@btcr2-aggregation/shared';
+import { useState } from 'react';
+import { REGISTRATION_FEE_SATS, resolveNetwork } from '@btcr2-aggregation/shared';
 import { useParticipant } from '../../stores/participant';
 import { Badge, Button, Card, CopyField, Mono, SectionTitle } from '../../ui/primitives';
 
@@ -44,6 +45,9 @@ export function RegisterPanel({ baseUrl }: { baseUrl: string }) {
   // The coordinator's runtime network (GET /v1/config), so the funding label and the
   // explorer link match the chain the beacon address was derived on.
   const NET = resolveNetwork(useParticipant((s) => s.network));
+  // Mainnet real-funds acknowledgment (guard rail): the broadcast button stays
+  // disabled until ticked, and the store re-checks the flag beneath the UI.
+  const [ackMainnet, setAckMainnet] = useState(false);
 
   // Only meaningful once this DID has an included first update to register.
   if (!result?.included || !beaconRegAddress) {
@@ -51,6 +55,7 @@ export function RegisterPanel({ baseUrl }: { baseUrl: string }) {
   }
 
   const busy = regStatus === 'checking' || regStatus === 'broadcasting';
+  const blocked = NET.isMainnet && !ackMainnet;
   const explorerUrl = regTxid ? NET.explorerTxUrl(regTxid) : '';
 
   return (
@@ -70,8 +75,32 @@ export function RegisterPanel({ baseUrl }: { baseUrl: string }) {
 
       <CopyField label={`fund this genesis beacon (${NET.label})`} value={`bitcoin:${beaconRegAddress}`} />
 
+      {NET.isMainnet && (
+        <div className="space-y-2 rounded-md border border-bad/40 bg-bad/10 px-3 py-2 text-xs text-bad">
+          <p>
+            <span className="font-semibold">Bitcoin mainnet - this spends real bitcoin.</span>{' '}
+            Broadcasting pays a {REGISTRATION_FEE_SATS.toString()}-sat fee from your funded UTXO;
+            the remainder returns to this same beacon address, controlled by the key in this
+            browser tab. Save your identity secret first - losing it strands the change.
+          </p>
+          <label className="flex cursor-pointer items-start gap-2">
+            <input
+              type="checkbox"
+              checked={ackMainnet}
+              onChange={(e) => setAckMainnet(e.target.checked)}
+              className="mt-0.5 accent-[var(--color-bad)]"
+            />
+            <span>I understand this broadcasts a real mainnet transaction spending real funds.</span>
+          </label>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center gap-2">
-        <Button onClick={() => register(baseUrl)} disabled={busy}>
+        <Button
+          onClick={() => register(baseUrl, { acknowledgeMainnet: ackMainnet })}
+          disabled={busy || blocked}
+          variant={NET.isMainnet ? 'danger' : 'primary'}
+        >
           {busy ? STATUS_LABEL[regStatus] : regStatus === 'registered' ? 'Register again' : 'Check funds & register'}
         </Button>
         {regStatus === 'registered' && regTxid && explorerUrl && (

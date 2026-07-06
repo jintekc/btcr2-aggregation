@@ -1,5 +1,5 @@
 import { buildFixtureTxData } from '@btcr2-aggregation/shared';
-import { buildAggregationBeaconTx } from '@did-btcr2/method';
+import { buildAggregationBeaconTx, selectSpendableUtxo } from '@did-btcr2/method';
 import type { AggregationServiceRunner, OnProvideTxData } from '@did-btcr2/aggregation/service';
 import type { BitcoinConnection, BTCNetwork } from '@did-btcr2/bitcoin';
 
@@ -22,6 +22,19 @@ export interface LiveTxConfig {
    */
   changeAddress?: string;
 }
+
+/**
+ * Heuristic funding floor (sats) for the UTXO the live beacon tx will spend. The
+ * builder spends exactly one confirmed UTXO - the DEEPEST above its 546-sat dust
+ * limit (`selectSpendableUtxo`), NOT the largest - into fee + dust-safe change +
+ * the OP_RETURN; at the default 5 sat/vB the ~160 vB tx costs ~800 sats, and P2TR
+ * change under 330 sats is dust the builder absorbs into the fee. Below this floor
+ * the run is either doomed or forced to burn most of the UTXO as fee - on mainnet,
+ * real money - so the pre-flight refuses early with an actionable message. A
+ * floor, not a sufficiency proof: a dynamic mainnet fee estimator can still need
+ * more.
+ */
+export const MIN_LIVE_FUNDING_SATS = 2000;
 
 /**
  * Build the service's `onProvideTxData` callback. The runner invokes it once
@@ -63,6 +76,32 @@ export function makeProvideTxData(
       throw new Error(
         `live beacon tx: cohort beacon address ${beaconAddress} has no UTXOs; ` +
           'fund it (operator-funded model) before running a live cohort',
+      );
+    }
+    // Dust-aware floor on the UTXO the builder will ACTUALLY spend: run the
+    // library's own selection (the deepest confirmed UTXO above its 546-sat dust
+    // limit - deliberately not the largest) so the pre-flight and the builder can
+    // never disagree, and fail before MuSig2 signing starts instead of mid-build.
+    // A selection failure (all dust / all unconfirmed) surfaces the library's
+    // already-precise reason under the same operator-facing prefix.
+    let selected;
+    try {
+      selected = selectSpendableUtxo(utxos, beaconAddress);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `live beacon tx: cohort beacon address ${beaconAddress} has no spendable UTXO: ${reason}`,
+      );
+    }
+    if (selected.value < MIN_LIVE_FUNDING_SATS) {
+      // Topping up CANNOT fix this: the builder always spends the deepest UTXO, and
+      // any new funding confirms shallower, so this same UTXO keeps being selected.
+      throw new Error(
+        `live beacon tx: the UTXO the builder will spend at ${beaconAddress} ` +
+          `(${selected.txid}:${selected.vout}, ${selected.value} sats - the deepest confirmed ` +
+          `UTXO) is below the ${MIN_LIVE_FUNDING_SATS}-sat funding floor. Adding more funds will ` +
+          'NOT help (new UTXOs confirm shallower and are never selected first); run the cohort ' +
+          'on a fresh beacon address funded with a single adequate UTXO',
       );
     }
 

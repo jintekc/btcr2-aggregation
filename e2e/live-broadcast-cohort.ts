@@ -41,7 +41,15 @@ import {
  * (default the registry host), FUND_SATS (default 100000), LIVE_N (default 2),
  * LIVE_PARTICIPANT_SECRETS / LIVE_RECOVERY_SECRET (comma-sep 32-byte hex; fixed
  * defaults below), REQUIRE_CONFIRMED (default 1), FUND_TIMEOUT_MS (default 1800000),
- * ALLOW_MAINNET=1 (required for a mainnet target). Flag: --smt for an SMT cohort.
+ * LIVE_CHANGE_ADDRESS (optional; route the beacon tx change to an operator wallet
+ * instead of back to the beacon address). Flag: --smt for an SMT cohort.
+ *
+ * Mainnet (real funds) additionally requires ALL of: ALLOW_MAINNET=1, and
+ * LIVE_PARTICIPANT_SECRETS + LIVE_RECOVERY_SECRET explicitly set to fresh secrets.
+ * The fixed defaults below are PUBLIC (this repo is public): with them, anyone can
+ * reconstruct the n-of-n key path immediately and sweep the recovery leaf after
+ * `recoverySequence` blocks, so a mainnet run with default secrets is refused.
+ * See docs/adr/0010-mainnet-guard-rails.md.
  */
 
 const NETWORK_NAME = process.env.LIVE_NETWORK ?? 'mutinynet';
@@ -243,6 +251,7 @@ async function runLiveCohort(
   bitcoin: BitcoinConnection,
   beaconType: BeaconType,
   allowMainnet: boolean,
+  changeAddress?: string,
 ): Promise<LiveRunResult> {
   const service = createService({
     identity: importIdentity(SERVICE_SECRET),
@@ -253,6 +262,9 @@ async function runLiveCohort(
     // Forward the operator opt-in so a mainnet target (config.network) is permitted
     // here rather than throwing at construction after funding already happened.
     allowMainnet,
+    // Route the beacon tx change to the operator wallet when supplied (default:
+    // back to the beacon address). The builder validates it for the network.
+    changeAddress,
     // Live network latency: give each phase and the overall cohort ample room; the
     // confirmation wait lives in the broadcast handler, not a protocol phase.
     phaseTimeoutMs: 120_000,
@@ -314,7 +326,8 @@ async function main(): Promise<number> {
     console.log(
       `live-broadcast e2e is gated. Set LIVE=1 to broadcast a REAL ${beaconType} tx on ${NETWORK_NAME}.\n` +
         'Inputs (env): LIVE_NETWORK, ESPLORA_HOST, FUND_SATS, LIVE_N, LIVE_PARTICIPANT_SECRETS,\n' +
-        'LIVE_RECOVERY_SECRET, REQUIRE_CONFIRMED, FUND_TIMEOUT_MS, ALLOW_MAINNET. Flag: --smt.',
+        'LIVE_RECOVERY_SECRET, REQUIRE_CONFIRMED, FUND_TIMEOUT_MS, LIVE_CHANGE_ADDRESS,\n' +
+        'ALLOW_MAINNET (mainnet also needs explicit non-default secrets). Flag: --smt.',
     );
     return 0;
   }
@@ -333,6 +346,35 @@ async function main(): Promise<number> {
     return 1;
   }
   const recoverySecret = process.env.LIVE_RECOVERY_SECRET ?? DEFAULT_RECOVERY_SECRET;
+
+  // Mainnet secrets hygiene: the built-in secrets are PUBLIC (this repo is public).
+  // Funding a beacon derived from them puts real money at an address anyone can
+  // spend from - the n-of-n key path is reconstructable immediately, and the ADR 042
+  // recovery leaf becomes anyone-can-sweep after `recoverySequence` blocks. Refuse
+  // hard; ALLOW_MAINNET alone must not be enough.
+  if (netConfig.isMainnet) {
+    const publicDefaults = new Set([...DEFAULT_PARTICIPANT_SECRETS, DEFAULT_RECOVERY_SECRET, SERVICE_SECRET]);
+    if (!secretsEnv || !process.env.LIVE_RECOVERY_SECRET) {
+      console.error(
+        `Refusing a ${netConfig.label} run without explicit LIVE_PARTICIPANT_SECRETS and ` +
+          'LIVE_RECOVERY_SECRET: the built-in defaults are public, so the funded beacon ' +
+          'would be spendable by anyone.',
+      );
+      return 1;
+    }
+    if ([...participantSecrets, recoverySecret].some((s) => publicDefaults.has(s.toLowerCase()))) {
+      console.error(
+        `Refusing a ${netConfig.label} run: a supplied secret equals one of the PUBLIC ` +
+          'built-in defaults. Generate fresh 32-byte secrets and keep them private.',
+      );
+      return 1;
+    }
+  }
+
+  // Optional operator change routing: by default the beacon tx returns change to the
+  // beacon address itself (address reuse); on mainnet prefer routing it to a wallet
+  // you control. Validated for the target network by the tx builder at build time.
+  const changeAddress = process.env.LIVE_CHANGE_ADDRESS;
   const identities = participantSecrets.map((secret) => importIdentity(secret));
   const config = buildDeterministicConfig(beaconType, recoverySecret);
 
@@ -350,12 +392,16 @@ async function main(): Promise<number> {
   const fundingTxids = await waitForFunding(bitcoin, learnedAddress);
 
   console.log('[live] Phase 3/4: running the live cohort and broadcasting...');
+  console.log(
+    `[live] change routing: ${changeAddress ?? 'back to the beacon address (set LIVE_CHANGE_ADDRESS to use an operator wallet)'}`,
+  );
   const { txid, signalBytes, beaconAddress } = await runLiveCohort(
     config,
     identities,
     bitcoin,
     beaconType,
     allowMainnet,
+    changeAddress,
   );
   if (beaconAddress !== learnedAddress) {
     console.error(`beacon address drift: learned ${learnedAddress}, live run used ${beaconAddress}`);

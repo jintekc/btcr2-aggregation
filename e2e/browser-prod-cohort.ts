@@ -1,7 +1,12 @@
 import { existsSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { startDemoServer, type DemoServer } from '@btcr2-aggregation/service';
-import { STEP_TIMEOUT_MS, launchBrowser, runCohortScenario } from './lib/browser-harness.js';
+import {
+  STEP_TIMEOUT_MS,
+  launchBrowser,
+  runCohortScenario,
+  runMainnetRailsScenario,
+} from './lib/browser-harness.js';
 import type { Browser } from 'playwright-core';
 
 /*
@@ -25,6 +30,7 @@ const SERVED_NETWORK = 'signet';
 
 async function main(): Promise<number> {
   let coordinator: DemoServer | undefined;
+  let mainnetCoordinator: DemoServer | undefined;
   let browser: Browser | undefined;
   let problems: string[] = [];
 
@@ -49,11 +55,30 @@ async function main(): Promise<number> {
     // Same origin as the coordinator: no proxy, no CORS. Assert the browser mints on
     // the served (non-default) network, proving runtime injection end to end.
     problems = await runCohortScenario(context, coordinator.baseUrl, SERVED_NETWORK);
+
+    // MAINNET guard rails (ADR 0010), through the real UI: a second coordinator on
+    // `bitcoin` (offline chain - zero live I/O - opted in via allowMainnet, solo
+    // cohorts so the register panel appears). The SPA must render the REAL FUNDS
+    // badge and keep the first-update registration checkbox-gated; the acknowledged
+    // flow ends at the offline funds check, so nothing can broadcast.
+    console.log('starting mainnet-configured (offline) coordinator for the guard-rails scenario...');
+    mainnetCoordinator = await startDemoServer({
+      port: 0,
+      minParticipants: 1,
+      fillers: 0,
+      network: 'bitcoin',
+      allowMainnet: true,
+      webDistDir: WEB_DIST,
+      quiet: true,
+    });
+    const mainnetContext = await browser.newContext();
+    problems.push(...(await runMainnetRailsScenario(mainnetContext, mainnetCoordinator.baseUrl)));
   } catch (err) {
     problems.push(err instanceof Error ? (err.stack ?? err.message) : String(err));
   } finally {
     if (browser) await browser.close().catch(() => {});
     if (coordinator) await coordinator.stop().catch(() => {});
+    if (mainnetCoordinator) await mainnetCoordinator.stop().catch(() => {});
   }
 
   if (problems.length > 0) {
@@ -61,7 +86,10 @@ async function main(): Promise<number> {
     for (const p of problems) console.error(`  - ${p}`);
     return 1;
   }
-  console.log('\nBROWSER E2E (prod topology) PASSED: Hono served the SPA + protocol + dashboard from one origin; two attendees reached a real aggregated Taproot signature.');
+  console.log(
+    '\nBROWSER E2E (prod topology) PASSED: Hono served the SPA + protocol + dashboard from one origin; ' +
+      'two attendees reached a real aggregated Taproot signature, and the mainnet guard rails held in the UI.',
+  );
   return 0;
 }
 
