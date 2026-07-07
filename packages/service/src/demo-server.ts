@@ -49,6 +49,14 @@ export interface DemoServerOptions {
    */
   network?: string;
   /**
+   * Override the esplora REST host for the resolved {@link network} (env
+   * `ESPLORA_HOST`). The registry ships a sensible public host per network, but a
+   * self-hoster running their own node (a private indexer, or `regtest` where the
+   * default `http://127.0.0.1:3000` may not match their setup) points it here.
+   * Only meaningful under {@link live}; the offline connection makes no requests.
+   */
+  esploraHost?: string;
+  /**
    * Use a real esplora connection for the network above. Default false (env
    * `LIVE=1` also enables it): an offline connection so the gate stays hermetic -
    * resolution returns the genesis document and the registration proxy reports no
@@ -142,7 +150,10 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
   // This one network drives the cohort config, the coordinator identity, the live
   // esplora connection, and the network the browser fetches from `GET /v1/config` -
   // one source of truth end to end.
-  const net = resolveNetwork(opts.network ?? process.env.NETWORK ?? DEFAULT_NETWORK);
+  const net = resolveNetwork(
+    opts.network ?? process.env.NETWORK ?? DEFAULT_NETWORK,
+    opts.esploraHost ?? process.env.ESPLORA_HOST,
+  );
   const networkName = net.name;
   const useLive = opts.live ?? process.env.LIVE === '1';
 
@@ -281,11 +292,16 @@ const invokedDirectly =
 
 if (invokedDirectly) {
   const port = Number(process.env.PORT ?? 8080);
+  // Bind loopback by default (safe for a local run behind nothing); a container or
+  // any deployment that must accept off-host traffic sets HOST=0.0.0.0 and fronts
+  // this with a TLS-terminating reverse proxy (see docs/DEPLOY.md). An explicit
+  // empty HOST= coalesces to unset (loopback), never a bind-all-interfaces `''`.
+  const host = process.env.HOST || undefined;
   const minParticipants = Number(process.env.MIN_PARTICIPANTS ?? 2);
   const fillers = Number(process.env.FILLERS ?? 0);
   const cohortTtlMs = process.env.COHORT_TTL_MS ? Number(process.env.COHORT_TTL_MS) : undefined;
   const phaseTimeoutMs = process.env.PHASE_TIMEOUT_MS ? Number(process.env.PHASE_TIMEOUT_MS) : undefined;
-  startDemoServer({ port, minParticipants, fillers, cohortTtlMs, phaseTimeoutMs })
+  startDemoServer({ port, host, minParticipants, fillers, cohortTtlMs, phaseTimeoutMs })
     .then((server) => {
       let shuttingDown = false;
       const shutdown = () => {

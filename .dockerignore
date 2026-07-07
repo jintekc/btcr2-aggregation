@@ -1,0 +1,20 @@
+# Keep the build context small and force a clean install/build inside the image:
+# never ship the host's node_modules (platform-specific) or stale dist.
+**/node_modules
+**/dist
+**/tsconfig.tsbuildinfo
+.git
+.github
+e2e/dist
+e2e/node_modules
+# Operator secrets: compose auto-loads a root .env (ESPLORA_HOST can carry
+# basic-auth credentials), and COPY . . would otherwise bake it into the image.
+# Mirrors .gitignore.
+.env
+.env.*
+*.env
+!.env.example
+# IPFS durable stores, local scratch, editor state.
+**/.ipfs
+*.log
+.DS_Store

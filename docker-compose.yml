@@ -1,0 +1,58 @@
+# Self-hostable did:btcr2 aggregation coordinator.
+#
+# `docker compose up --build` runs a real coordinator on mutinynet (fast, free
+# coins, no real money) serving the SPA + API on http://localhost:8080. Flip the
+# behavior with environment variables (or a .env file next to this one); the full
+# reference is docs/DEPLOY.md.
+#
+# One image serves any network: the browser reads the chain at runtime from
+# GET /v1/config, so you never rebuild to switch networks - just change NETWORK.
+
+name: btcr2-aggregation
+
+services:
+  coordinator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: btcr2-aggregation-coordinator:latest
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      # Chain the coordinator and browser use. mutinynet default; an unknown name
+      # fails fast at boot. signet | testnet3 | testnet4 | regtest | bitcoin.
+      NETWORK: ${NETWORK:-mutinynet}
+      # LIVE=1 uses a real esplora connection (server-side resolution + the
+      # /v1/tx/* registration proxy). Empty = offline (no chain I/O).
+      LIVE: ${LIVE:-}
+      # Point resolution + the tx proxy at your own indexer (needs LIVE=1). Empty
+      # uses the registry's public host for NETWORK.
+      ESPLORA_HOST: ${ESPLORA_HOST:-}
+      # Mainnet moves real funds, so it is refused without this explicit opt-in
+      # even offline. Leave empty for test networks.
+      ALLOW_MAINNET: ${ALLOW_MAINNET:-}
+      # Operator-held x-only recovery public key (64 hex) for every cohort's ADR
+      # 042 recovery leaf. REQUIRED before any beacon is funded for real; without
+      # it cohorts get a throwaway key whose secret is discarded (funds-loss mode).
+      RECOVERY_KEY: ${RECOVERY_KEY:-}
+      # Cohort sizing. MIN_PARTICIPANTS complete a cohort; FILLERS are operator-run
+      # honest co-signers (each its OWN key, not a service key) so a lone browser
+      # attendee can complete a real n-of-n cohort. FILLERS=0 for all-real cohorts.
+      MIN_PARTICIPANTS: ${MIN_PARTICIPANTS:-2}
+      FILLERS: ${FILLERS:-1}
+      # Opt-in IPFS (Helia) pinning (ADR 0011). IPFS_DIR persists pins across
+      # restarts (mount the volume below); IPFS_ANNOUNCE advertises a wss multiaddr
+      # for browsers on an https page to dial through your TLS proxy.
+      IPFS: ${IPFS:-}
+      IPFS_DIR: ${IPFS_DIR:-}
+      IPFS_ANNOUNCE: ${IPFS_ANNOUNCE:-}
+    # Uncomment together with IPFS=1 + IPFS_DIR=/data/ipfs to persist pins. Use the
+    # NAMED volume below (pre-created node-owned in the image); a bind mount or a
+    # different IPFS_DIR is root-owned and the node user cannot write to it (see
+    # docs/DEPLOY.md).
+    # volumes:
+    #   - ipfs-data:/data/ipfs
+
+# volumes:
+#   ipfs-data:
