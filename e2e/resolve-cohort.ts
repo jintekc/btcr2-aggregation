@@ -1,19 +1,33 @@
 import { pathToFileURL } from 'node:url';
 import { canonicalHash } from '@did-btcr2/common';
+import { SchnorrKeyPair } from '@did-btcr2/keypair';
+import { bytesToHex } from '@noble/hashes/utils';
 import { p2tr } from '@scure/btc-signer';
-import type { BitcoinConnection } from '@did-btcr2/bitcoin';
+import { BitcoinConnection } from '@did-btcr2/bitcoin';
 import { createParticipant } from '@btcr2-aggregation/participant';
-import { createService, MemoryArtifactStore, resolveBtcr2 } from '@btcr2-aggregation/service';
 import {
+  createService,
+  deriveCohortBeaconAddress,
+  MemoryArtifactStore,
+  resolveBtcr2,
+} from '@btcr2-aggregation/service';
+import {
+  bakedExternalIdentityFromKeys,
   buildCohortConfig,
+  buildSingletonRegistrationTx,
   createExternalIdentity,
   createIdentity,
+  genesisP2trBeaconAddress,
+  MIN_REGISTRATION_FUNDING_SATS,
   NETWORK,
   resolveNetwork,
+  updateHashBytes,
   type BeaconType,
   type Identity,
   type IdType,
+  type NetworkConfig,
 } from '@btcr2-aggregation/shared';
+import { startRegtestStack, type RegtestStack } from './lib/regtest.js';
 
 /**
  * M3d resolve round-trip - the milestone Definition of Done.
@@ -43,8 +57,14 @@ import {
  * appended aggregate beacon service. The cohort's aggregate beacon tx (built and,
  * under LIVE, broadcast) is what enables the controller's later aggregated updates.
  *
- * Hermetic by default (a mock esplora, no chain) so it runs in the gate; the
- * `LIVE=1` variant broadcasts real transactions and resolves over real esplora.
+ * Hermetic by default (a mock esplora, no chain) so it runs in the gate. The
+ * `LIVE=1` variant is the M3-PLAN definition of done: it broadcasts REAL beacon
+ * transactions and resolves over real esplora, for both beacon types and both
+ * onboarding models (KEY with its ADR 0008 registration tx; BAKED per ADR 0012
+ * with none). On regtest (the default, and the CI leg - see ADR 0013) the run is
+ * fully self-contained: e2e/lib/regtest.ts boots a throwaway bitcoind +
+ * esplora-electrs, funds every address from its mining wallet, and auto-mines.
+ * `LIVE_NETWORK=mutinynet` keeps the operator in the funding loop (manual leg).
  */
 
 /** Reject if `p` does not settle within `ms` (the timeout does not keep Node alive). */
@@ -246,22 +266,371 @@ async function runResolveCohort(
   }
 }
 
+/* -------------------------------------------------------------------------- */
+/* LIVE=1 variant: real broadcasts + real esplora resolution (M3-PLAN DoD).    */
+/* -------------------------------------------------------------------------- */
+
 /**
- * LIVE=1 variant (operator-run, NOT in the hermetic gate). Broadcasts a real
- * aggregate beacon tx and publishes the participant's first update through their
- * genesis SingletonBeacon on a real network, then resolves over real esplora. This
- * needs an operator-funded wallet: both the cohort beacon address AND each resolved
- * participant's genesis P2TR address must hold a spendable UTXO. Left as a documented
- * manual step; the hermetic round-trip above is the CI Definition of Done.
+ * How a live leg gets addresses funded and confirmations mined. On regtest the
+ * harness IS the faucet and the miner (fully automated - the CI path); on an
+ * operator network (mutinynet manual runs) funding is a printed prompt + an
+ * esplora poll and confirmations ride real blocks.
  */
-async function runLiveResolveNote(): Promise<void> {
-  console.log(
-    '\nLIVE=1 requested: a live resolve round-trip broadcasts a real aggregate beacon tx AND a ' +
-      'genesis SingletonBeacon registration signal for the first update, then resolves over real ' +
-      'esplora. Both the cohort beacon address and the participant genesis P2TR address must be ' +
-      'operator-funded. This path is manual (out of the hermetic gate); run e2e/live-broadcast-cohort.ts ' +
-      'for the broadcast+anchor leg, fund the printed genesis address, then GET /resolve/:did.',
+interface LiveOps {
+  /**
+   * Fund `address` with `sats` (confirmed + esplora-visible); resolves to the
+   * SET of txids the live tx builder could legitimately spend from the address.
+   * A set, not one txid: the builder spends the DEEPEST confirmed UTXO above
+   * dust (ADR 0010), which on an operator-funded address with prior history is
+   * not necessarily the payment that satisfied this fund() call.
+   */
+  fund(address: string, sats: number): Promise<Set<string>>;
+  confirmPollIntervalMs: number;
+  confirmTimeoutMs: number;
+}
+
+/** Esplora transaction subset the on-chain assertions read. */
+interface EsploraTx {
+  vin: Array<{ txid: string }>;
+  vout: Array<{ scriptpubkey: string }>;
+  status: { confirmed: boolean };
+}
+
+/** Esplora `GET /address/:addr/utxo` entry subset the registration leg reads. */
+interface EsploraAddressUtxo {
+  txid: string;
+  vout: number;
+  value: number;
+  status: { confirmed: boolean };
+}
+
+/** Sats pre-funded to each cohort beacon address (well above the live-path floor). */
+const LIVE_FUND_SATS = Number(process.env.FUND_SATS ?? 100_000);
+/** Sats pre-funded to a KEY member's genesis P2TR for its registration tx. */
+const REGISTRATION_FUND_SATS = 10_000;
+/** Longest a manual (non-regtest) leg waits for operator funding. */
+const FUND_TIMEOUT_MS = Number(process.env.FUND_TIMEOUT_MS ?? 1_800_000);
+
+/** Poll esplora until `txid` confirms, or reject after `timeoutMs`. */
+async function waitForConfirmed(
+  chain: BitcoinConnection,
+  txid: string,
+  timeoutMs: number,
+  intervalMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await chain.rest.transaction.isConfirmed(txid).catch(() => false)) {
+      return;
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`tx ${txid} did not confirm within ${timeoutMs}ms`);
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
+
+/** Above-dust threshold for spendable-UTXO eligibility (the builder's floor). */
+const SPENDABLE_DUST_SATS = 546;
+
+/** Operator-funded `LiveOps.fund`: print the address, poll for a confirmed UTXO. */
+async function manualFund(chain: BitcoinConnection, address: string, sats: number): Promise<Set<string>> {
+  console.log(`\n[live] FUND ${address} with >= ${sats} sats (waiting up to ${FUND_TIMEOUT_MS / 60_000}min)`);
+  const deadline = Date.now() + FUND_TIMEOUT_MS;
+  for (;;) {
+    const utxos = (await chain.rest.address.getUtxos(address).catch(() => [])) as EsploraAddressUtxo[];
+    if (utxos.some((u) => u.status.confirmed && u.value >= sats)) {
+      // Every confirmed above-dust UTXO is a legitimate builder input (it spends
+      // the DEEPEST one, e.g. an earlier small test payment), so all their txids
+      // count as "funded" for the vin assertion.
+      const eligible = utxos.filter((u) => u.status.confirmed && u.value > SPENDABLE_DUST_SATS);
+      if (eligible.length > 1) {
+        console.log(
+          `[live] note: ${eligible.length} eligible UTXOs at ${address}; the builder spends the ` +
+            'deepest one, and one below the live funding floor would abort the run',
+        );
+      }
+      console.log(`[live] funded: ${eligible.map((u) => u.txid).join(', ')}`);
+      return new Set(eligible.map((u) => u.txid));
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`address ${address} was not funded with ${sats} confirmed sats in time`);
+    }
+    await new Promise((r) => setTimeout(r, 10_000));
+  }
+}
+
+/**
+ * One REAL live round-trip of (`beaconType`, `model`): pre-fund the pre-derived
+ * cohort beacon address, run the cohort with `live + broadcast` so the service
+ * builds, co-signs, and broadcasts the aggregate beacon tx spending it, then
+ * resolve a member over the real HTTP `GET /resolve/:did` route against the same
+ * live connection - asserting both the on-chain transaction (real prevout, real
+ * OP_RETURN signal, confirmed) and the reconstructed document.
+ *
+ * Model semantics (the "both onboarding models" of the DoD):
+ * - `KEY`: the first update is undiscoverable at the aggregate beacon (ADR 0007),
+ *   so the member funds its genesis P2TR and broadcasts the ADR 0008 singleton
+ *   registration tx (`buildSingletonRegistrationTx`, first Node end-to-end use).
+ *   BOTH txs then exist on-chain; method@0.51.0 resolves the duplicate cleanly
+ *   (round 1 applies the update from the singleton signal, round 2 confirms the
+ *   aggregate copy as a byte-identical duplicate) - but the duplicate still
+ *   increments the resolver's version counter, so versionId reads 2 or 3
+ *   depending on rounds, and the DID must stay first-update-terminal (a later
+ *   genuine update would trip LATE_PUBLISHING against the inflated counter).
+ *   Content, not the counter, is asserted.
+ * - `BAKED`: the aggregate beacon is IN the genesis (ADR 0012), so the single
+ *   beacon tx is the only on-chain artifact and the first update resolves at the
+ *   aggregate beacon with no registration tx - versionId is exactly 2.
+ *
+ * The cohort beacon address is pre-derived from the roster for BOTH models
+ * (`deriveCohortBeaconAddress` is pure; a KEY member's cohort key IS its DID key
+ * per ADR 0006), so funding happens before the run - no mid-run funding race and
+ * no operator, which is what makes the regtest gate automatable at all.
+ */
+async function runLiveResolveCohort(
+  beaconType: BeaconType,
+  model: 'KEY' | 'BAKED',
+  net: NetworkConfig,
+  chain: BitcoinConnection,
+  ops: LiveOps,
+  quiet: boolean,
+): Promise<string[]> {
+  const n = 2;
+  const log = quiet ? () => {} : (msg: string) => console.log(msg);
+  const slug = beaconType === 'SMTBeacon' ? 'smt' : 'cas';
+  const problems: string[] = [];
+  const store = new MemoryArtifactStore();
+
+  const config = { ...buildCohortConfig(n, beaconType, net.name), maxParticipants: n };
+  let identities: Identity[];
+  if (model === 'BAKED') {
+    const roster = Array.from({ length: n }, () => SchnorrKeyPair.generate());
+    const rosterAddr = deriveCohortBeaconAddress(config, roster.map((k) => k.publicKey.compressed));
+    identities = roster.map((keys) => bakedExternalIdentityFromKeys(keys, rosterAddr, beaconType, net));
+  } else {
+    identities = Array.from({ length: n }, () => createIdentity(net));
+  }
+  const rosterPks = identities.map((i) => i.keys.publicKey.compressed);
+  const beaconAddress = deriveCohortBeaconAddress(config, rosterPks);
+  const fundTxids = await ops.fund(beaconAddress, LIVE_FUND_SATS);
+
+  const service = createService({
+    identity: createIdentity(net),
+    config,
+    store,
+    bitcoin: chain,
+    live: true,
+    broadcast: true,
+    rosterPks,
+    confirmPollIntervalMs: ops.confirmPollIntervalMs,
+    confirmTimeoutMs: ops.confirmTimeoutMs,
+  });
+  let cohortId = '';
+  service.runner.on('signing-complete', (result) => { cohortId = result.cohortId; });
+  const anchored = new Promise<{ txid: string; confirmed: boolean }>((resolve, reject) => {
+    service.broadcaster!.on('beacon-anchored', (event) => resolve(event));
+    service.broadcaster!.on('beacon-broadcast-failed', ({ reason }) =>
+      reject(new Error(`beacon broadcast failed: ${reason}`)));
+  });
+  // The rejection is consumed by the withTimeout await below; this pre-attached
+  // no-op handler keeps an EARLY broadcast failure (which fires during
+  // runner.run(), long before that await) - or one after an early return - from
+  // crashing the process as an unhandled rejection and skipping teardown.
+  anchored.catch(() => {});
+
+  const { baseUrl } = await service.start(0);
+  const participants = identities.map((identity) => createParticipant({ identity, baseUrl, beaconType }));
+  const complete = participants.map(
+    (p) => new Promise<void>((resolve) => p.runner.on('cohort-complete', () => resolve())),
   );
+
+  try {
+    await Promise.all(participants.map((p) => p.start()));
+    await withTimeout(service.runner.run(), 120_000, `live ${model} ${beaconType} aggregation run`);
+    await withTimeout(Promise.all(complete), 30_000, 'live participant completion');
+    if (!cohortId) {
+      return ['no cohortId captured from signing-complete'];
+    }
+    const cohort = service.runner.session.getCohort(cohortId) as unknown as HarvestedCohort | undefined;
+    if (!cohort) {
+      return [`cohort ${cohortId} not found via runner.session.getCohort`];
+    }
+    // PARITY: the address the harness funded is the address the cohort announced.
+    if (cohort.beaconAddress !== beaconAddress) {
+      problems.push(`announced beacon address ${cohort.beaconAddress} != pre-derived/funded ${beaconAddress}`);
+    }
+    if (!cohort.signalBytes) {
+      return [...problems, 'cohort has no signalBytes'];
+    }
+    const { txid: beaconTxid, confirmed } = await withTimeout(
+      anchored, ops.confirmTimeoutMs + 30_000, 'beacon-anchored event',
+    );
+    if (!confirmed) {
+      problems.push(`beacon tx ${beaconTxid} was broadcast but did not confirm in-window`);
+    }
+    await waitForUpdates(store, n, 10_000);
+
+    // ON-CHAIN, PATH-UNIQUE assertions (the anti-false-green rule): the broadcast
+    // tx must spend a UTXO this leg actually funded (never the all-zero fixture
+    // prevout) and its last vout must carry the cohort's real 32-byte signal.
+    const beaconTx = (await chain.rest.transaction.get(beaconTxid)) as unknown as EsploraTx;
+    const expectedOpReturn = `6a20${bytesToHex(cohort.signalBytes)}`;
+    if (beaconTx.vout[beaconTx.vout.length - 1]?.scriptpubkey !== expectedOpReturn) {
+      problems.push(
+        `beacon tx ${beaconTxid} last vout is not the cohort signal ${expectedOpReturn} ` +
+          `(vouts: ${beaconTx.vout.map((v) => v.scriptpubkey).join(', ')})`,
+      );
+    }
+    if (!beaconTx.vin.some((v) => fundTxids.has(v.txid))) {
+      problems.push(
+        `beacon tx ${beaconTxid} does not spend a funded UTXO (${[...fundTxids].join(', ')}) ` +
+          `(vins: ${beaconTx.vin.map((v) => v.txid).join(', ')})`,
+      );
+    }
+    // Confirmation via a read INDEPENDENT of the code path under test: the
+    // `beacon-anchored` flag above is produced by the app's own isConfirmed
+    // polling, so it alone cannot prove that polling is honest.
+    if (!beaconTx.status.confirmed) {
+      problems.push(`beacon tx ${beaconTxid} is not confirmed per the direct esplora read`);
+    }
+
+    // Resolve the first cohort member end to end over the REAL HTTP route,
+    // against the same injected live connection the service broadcast through.
+    const did = [...cohort.pendingUpdates.keys()][0];
+    const identity = identities.find((i) => i.did === did);
+    if (!identity) {
+      return [...problems, `resolved did ${did} has no matching participant identity`];
+    }
+    if (model === 'KEY') {
+      // ADR 0008 self-bootstrap: fund the genesis P2TR, broadcast the singleton
+      // registration tx carrying the update hash, and let it confirm.
+      const update = cohort.pendingUpdates.get(did)!;
+      const genesisAddr = genesisP2trBeaconAddress(identity.keys, net);
+      await ops.fund(genesisAddr, REGISTRATION_FUND_SATS);
+      const utxos = (await chain.rest.address.getUtxos(genesisAddr)) as unknown as EsploraAddressUtxo[];
+      const utxo = utxos
+        .filter((u) => u.status.confirmed && BigInt(u.value) >= MIN_REGISTRATION_FUNDING_SATS)
+        .sort((a, b) => b.value - a.value)[0];
+      if (!utxo) {
+        return [...problems, `no confirmed spendable UTXO at the genesis beacon ${genesisAddr}`];
+      }
+      const registration = buildSingletonRegistrationTx({
+        keys: identity.keys,
+        utxo: { txid: utxo.txid, vout: utxo.vout, value: utxo.value },
+        updateHash: updateHashBytes(update),
+        network: net,
+      });
+      await chain.rest.transaction.send(registration.rawHex);
+      await waitForConfirmed(chain, registration.txid, ops.confirmTimeoutMs, ops.confirmPollIntervalMs);
+      log(`[live] ${model} ${beaconType}: registration tx ${registration.txid} confirmed at ${genesisAddr}`);
+    }
+
+    const res = await fetch(`${baseUrl}/resolve/${did}`);
+    const body = (await res.json()) as {
+      didDocument?: ResolvedDoc;
+      didDocumentMetadata?: { versionId?: unknown };
+      error?: string;
+    };
+    if (res.status !== 200) {
+      problems.push(`GET /resolve/${did} returned ${res.status} (${body.error ?? 'no error body'})`);
+      return problems;
+    }
+    const services = body.didDocument?.service ?? [];
+    const beacon = services.find((s) => s.id === `${did}#beacon-${slug}`);
+    if (!beacon || beacon.type !== beaconType) {
+      problems.push(
+        `resolved document lacks the ${beaconType} service ${did}#beacon-${slug}; ` +
+          `services=[${services.map((s) => `${s.id.split('#')[1]}:${s.type}`).join(', ')}]`,
+      );
+    } else {
+      const endpoint = Array.isArray(beacon.serviceEndpoint) ? beacon.serviceEndpoint[0] : beacon.serviceEndpoint;
+      if (endpoint !== `bitcoin:${beaconAddress}`) {
+        problems.push(`beacon serviceEndpoint ${endpoint} != the real funded cohort beacon bitcoin:${beaconAddress}`);
+      }
+    }
+    // versionId: BAKED sees ONE signal -> exactly 2. KEY sees the same first
+    // update at BOTH beacons; method@0.51.0 confirms the duplicate instead of
+    // erroring but still increments its counter. On regtest both signals are
+    // deterministically confirmed + indexed before this resolve (the leg waited
+    // on each), so the round-2 duplicate confirmation MUST be observed: exactly
+    // 3. On operator networks indexing lag makes 2 or 3 both faithful.
+    const versionId = String(body.didDocumentMetadata?.versionId);
+    const acceptable =
+      model === 'KEY' ? (net.name === 'regtest' ? ['3'] : ['2', '3']) : ['2'];
+    if (!acceptable.includes(versionId)) {
+      problems.push(`resolved ${did} at versionId ${versionId}, expected ${acceptable.join(' or ')}`);
+    }
+
+    if (problems.length === 0) {
+      log(
+        `[ok] live ${model} ${beaconType}: beacon tx ${beaconTxid} confirmed on ${net.name} spending ` +
+          `${[...fundTxids].join(', ')} with the real signal; GET /resolve/${did} reconstructed the ` +
+          `document with the ${beaconType} at bitcoin:${beaconAddress} (versionId ${versionId})`,
+      );
+    }
+    return problems;
+  } finally {
+    for (const p of participants) {
+      p.stop();
+    }
+    await service.stop();
+  }
+}
+
+/**
+ * The LIVE=1 driver: regtest (default) is fully self-contained - the harness
+ * boots a throwaway bitcoind + esplora-electrs, funds every address from its
+ * mining wallet, and auto-mines so the app's own confirmation polling is
+ * exercised against real blocks. Any other test network (LIVE_NETWORK=mutinynet
+ * being the documented manual leg) keeps the operator in the funding loop.
+ * mainnet is refused outright: this leg mints throwaway keys and burns fees.
+ */
+async function runLiveResolve(quiet: boolean): Promise<string[]> {
+  const netName = process.env.LIVE_NETWORK ?? 'regtest';
+  const envHost = process.env.ESPLORA_HOST;
+  const base = resolveNetwork(netName, envHost);
+  if (base.isMainnet) {
+    throw new Error(
+      'the live resolve leg refuses mainnet: it generates throwaway keys and burns real sats. ' +
+        'See docs/adr/0010-mainnet-guard-rails.md.',
+    );
+  }
+  let stack: RegtestStack | undefined;
+  let net = base;
+  let ops: LiveOps;
+  if (netName === 'regtest' && envHost === undefined) {
+    stack = await startRegtestStack({ quiet });
+    const { fund } = stack;
+    net = resolveNetwork('regtest', stack.esploraHost);
+    stack.startAutoMine(1500);
+    // Fresh keys every leg -> the funded payment is the address's only UTXO.
+    ops = {
+      fund: async (address, sats) => new Set([await fund(address, sats)]),
+      confirmPollIntervalMs: 500,
+      confirmTimeoutMs: 60_000,
+    };
+  } else {
+    const pollChain = new BitcoinConnection({ network: net.name, rest: { host: net.esploraHost } });
+    ops = {
+      fund: (address, sats) => manualFund(pollChain, address, sats),
+      confirmPollIntervalMs: 10_000,
+      confirmTimeoutMs: Number(process.env.CONFIRM_TIMEOUT_MS ?? 600_000),
+    };
+  }
+  const chain = new BitcoinConnection({ network: net.name, rest: { host: net.esploraHost } });
+  const problems: string[] = [];
+  try {
+    for (const model of ['KEY', 'BAKED'] as const) {
+      for (const beaconType of ['CASBeacon', 'SMTBeacon'] as const) {
+        const legProblems = await runLiveResolveCohort(beaconType, model, net, chain, ops, quiet);
+        problems.push(...legProblems.map((p) => `live ${model} ${beaconType}: ${p}`));
+      }
+    }
+  } finally {
+    await stack?.stop();
+  }
+  return problems;
 }
 
 async function main(): Promise<number> {
@@ -280,8 +649,9 @@ async function main(): Promise<number> {
     ...smtX1.map((p) => `x1 SMT: ${p}`),
   ];
 
-  if (process.env.LIVE === '1') {
-    await runLiveResolveNote();
+  const live = process.env.LIVE === '1';
+  if (live) {
+    problems.push(...(await runLiveResolve(quiet)));
   }
 
   if (problems.length > 0) {
@@ -295,7 +665,12 @@ async function main(): Promise<number> {
     '\nRESOLVE E2E PASSED: real CAS and SMT cohorts - for both KEY (k1) and EXTERNAL (x1) ' +
       'controllers - persisted their artifacts, and resolveBtcr2 reconstructed each ' +
       "participant's DID document (containing the appended aggregate beacon service) from the " +
-      'persisted store (x1 via its sidecar genesis), driven server-side over a mock chain (no live network).',
+      'persisted store (x1 via its sidecar genesis), driven server-side over a mock chain (no live network).' +
+      (live
+        ? '\nLIVE legs PASSED: KEY and BAKED cohorts (CAS and SMT) broadcast real, confirmed beacon ' +
+          'txs spending the pre-funded UTXOs, KEY additionally anchored its singleton registration ' +
+          'tx, and every leg resolved over the real HTTP GET /resolve/:did against live esplora.'
+        : ''),
   );
   return 0;
 }

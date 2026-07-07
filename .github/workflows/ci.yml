@@ -1,0 +1,123 @@
+# CI: the hermetic 16-check gate (zero chain access) + the regtest live-path gate
+# (ADR 0013). The two are SEPARATE jobs on purpose: the hermetic job must not see
+# LIVE/NETWORK/etc in its environment (most e2e legs consume ambient env directly;
+# only e2e:config self-scrubs), while the live job opts in explicitly.
+#
+# Supply-chain posture (matches the repo's pnpm minimumReleaseAge stance): actions
+# are pinned by full commit SHA (the version comment is documentation, the SHA is
+# the truth) and the chain tooling downloads are SHA256-verified.
+#
+# pnpm: pnpm 11 defaults minimumReleaseAge to 24h and re-applies it to EVERY
+# lockfile entry on install, so a dep published within the cutoff would turn CI red
+# with zero code change. `--trust-lockfile` skips that re-verification (the
+# reviewed lockfile is the trusted base), and pnpm_config_verify_deps_before_run
+# stops each `pnpm <script>` (including the nested `pnpm -r build` inside the
+# browser legs) from re-triggering it.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# One run per ref: stacked pushes to a PR cancel the superseded run; pushes to
+# main never cancel an earlier merge's verification.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  pnpm_config_verify_deps_before_run: "false"
+
+jobs:
+  hermetic:
+    name: hermetic gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.4.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --trust-lockfile
+      # The browser legs launch full Chromium (resolveChromium skips headless_shell
+      # builds), headless with --no-sandbox; no Xvfb needed. playwright-core is a
+      # dep of the e2e workspace package, so the exec must be scoped there.
+      - name: Cache Playwright Chromium
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - run: pnpm --filter @btcr2-aggregation/e2e exec playwright-core install --with-deps chromium
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm e2e
+      - run: pnpm e2e:smt
+      - run: pnpm e2e:x1
+      - run: pnpm e2e:mixed
+      - run: pnpm e2e:x1:negative
+      - run: pnpm e2e:persist
+      - run: pnpm e2e:resolve
+      - run: pnpm e2e:config
+      - run: pnpm e2e:ipfs
+      - run: pnpm e2e:baked
+      - run: pnpm e2e:live:mock
+      - run: pnpm e2e:browser
+      - run: pnpm e2e:browser:prod
+
+  regtest-live:
+    name: regtest live-path gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Pinned chain tooling (ADR 0013). bitcoind comes from the official
+      # bitcoincore.org tarball; electrs is the Blockstream esplora fork prebuilt
+      # published by RCasatta/electrsd (the exact artifact BDK's CI pins - there
+      # are no official Blockstream electrs binary releases). Both are verified
+      # against the SHA256 recorded here before use.
+      BITCOIN_CORE_VERSION: "29.3"
+      BITCOIN_CORE_SHA256: "3b7fbb5cf5f9009c578b0bbe8512e67309ec2266f69facf402bd59238322ed07"
+      ELECTRS_BUILD: "electrs_linux_esplora_a33e97e1a1fc63fa9c20a116bb92579bbf43b254"
+      ELECTRS_ZIP_SHA256: "865e26a96e8df77df01d96f2f569dcf9622fc87a8d99a9b8fe30861a4db9ddf1"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.4.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --trust-lockfile
+      - name: Cache bitcoind + electrs
+        id: regtest-bin
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.local/regtest-bin
+          key: regtest-bin-bitcoin-${{ env.BITCOIN_CORE_VERSION }}-${{ env.ELECTRS_BUILD }}
+      - name: Provision bitcoind + esplora-electrs
+        if: steps.regtest-bin.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.local/regtest-bin
+          cd "$(mktemp -d)"
+          curl -fsSL --max-time 300 -O "https://bitcoincore.org/bin/bitcoin-core-${BITCOIN_CORE_VERSION}/bitcoin-${BITCOIN_CORE_VERSION}-x86_64-linux-gnu.tar.gz"
+          echo "${BITCOIN_CORE_SHA256}  bitcoin-${BITCOIN_CORE_VERSION}-x86_64-linux-gnu.tar.gz" | sha256sum -c -
+          tar -xzf "bitcoin-${BITCOIN_CORE_VERSION}-x86_64-linux-gnu.tar.gz"
+          cp "bitcoin-${BITCOIN_CORE_VERSION}/bin/bitcoind" "bitcoin-${BITCOIN_CORE_VERSION}/bin/bitcoin-cli" ~/.local/regtest-bin/
+          curl -fsSL --max-time 300 -o electrs.zip "https://github.com/RCasatta/electrsd/releases/download/electrs_releases/${ELECTRS_BUILD}.zip"
+          echo "${ELECTRS_ZIP_SHA256}  electrs.zip" | sha256sum -c -
+          unzip -o electrs.zip -d ~/.local/regtest-bin
+          chmod +x ~/.local/regtest-bin/electrs
+      - name: Add regtest tooling to PATH
+        run: echo "$HOME/.local/regtest-bin" >> "$GITHUB_PATH"
+      - name: Live resolve round-trip on regtest (both beacon types, both onboarding models)
+        env:
+          LIVE: "1"
+          LIVE_NETWORK: regtest
+        run: pnpm e2e:resolve
