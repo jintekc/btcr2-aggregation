@@ -342,9 +342,30 @@ behavior is opt-in.
   the CID derived from the DID alone. Gate now 15 checks (+ `e2e:ipfs`; e2e:config
   covers the `IPFS=1` env form; the prod browser e2e adds the publish scenario).
 
-- **M3f (remaining) - network matrix completion + ADRs.** `GenesisDocument.create`
-  baked-beacon path (pre-known aggregate beacon) + genesis store route; regtest CI node
-  for an automated live-path gate.
+- **M3f - baked-genesis onboarding + genesis store. DONE & VERIFIED 2026-07-06**
+  (ADR 0012). The `GenesisDocument.create` baked-beacon path is shipped: MuSig2 key
+  aggregation is non-interactive, so `deriveCohortBeaconAddress(config, memberPks)`
+  (service, wrapping the library's own `AggregationCohort.computeBeaconAddress` for
+  exact parity) derives a FIXED ROSTER's aggregate beacon address before any DID
+  exists; `buildBakedExternalGenesis` bakes it into an x1 genesis (both genesis
+  shapes now route through `GenesisDocument.create`, hash-parity pinned), and
+  `bakedExternalIdentityFromKeys` mints the DID. The first update is then
+  discoverable AT the aggregate beacon (no registration tx - the ADR 0007
+  chicken-and-egg falls for pre-provisioned cohorts) and appends a
+  `#beacon-singleton` exit ramp instead of duplicating the baked service
+  (`classifyCohortFit`; a mismatched baked identity DECLINES - cooperative
+  non-inclusion - never throws mid-protocol). The genesis STORE gained its missing
+  writer: baked geneses are staged at bootstrap-auth (bounded cache) and promoted
+  at `participant-accepted` with digest re-verification, so an accepted baked
+  member resolves via sidecar-less `GET /resolve/:did` (versionId 2 from a cold
+  GET, over real HTTP). Classic x1 geneses are deliberately NOT auto-persisted
+  (privacy line: DID -> personal funding address); `POST /resolve` persists
+  nothing. Fixed rosters are enforced (`rosterPks` opt-in gate +
+  `maxParticipants`). Gate now 16 checks (+ `e2e:baked`: CAS + SMT round-trips
+  with parity, interloper-rejection, non-member CAS-v1/SMT-502 negatives, and a
+  mismatch-decline + privacy-line cohort).
+
+- **M3f (remaining) - regtest CI node** for an automated live-path gate.
 
 ## Spikes required before/within M3c (do not skip)
 
