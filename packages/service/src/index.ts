@@ -4,13 +4,23 @@ import {
   AggregationServiceRunner,
   HttpServerTransport,
   type CohortConfig,
+  type PendingOptIn,
 } from '@did-btcr2/aggregation/service';
 import { resolveBtcr2SenderPk } from '@did-btcr2/method';
-import { assertNetworkAllowed, resolveNetwork, type Identity, type NetworkConfig } from '@btcr2-aggregation/shared';
+import { bytesToHex } from '@noble/hashes/utils';
+import {
+  assertNetworkAllowed,
+  hasBakedAggregateBeacon,
+  resolveNetwork,
+  type Identity,
+  type NetworkConfig,
+} from '@btcr2-aggregation/shared';
 import type { BitcoinConnection, FeeEstimator } from '@did-btcr2/bitcoin';
 import { createHonoApp } from './hono-adapter.js';
 import { makeProvideTxData, type LiveTxConfig } from './tx.js';
 import { persistCohortArtifacts } from './persist.js';
+import { GenesisStagingCache, persistMemberGenesis } from './genesis-capture.js';
+import { decideRosterOptIn } from './roster.js';
 import {
   attachBeaconBroadcast,
   BeaconBroadcaster,
@@ -62,6 +72,13 @@ export {
   type ResolverLike,
 } from './resolve.js';
 export { createOfflineBitcoinConnection } from './offline-chain.js';
+export { deriveCohortBeaconAddress } from './beacon-address.js';
+export { decideRosterOptIn, bytesEqual, type RosterDecision } from './roster.js';
+export {
+  GenesisStagingCache,
+  persistMemberGenesis,
+  type GenesisPersistOutcome,
+} from './genesis-capture.js';
 export {
   createIpfsNode,
   validatePinRequest,
@@ -182,6 +199,18 @@ export interface CreateServiceOptions {
    * peer. Independent of the live path: pinning moves data, never funds.
    */
   ipfs?: IpfsNode;
+  /**
+   * Restrict cohort opt-ins to this FIXED roster of 33-byte compressed public
+   * keys (ADR 0012). A pre-provisioned (baked-genesis) cohort derives its
+   * aggregate beacon address from the roster BEFORE the cohort runs
+   * (`deriveCohortBeaconAddress`); the address commits to the exact seated key
+   * set, so a single interloper opt-in would silently invalidate every baked
+   * genesis and strand any pre-funding. With this set, an opt-in whose
+   * `participantPk` is not in the roster is rejected. Pair it with
+   * `maxParticipants` on the {@link config} so the cohort cannot overfill.
+   * Omit (default) for open cohorts - the pre-baked behavior, unchanged.
+   */
+  rosterPks?: Uint8Array[];
 }
 
 export interface StartedService {
@@ -219,12 +248,39 @@ export interface Service {
 export function createService(opts: CreateServiceOptions): Service {
   const { did, keys } = opts.identity;
 
+  // Staging for BAKED x1 geneses seen at bootstrap-auth, promoted to the durable
+  // store only on `participant-accepted` (the membership trust boundary; ADR 0012).
+  // Only baked-shape geneses are staged: a CLASSIC x1 genesis maps its DID to the
+  // controller's personal funding address, and auto-publishing that without the
+  // controller's say-so would be an unconsented disclosure (an SMT cohort member
+  // in particular chose the privacy-preserving beacon type) - classic x1 stays on
+  // the controller-supplied sidecar `POST /resolve/:did` path. A baked genesis is
+  // operator-authored for aggregator-served resolution, so persisting it is the
+  // point. No store, nothing to promote into, so nothing is staged.
+  const genesisStaging = opts.store ? new GenesisStagingCache() : undefined;
+
+  // Roster keys already seated per cohort, so a duplicate opt-in cannot drift the
+  // aggregate off the pre-derived baked address (ADR 0012). Keyed by cohort id
+  // because each advertise round is a fresh cohort. Only used with `rosterPks`.
+  const seatedRosterKeys = new Map<string, Set<string>>();
+
   const transport = new HttpServerTransport({
     // Genesis-aware sender resolution: a KEY (k1) sender's key is decoded from its
     // DID; an EXTERNAL (x1) sender that is not yet a registered peer is
     // bootstrap-authenticated from the self-verifying `genesisDocument` carried on
     // its opt-in (ADR 066). k1 behavior is unchanged (no genesis -> decode the DID).
-    resolveSenderPk: resolveBtcr2SenderPk,
+    // The wrapper additionally stages a successfully-authenticated BAKED genesis
+    // for possible promotion at acceptance; it never changes the auth result.
+    resolveSenderPk: (senderDid: string, senderOpts?: { genesisDocument?: object }) => {
+      const pk = resolveBtcr2SenderPk(senderDid, senderOpts);
+      if (genesisStaging && pk && senderOpts?.genesisDocument) {
+        const genesis = senderOpts.genesisDocument as Record<string, unknown>;
+        if (hasBakedAggregateBeacon(genesis)) {
+          genesisStaging.remember(senderDid, genesis);
+        }
+      }
+      return pk;
+    },
     heartbeatIntervalMs: opts.heartbeatIntervalMs ?? 0,
     // Bound the opt-in body before the genesis hash check (default 64 KiB); passed
     // through only when set so the transport default otherwise applies.
@@ -269,6 +325,32 @@ export function createService(opts: CreateServiceOptions): Service {
     // passes both so abandoned/stalled cohorts reject instead of wedging.
     cohortTtlMs: opts.cohortTtlMs,
     phaseTimeoutMs: opts.phaseTimeoutMs,
+    // Fixed-roster gate for pre-provisioned (baked) cohorts: accept an opt-in only
+    // when its key is BOUND to the authenticated sender (participantPk ===
+    // communicationPk, which the transport cross-checks against the sender's
+    // genesis), is in the roster, and is not already seated - so the aggregated key
+    // set, and therefore the pre-derived beacon address, cannot drift (ADR 0012,
+    // `decideRosterOptIn`). Omitted (the default) leaves the library's accept-all
+    // behavior untouched. Seated keys are tracked per cohort (rounds re-advertise
+    // under fresh cohort ids).
+    ...(opts.rosterPks !== undefined
+      ? {
+          onOptInReceived: async (optIn: PendingOptIn) => {
+            const seen = seatedRosterKeys.get(optIn.cohortId) ?? new Set<string>();
+            const decision = decideRosterOptIn(opts.rosterPks!, optIn, seen);
+            if (decision.accepted) {
+              seen.add(bytesToHex(optIn.participantPk));
+              seatedRosterKeys.set(optIn.cohortId, seen);
+            } else {
+              console.warn(
+                `[service] rejected opt-in from ${optIn.participantDid} for cohort ` +
+                  `${optIn.cohortId}: ${decision.reason}`,
+              );
+            }
+            return { accepted: decision.accepted };
+          },
+        }
+      : {}),
   });
 
   // When a store is configured, harvest each completed cohort's off-chain
@@ -291,6 +373,34 @@ export function createService(opts: CreateServiceOptions): Service {
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[service] failed to persist cohort ${cohortId} artifacts: ${message}`);
       });
+    });
+    // Promote a staged BAKED genesis to the durable store the moment its sender is
+    // ACCEPTED into a cohort (ADR 0012). Acceptance is the trust boundary: it is
+    // operator-gated (rosterPks / onOptInReceived) and bounded per cohort, unlike
+    // the bootstrap-auth seam the staging cache sits on. From here the member's x1
+    // DID resolves via a sidecar-less `GET /resolve/:did` (NeedGenesisDocument is
+    // served from the store). Fire-and-forget like the artifact persist: a write
+    // failure must never disturb the protocol.
+    runner.on('participant-accepted', ({ cohortId, participantDid }) => {
+      const genesis = genesisStaging?.take(participantDid);
+      if (!genesis) {
+        return;
+      }
+      void persistMemberGenesis(store, participantDid, genesis)
+        .then((outcome) => {
+          if (outcome === 'hash-mismatch') {
+            // Bootstrap-auth verified the genesis against this DID, so a mismatch
+            // here means the staged content was corrupted - loud, not silent.
+            console.error(
+              `[service] staged genesis for accepted member ${participantDid} (cohort ${cohortId}) ` +
+                'failed re-verification against the DID commitment; NOT persisted',
+            );
+          }
+        })
+        .catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`[service] failed to persist genesis for ${participantDid}: ${message}`);
+        });
     });
   }
 

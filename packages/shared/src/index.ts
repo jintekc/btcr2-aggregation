@@ -79,6 +79,38 @@ export function createIdentity(network: NetworkConfig = resolveNetwork(NETWORK))
   return { did, keys };
 }
 
+/** The placeholder controller id a genesis document carries before its DID is minted. */
+const GENESIS_PLACEHOLDER = 'did:btcr2:_';
+
+/**
+ * Build an EXTERNAL (x1) genesis document from its parts via the library's
+ * `GenesisDocument.create`: a single Multikey verification method (the identity key)
+ * referenced by every relationship, plus the given beacon `service` array. Going
+ * through the library constructor validates the genesis shape (placeholder ids
+ * everywhere) and keeps this app on the method package's own genesis code path.
+ * The class instance is JSON-round-tripped back to a plain object: that is the wire
+ * and store form the genesis travels as (opt-in body, sidecar, artifact store), and
+ * canonicalization is JSON-round-trip stable, so the hash the DID commits to is
+ * identical either way (pinned by spec against the pre-refactor literal shape).
+ */
+function externalGenesisFromParts(
+  publicKeyMultibase: string,
+  service: Array<{ id: string; type: string; serviceEndpoint: string }>,
+): Record<string, unknown> {
+  const keyId = `${GENESIS_PLACEHOLDER}#key-0`;
+  const genesis = GenesisDocument.create(
+    [{ id: keyId, type: 'Multikey', controller: GENESIS_PLACEHOLDER, publicKeyMultibase }],
+    {
+      authentication: [keyId],
+      assertionMethod: [keyId],
+      capabilityInvocation: [keyId],
+      capabilityDelegation: [keyId],
+    },
+    service,
+  );
+  return JSON.parse(JSON.stringify(genesis)) as Record<string, unknown>;
+}
+
 /**
  * Build the genesis DID document for an EXTERNAL (x1) identity backed by `keys`.
  *
@@ -102,29 +134,48 @@ export function buildExternalGenesis(
   network: NetworkConfig = resolveNetwork(NETWORK),
 ): Record<string, unknown> {
   const beaconAddress = genesisP2trBeaconAddress(keys, network);
-  return {
-    'id': 'did:btcr2:_',
-    '@context': ['https://www.w3.org/ns/did/v1.1', 'https://btcr2.dev/context/v1'],
-    'verificationMethod': [
-      {
-        id: 'did:btcr2:_#key-0',
-        type: 'Multikey',
-        controller: 'did:btcr2:_',
-        publicKeyMultibase: keys.publicKey.multibase.encoded,
-      },
-    ],
-    'authentication': ['did:btcr2:_#key-0'],
-    'assertionMethod': ['did:btcr2:_#key-0'],
-    'capabilityInvocation': ['did:btcr2:_#key-0'],
-    'capabilityDelegation': ['did:btcr2:_#key-0'],
-    'service': [
-      {
-        id: 'did:btcr2:_#service-0',
-        type: 'SingletonBeacon',
-        serviceEndpoint: `bitcoin:${beaconAddress}`,
-      },
-    ],
-  };
+  return externalGenesisFromParts(keys.publicKey.multibase.encoded, [
+    {
+      id: `${GENESIS_PLACEHOLDER}#service-0`,
+      type: 'SingletonBeacon',
+      serviceEndpoint: `bitcoin:${beaconAddress}`,
+    },
+  ]);
+}
+
+/**
+ * Build a BAKED EXTERNAL (x1) genesis document: instead of the classic genesis's
+ * SingletonBeacon at the key's own P2TR address, it declares the PRE-KNOWN cohort
+ * aggregate beacon (`CASBeacon` or `SMTBeacon` at the cohort's Taproot beacon
+ * address). A resolver queries every beacon already in the document on its first
+ * discovery round, so the controller's FIRST aggregated update is discoverable at
+ * the aggregate beacon with no singleton registration transaction - this removes
+ * the ADR 0007 chicken-and-egg for pre-provisioned cohorts (ADR 0012).
+ *
+ * The aggregate beacon address is a pure function of the cohort roster's public
+ * keys plus the cohort's recovery parameters and network (MuSig2 key aggregation is
+ * non-interactive; see `deriveCohortBeaconAddress` in the service package), so an
+ * operator who fixes the roster can derive it BEFORE any DID exists: mint keys,
+ * derive the address, bake it here, mint the DIDs, then run the cohort. The trade
+ * is a FIXED ROSTER: any change to the member key set (or the recovery params)
+ * changes the address and strands every genesis baked with the old one.
+ *
+ * The service id fragment is `#beacon-<slug>` - the exact fragment a cohort update
+ * would append - so `buildSignedUpdate` detects the baked case and appends a
+ * SingletonBeacon exit ramp instead of duplicating the aggregate service.
+ */
+export function buildBakedExternalGenesis(
+  keys: SchnorrKeyPair,
+  beaconAddress: string,
+  beaconType: BeaconType = 'CASBeacon',
+): Record<string, unknown> {
+  return externalGenesisFromParts(keys.publicKey.multibase.encoded, [
+    {
+      id: `${GENESIS_PLACEHOLDER}#beacon-${beaconSlug(beaconType)}`,
+      type: beaconType,
+      serviceEndpoint: `bitcoin:${beaconAddress}`,
+    },
+  ]);
 }
 
 /**
@@ -172,6 +223,43 @@ export function importExternalIdentity(
   const keys = SchnorrKeyPair.fromSecret(secret);
   const genesisDocument = buildExternalGenesis(keys, network);
   return { did: externalDidFromGenesis(genesisDocument, network), keys, genesisDocument };
+}
+
+/**
+ * Mint a BAKED EXTERNAL (x1) identity from an EXISTING keypair and the pre-derived
+ * cohort aggregate beacon address (ADR 0012). There is deliberately no
+ * `createBakedExternalIdentity` that generates keys: the beacon address is a
+ * function of ALL roster public keys, so by construction the keys must exist
+ * before the address (mint the roster's keys, derive the address, then bake).
+ *
+ * NOTE: one secret maps to MULTIPLE x1 DIDs - the classic
+ * {@link createExternalIdentity} DID and one baked DID per (cohort address, beacon
+ * type). Re-importing a baked identity therefore needs the address + type again
+ * ({@link importBakedExternalIdentity}); importing the bare secret as EXTERNAL
+ * silently re-derives the CLASSIC genesis and a different DID.
+ */
+export function bakedExternalIdentityFromKeys(
+  keys: SchnorrKeyPair,
+  beaconAddress: string,
+  beaconType: BeaconType = 'CASBeacon',
+  network: NetworkConfig = resolveNetwork(NETWORK),
+): Identity {
+  const genesisDocument = buildBakedExternalGenesis(keys, beaconAddress, beaconType);
+  return { did: externalDidFromGenesis(genesisDocument, network), keys, genesisDocument };
+}
+
+/**
+ * Reconstruct a BAKED EXTERNAL (x1) identity from its 32-byte secret plus the baked
+ * cohort beacon address and type. Deterministic: the same (secret, address, type,
+ * network) re-derives the exact same baked DID.
+ */
+export function importBakedExternalIdentity(
+  secret: string | Uint8Array,
+  beaconAddress: string,
+  beaconType: BeaconType = 'CASBeacon',
+  network: NetworkConfig = resolveNetwork(NETWORK),
+): Identity {
+  return bakedExternalIdentityFromKeys(SchnorrKeyPair.fromSecret(secret), beaconAddress, beaconType, network);
 }
 
 /**
@@ -257,14 +345,80 @@ export function buildCohortConfig(
   };
 }
 
+/** Type guard: a DID-document service entry of an aggregate beacon type (CAS/SMT). */
+function isAggregateBeaconService(value: unknown): value is { type: BeaconType; serviceEndpoint?: unknown } {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const type = (value as { type?: unknown }).type;
+  return type === 'CASBeacon' || type === 'SMTBeacon';
+}
+
+/** True when a genesis document bakes at least one aggregate (CAS/SMT) beacon service. */
+export function hasBakedAggregateBeacon(genesisDocument: Record<string, unknown>): boolean {
+  const service = genesisDocument.service;
+  return Array.isArray(service) && service.some(isAggregateBeaconService);
+}
+
 /**
- * Build a signed did:btcr2 update that appends a beacon service (CAS or SMT,
- * default CAS) pointing at the cohort's beacon address. Returned to the
- * participant runner's onProvideUpdate callback as the participant's contribution
- * to the cohort. The service `type` and `#beacon-<slug>` id fragment match the
- * cohort's beacon type, with distinct fragments (`#beacon-cas` vs `#beacon-smt`)
- * so a DID that ever rides both a CAS and an SMT cohort never collides on
- * `/service/-`.
+ * How an identity's genesis relates to the cohort it is about to contribute an
+ * update to (ADR 0012):
+ *
+ * - `'append'`: no aggregate beacon in the genesis (a KEY identity or a classic
+ *   EXTERNAL one). The update appends the cohort's aggregate beacon service - the
+ *   pre-baked behavior, byte-identical.
+ * - `'exit-ramp'`: the genesis already bakes THIS cohort's aggregate beacon (same
+ *   type, same address). Appending it again would duplicate the service (the
+ *   library's JSON Patch `add /service/-` does not reject duplicate ids), so the
+ *   update instead appends a SingletonBeacon at the key's own genesis P2TR address:
+ *   the controller's sovereign path for later updates once the cohort disbands.
+ * - `'mismatch'`: the genesis bakes an aggregate beacon that is NOT this cohort's
+ *   (wrong address, or same address with the other beacon type - the address does
+ *   not commit to the beacon type, so a CAS-baked identity CAN be seated in an SMT
+ *   cohort of the same roster). Submitting would either duplicate the fragment id
+ *   or strand the update at a beacon whose signals carry the other artifact kind,
+ *   leaving the DID permanently unresolvable. The participant layer must DECLINE
+ *   (cooperative non-inclusion) rather than submit; `buildSignedUpdate` throws.
+ */
+export type CohortFit = 'append' | 'exit-ramp' | 'mismatch';
+
+/**
+ * Classify how `genesisDocument` fits a cohort's `(beaconAddress, beaconType)`.
+ * Works on the raw (placeholder-id) genesis and on a resolved document alike: the
+ * decision reads only service `type` + `serviceEndpoint`, never ids. A `k1`
+ * identity passes `undefined` and always gets `'append'`.
+ */
+export function classifyCohortFit(
+  genesisDocument: Record<string, unknown> | undefined,
+  beaconAddress: string,
+  beaconType: BeaconType,
+): CohortFit {
+  const service = genesisDocument?.service;
+  const aggregates = Array.isArray(service) ? service.filter(isAggregateBeaconService) : [];
+  if (aggregates.length === 0) {
+    return 'append';
+  }
+  const matchesCohort = aggregates.some(
+    (s) => s.type === beaconType && s.serviceEndpoint === `bitcoin:${beaconAddress}`,
+  );
+  return matchesCohort ? 'exit-ramp' : 'mismatch';
+}
+
+/**
+ * Build a signed did:btcr2 update for the cohort at `beaconAddress`. Returned to
+ * the participant runner's onProvideUpdate callback as the participant's
+ * contribution to the cohort.
+ *
+ * What the update's JSON patch appends depends on {@link classifyCohortFit}:
+ * for the classic models (KEY, classic EXTERNAL) it appends the cohort's aggregate
+ * beacon service (`#beacon-cas` / `#beacon-smt`, distinct fragments so a DID that
+ * ever rides both cohort types never collides on `/service/-`); for a BAKED
+ * EXTERNAL identity riding the exact cohort it was baked for, the aggregate beacon
+ * is already in the genesis, so the update appends a `#beacon-singleton`
+ * SingletonBeacon exit ramp at the key's genesis P2TR address instead (on the
+ * DID's own decoded network). A `'mismatch'` fit throws - callers inside the
+ * cohort protocol must pre-classify and decline instead (see the participant
+ * package), because a throw inside onProvideUpdate stalls the whole cohort.
  *
  * KEY (`k1`) and EXTERNAL (`x1`) identities differ only in how the current document
  * is resolved before the patch is applied: a KEY DID resolves deterministically from
@@ -280,6 +434,15 @@ export function buildSignedUpdate(
   beaconType: BeaconType = 'CASBeacon',
   genesisDocument?: Record<string, unknown>,
 ) {
+  const fit = classifyCohortFit(genesisDocument, beaconAddress, beaconType);
+  if (fit === 'mismatch') {
+    throw new Error(
+      `buildSignedUpdate: this identity's genesis bakes an aggregate beacon that is not this ` +
+        `cohort's (${beaconType} at bitcoin:${beaconAddress}). A baked identity can only ride the ` +
+        'exact cohort it was provisioned for; submitting here would leave the DID unresolvable. ' +
+        'Cohort participants must decline instead of submitting (classifyCohortFit).',
+    );
+  }
   const doc = genesisDocument
     ? Resolver.external(Identifier.decode(did), genesisDocument)
     : Resolver.deterministic({
@@ -297,21 +460,24 @@ export function buildSignedUpdate(
         network: Identifier.decode(did).network,
       });
   const vm = doc.verificationMethod[0];
-  const unsigned = Updater.construct(
-    doc,
-    [
-      {
-        op: 'add',
-        path: '/service/-',
-        value: {
+  // The exit ramp's singleton address is derived on the DID's own decoded network
+  // (same rationale as the deterministic branch above: never the build-time default).
+  const appended =
+    fit === 'exit-ramp'
+      ? {
+          id: `${did}#beacon-singleton`,
+          type: 'SingletonBeacon',
+          serviceEndpoint: `bitcoin:${genesisP2trBeaconAddress(
+            kp,
+            resolveNetwork(Identifier.decode(did).network as NetworkName),
+          )}`,
+        }
+      : {
           id: `${did}#beacon-${beaconSlug(beaconType)}`,
           type: beaconType,
           serviceEndpoint: `bitcoin:${beaconAddress}`,
-        },
-      },
-    ],
-    1,
-  );
+        };
+  const unsigned = Updater.construct(doc, [{ op: 'add', path: '/service/-', value: appended }], 1);
   return Updater.sign(did, unsigned, vm, new LocalSigner(kp.raw.secret!));
 }
 

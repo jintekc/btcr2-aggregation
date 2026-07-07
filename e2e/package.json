@@ -11,6 +11,7 @@
     "e2e:x1:negative": "tsx headless-cohort.ts --negative",
     "e2e:persist": "tsx persist-cohort.ts",
     "e2e:resolve": "tsx resolve-cohort.ts",
+    "e2e:baked": "tsx baked-cohort.ts",
     "e2e:config": "tsx config.ts",
     "e2e:live:mock": "tsx live-mock-cohort.ts",
     "e2e:live:broadcast": "tsx live-broadcast-cohort.ts",
@@ -23,6 +24,7 @@
     "@btcr2-aggregation/shared": "workspace:*",
     "@did-btcr2/bitcoin": "^0.8.0",
     "@did-btcr2/common": "^9.1.0",
+    "@did-btcr2/keypair": "^0.13.1",
     "@did-btcr2/method": "^0.51.0",
     "@noble/hashes": "^1.8.0",
     "@scure/btc-signer": "^1.8.1"

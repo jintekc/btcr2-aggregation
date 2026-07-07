@@ -4,7 +4,12 @@ import {
   type CohortAdvert,
 } from '@did-btcr2/aggregation/participant';
 import { resolveBtcr2SenderPk } from '@did-btcr2/method';
-import { buildSignedUpdate, type BeaconType, type Identity } from '@btcr2-aggregation/shared';
+import {
+  buildSignedUpdate,
+  classifyCohortFit,
+  type BeaconType,
+  type Identity,
+} from '@btcr2-aggregation/shared';
 
 export interface CreateParticipantOptions {
   /** Participant identity (the attendee). */
@@ -47,6 +52,16 @@ export interface Participant {
    * `cohort-complete`), not the body, hence this accessor.
    */
   getSubmittedUpdate(cohortId: string): SubmittedUpdate | undefined;
+  /**
+   * Why this participant DECLINED to submit an update for `cohortId` (cooperative
+   * non-inclusion), or `undefined` if it did not decline. Today the only decline
+   * cause is a BAKED identity seated in a cohort that does not match its baked
+   * aggregate beacon (`classifyCohortFit` = `'mismatch'`, ADR 0012): submitting
+   * would leave the DID unresolvable, and THROWING inside onProvideUpdate would
+   * send neither a submit nor a decline and stall the whole n-of-n cohort - so the
+   * participant declines, still co-signs, and the rest of the cohort is unharmed.
+   */
+  getDeclineReason(cohortId: string): string | undefined;
 }
 
 /**
@@ -89,6 +104,9 @@ export function createParticipant(opts: CreateParticipantOptions): Participant {
   // is non-deterministic (a later rebuild would hash differently).
   const submittedUpdates = new Map<string, SubmittedUpdate>();
 
+  // Cohorts this participant declined to submit an update for, with the reason.
+  const declinedCohorts = new Map<string, string>();
+
   const runner = new AggregationParticipantRunner({
     transport,
     did,
@@ -104,11 +122,27 @@ export function createParticipant(opts: CreateParticipantOptions): Participant {
       return true;
     },
     onProvideUpdate: async ({ cohortId, beaconAddress }) => {
+      const beaconType = cohortBeaconTypes.get(cohortId) ?? defaultBeaconType;
+      // A BAKED identity seated in a cohort that does not match its baked aggregate
+      // beacon (wrong address, or the other beacon type at the same address) must
+      // NOT submit: the update would strand the DID unresolvable. It must not throw
+      // either - the runner catches an onProvideUpdate throw and sends neither a
+      // submit nor a decline, which stalls the entire n-of-n cohort for everyone.
+      // Returning null is the protocol's cooperative non-inclusion: this member
+      // still co-signs, the cohort completes, and only its own update is absent.
+      if (classifyCohortFit(genesisDocument, beaconAddress, beaconType) === 'mismatch') {
+        const reason =
+          `baked aggregate beacon does not match cohort ${cohortId} ` +
+          `(${beaconType} at bitcoin:${beaconAddress}); declining (cooperative non-inclusion)`;
+        declinedCohorts.set(cohortId, reason);
+        console.warn(`[participant ${did}] ${reason}`);
+        return null;
+      }
       const update = buildSignedUpdate(
         did,
         keys,
         beaconAddress,
-        cohortBeaconTypes.get(cohortId) ?? defaultBeaconType,
+        beaconType,
         // For x1, the current document is resolved from this genesis before the
         // beacon-service patch is applied; for k1 it is undefined (deterministic
         // resolution from the key), leaving the k1 update path unchanged.
@@ -134,5 +168,6 @@ export function createParticipant(opts: CreateParticipantOptions): Participant {
       transport.stop();
     },
     getSubmittedUpdate: (cohortId: string) => submittedUpdates.get(cohortId),
+    getDeclineReason: (cohortId: string) => declinedCohorts.get(cohortId),
   };
 }
