@@ -120,7 +120,10 @@ async function learnBeaconAddress(
   beaconType: BeaconType,
 ): Promise<string> {
   const service = createService({
-    identity: importIdentity(SERVICE_SECRET),
+    // The coordinator DID must carry the RUN's network, not the compile-time
+    // default (a mutinynet DID inside a regtest/signet cohort is wrong even if
+    // it does not affect the beacon address).
+    identity: importIdentity(SERVICE_SECRET, resolveNetwork(config.network)),
     config,
     phaseTimeoutMs: 60_000,
     cohortTtlMs: 120_000,
@@ -254,7 +257,7 @@ async function runLiveCohort(
   changeAddress?: string,
 ): Promise<LiveRunResult> {
   const service = createService({
-    identity: importIdentity(SERVICE_SECRET),
+    identity: importIdentity(SERVICE_SECRET, resolveNetwork(config.network)),
     config,
     live: true,
     broadcast: true,
@@ -292,6 +295,11 @@ async function runLiveCohort(
       reject(new Error(`broadcast rejected by the network: ${p.reason}`));
     });
   });
+  // The rejection is consumed by the await below; this pre-attached no-op
+  // handler keeps a broadcast failure that fires while the run is still awaited
+  // (or after an early throw) from crashing the process as an unhandled
+  // rejection and skipping teardown.
+  broadcastSeen.catch(() => {});
   broadcaster.on('beacon-anchored', (p) => {
     console.log(`[live] beacon-anchored: ${p.txid} confirmed=${p.confirmed}`);
   });
@@ -375,7 +383,9 @@ async function main(): Promise<number> {
   // beacon address itself (address reuse); on mainnet prefer routing it to a wallet
   // you control. Validated for the target network by the tx builder at build time.
   const changeAddress = process.env.LIVE_CHANGE_ADDRESS;
-  const identities = participantSecrets.map((secret) => importIdentity(secret));
+  // The run's network, not the compile-time default: a regtest/signet cohort must
+  // mint DIDs whose decoded network segment matches the chain it anchors on.
+  const identities = participantSecrets.map((secret) => importIdentity(secret, netConfig));
   const config = buildDeterministicConfig(beaconType, recoverySecret);
 
   const bitcoin = new BitcoinConnection({

@@ -47,6 +47,13 @@ identical for CAS and SMT:
 | Genesis SingletonBeacon carries the update hash | **Yes** (update fetched from store, applied) |
 | Both | **Error** (`sourceHash !== currentDocumentHash`: the genesis-anchored update cannot be discovered and applied twice) |
 
+> **Stale as of `@did-btcr2/method` 0.51.0** (observed under 0.45.0): the resolver
+> now carries `{currentVersionId, updateHashHistory}` across discovery rounds and
+> confirms the second signal as a byte-identical duplicate instead of erroring.
+> The "Both" row is exactly what a live KEY cohort produces on-chain, and it now
+> resolves - with caveats (versionId inflation; the DID must stay
+> first-update-terminal). See ADR 0013.
+
 The faithful, spec-compliant way to make a controller's **first** update discoverable
 is to publish it through a beacon that is already in the genesis document: a
 `SingletonBeacon` signal (`OP_RETURN = sha256(canonical signed update)`) at one of the

@@ -365,7 +365,24 @@ behavior is opt-in.
   with parity, interloper-rejection, non-member CAS-v1/SMT-502 negatives, and a
   mismatch-decline + privacy-line cohort).
 
-- **M3f (remaining) - regtest CI node** for an automated live-path gate.
+- **M3f - regtest CI node for an automated live-path gate. DONE & VERIFIED
+  2026-07-07 (ADR 0013).** `e2e/lib/regtest.ts` boots a throwaway bitcoind +
+  esplora-electrs (mkdtemp datadir, ephemeral ports, auto-mining); `LIVE=1
+  pnpm e2e:resolve` (alias `e2e:live:regtest`) runs four REAL live legs -
+  {KEY, BAKED} x {CAS, SMT} - each pre-funding the pre-derived cohort beacon
+  address (`deriveCohortBeaconAddress` is pure over the roster, so no LEARN
+  pass and no operator), broadcasting + confirming the real aggregate beacon
+  tx (KEY additionally anchoring its ADR 0008 singleton registration tx -
+  `buildSingletonRegistrationTx`'s first Node end-to-end use), then resolving
+  over the real HTTP `GET /resolve/:did` with path-unique on-chain assertions
+  (spends the leg's own funding txid, carries the cohort's real signal).
+  `.github/workflows/ci.yml` (the repo's first workflow) runs the hermetic
+  16-check gate + the regtest live gate with SHA256-pinned bitcoind 29.3 and
+  the BDK-precedented esplora-electrs prebuilt. Key finding: method@0.51.0
+  resolves the KEY double-signal (registration + aggregate) as a confirmed
+  duplicate - ADR 0007's "both -> error" spike row is stale - but the
+  duplicate inflates the version counter (versionId 2 or 3; such a DID must
+  stay first-update-terminal). This closes the Definition of done below.
 
 ## Spikes required before/within M3c (do not skip)
 
@@ -425,3 +442,9 @@ contains the appended `CASBeacon`/`SMTBeacon` service - for both beacon types an
 onboarding models. The original 8/8 hermetic gate is still green. ADRs 0007+ record the
 live beacon tx, the IPFS/sidecar store, the resolve driver, the onboarding models, and
 the network matrix.
+
+**MET 2026-07-07** (M3f regtest CI node, ADR 0013): `LIVE=1 pnpm e2e:resolve` on
+regtest broadcasts real, confirmed beacon txs for {KEY, BAKED} x {CAS, SMT},
+persists via the artifact store, and resolves each document over the real HTTP
+`GET /resolve/:did`; `LIVE_NETWORK=mutinynet` is the same code path with operator
+funding. Automated in `.github/workflows/ci.yml`.
