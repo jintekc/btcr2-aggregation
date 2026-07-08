@@ -1,7 +1,6 @@
 import { existsSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { BitcoinConnection } from '@did-btcr2/bitcoin';
-import { createParticipant, type Participant } from '@btcr2-aggregation/participant';
 import { buildCohortConfig, createIdentity, DEFAULT_NETWORK, resolveNetwork } from '@btcr2-aggregation/shared';
 import { createIpfsNode, createService, MemoryArtifactStore, type IpfsNode, type Service } from './index.js';
 import { createOfflineBitcoinConnection } from './offline-chain.js';
@@ -21,16 +20,18 @@ export interface DemoServerOptions {
   /** Participants required before a cohort finalizes (default 2). */
   minParticipants?: number;
   /**
-   * Operator-run in-process honest peers per cohort. Set to `minParticipants - 1`
-   * so a single browser attendee can complete a cohort solo; set 0 for an
-   * all-real-attendee cohort (the honest p2p demo). Each peer is an independent
-   * participant with its own key, NOT a service-owned co-signer.
+   * DEV/TEST-ONLY, default 0 and INERT on the production boot path (D-18): this
+   * service no longer spawns any in-process peers at boot. A cohort now comes into
+   * existence only when the operator advertises a draft, and the participants that
+   * co-sign it are real clients. Test harnesses that want honest in-process peers
+   * construct them directly with `createParticipant` (see the e2e harnesses); the
+   * field is retained only so existing callers that pass `fillers: 0` still compile.
    */
   fillers?: number;
   /**
-   * Per-cohort TTL in ms (default 180000 = 3 min). A cohort that does not
-   * complete within this window rejects, and the advertise loop moves on to a
-   * fresh cohort, so one attendee walking away mid-flow cannot wedge the booth.
+   * Per-cohort TTL in ms (default 180000 = 3 min). A cohort that does not complete
+   * within this window rejects on its own completion promise, so a participant who
+   * joins and then walks away mid-flow cannot pin a cohort open forever.
    */
   cohortTtlMs?: number;
   /** Per-phase stall timeout in ms (default 60000 = 1 min). */
@@ -126,20 +127,20 @@ export interface DemoServerOptions {
 export interface DemoServer {
   service: Service;
   baseUrl: string;
-  /** Stop the advertise loop, fillers, and the HTTP server. */
+  /** Stop the service and the HTTP server (and the IPFS node, if one is running). */
   stop(): Promise<void>;
 }
 
 /**
- * Long-lived demo coordinator: serves the aggregation protocol + dashboard feed
- * on a real port and continuously advertises a CAS cohort for browser
- * participants to join. When a cohort completes (or fails), it advertises the
- * next one, so the booth keeps accepting attendees. Bitcoin tx is still the M1
- * fixture (no node, no broadcast).
+ * Long-lived self-hosted aggregation service: serves the aggregation protocol, the
+ * gated dashboard feed, and the built SPA on a real port. It advertises NOTHING on its
+ * own - a cohort comes into existence only when the authenticated operator advertises a
+ * draft through the operator console (SVC-02); a fresh service therefore starts idle
+ * and stays idle until the operator acts. Bitcoin tx defaults to the zero-chain fixture
+ * (no node, no broadcast) unless the live path is opted in.
  */
 export async function startDemoServer(opts: DemoServerOptions = {}): Promise<DemoServer> {
   const minParticipants = opts.minParticipants ?? 2;
-  const fillers = opts.fillers ?? 0;
   const cohortTtlMs = opts.cohortTtlMs ?? 180000;
   const phaseTimeoutMs = opts.phaseTimeoutMs ?? 60000;
   const log = opts.quiet ? () => {} : (msg: string) => console.log(`[demo] ${msg}`);
@@ -252,9 +253,11 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
 
   const service = createService({
     identity: createIdentity(net),
+    // The default cohort config seeds the runner; per-cohort configs supplied by the
+    // operator on advertise take over from here (SVC-01/SVC-02). Long-lived process:
+    // keep advert/inbox SSE alive across idle periods, and bound each cohort so an
+    // abandoned one rejects on its own rather than lingering.
     config: buildCohortConfig(minParticipants, 'CASBeacon', net.name, recoveryKey),
-    // Long-lived booth: keep advert/inbox SSE alive between attendees, and bound
-    // every cohort so an abandoned one rejects and the loop advertises the next.
     heartbeatIntervalMs: 15000,
     cohortTtlMs,
     phaseTimeoutMs,
@@ -269,54 +272,19 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
   });
   const { baseUrl } = await service.start(opts.port ?? 8080, opts.host ?? '127.0.0.1');
   log(
-    `coordinator listening on ${baseUrl} (minParticipants=${minParticipants}, fillers=${fillers}, ` +
+    `service listening on ${baseUrl} (minParticipants=${minParticipants}, ` +
       `web ${resolvedDist ? 'served' : 'not served'}, resolve=${networkName}${useLive ? ' (live esplora)' : ' (offline)'})`,
   );
-
-  let running = true;
-
-  const loop = async (): Promise<void> => {
-    let round = 0;
-    while (running) {
-      round += 1;
-      const peers: Participant[] = [];
-      const { cohortId, completion } = service.runner.advertiseCohort(
-        buildCohortConfig(minParticipants, 'CASBeacon', net.name, recoveryKey),
-      );
-      log(`round ${round}: advertised cohort ${cohortId}; waiting for ${minParticipants} participant(s)`);
-
-      for (let i = 0; i < fillers; i += 1) {
-        // Fillers mint on the SAME operator network as the cohort/coordinator, else a
-        // non-default deployment (NETWORK=signet FILLERS>0) would seat a mutinynet DID
-        // in a signet cohort - the exact cross-network mismatch this slice prevents.
-        const peer = createParticipant({ identity: createIdentity(net), baseUrl });
-        peers.push(peer);
-        await peer.start();
-      }
-      if (fillers > 0) {
-        log(`round ${round}: started ${fillers} in-process peer(s); ${minParticipants - fillers} seat(s) open for browsers`);
-      }
-
-      try {
-        const result = await completion;
-        log(`round ${round}: cohort ${cohortId} complete, ${result.signature.length}-byte ${result.path ?? 'key-path'} signature`);
-      } catch (err) {
-        log(`round ${round}: cohort ${cohortId} ended: ${err instanceof Error ? err.message : String(err)}`);
-      } finally {
-        for (const peer of peers) {
-          peer.stop();
-        }
-      }
-    }
-  };
-
-  void loop();
+  log(
+    operatorPassword
+      ? 'idle until the operator advertises a cohort from the console (POST /v1/operator/cohorts/:id/advertise)'
+      : 'idle; set OPERATOR_PASSWORD to enable the operator console and advertise cohorts',
+  );
 
   return {
     service,
     baseUrl,
     async stop() {
-      running = false;
       await service.stop();
       // After the HTTP server: no request can reach the pin routes once the
       // service is down, so the node can close its stores safely.
@@ -336,10 +304,9 @@ if (invokedDirectly) {
   // empty HOST= coalesces to unset (loopback), never a bind-all-interfaces `''`.
   const host = process.env.HOST || undefined;
   const minParticipants = Number(process.env.MIN_PARTICIPANTS ?? 2);
-  const fillers = Number(process.env.FILLERS ?? 0);
   const cohortTtlMs = process.env.COHORT_TTL_MS ? Number(process.env.COHORT_TTL_MS) : undefined;
   const phaseTimeoutMs = process.env.PHASE_TIMEOUT_MS ? Number(process.env.PHASE_TIMEOUT_MS) : undefined;
-  startDemoServer({ port, host, minParticipants, fillers, cohortTtlMs, phaseTimeoutMs })
+  startDemoServer({ port, host, minParticipants, cohortTtlMs, phaseTimeoutMs })
     .then((server) => {
       let shuttingDown = false;
       const shutdown = () => {
