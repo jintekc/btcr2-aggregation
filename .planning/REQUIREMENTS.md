@@ -63,23 +63,23 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SVC-01 | TBD | Pending |
-| SVC-02 | TBD | Pending |
-| SVC-03 | TBD | Pending |
-| SVC-04 | TBD | Pending |
-| PART-01 | TBD | Pending |
-| PART-02 | TBD | Pending |
-| PART-03 | TBD | Pending |
-| PART-04 | TBD | Pending |
-| HOST-01 | TBD | Pending |
-| HOST-02 | TBD | Pending |
-| HOST-03 | TBD | Pending |
+| SVC-01 | Phase 1 | Pending |
+| SVC-02 | Phase 1 | Pending |
+| SVC-03 | Phase 4 | Pending |
+| SVC-04 | Phase 5 | Pending |
+| PART-01 | Phase 2 | Pending |
+| PART-02 | Phase 2 | Pending |
+| PART-03 | Phase 3 | Pending |
+| PART-04 | Phase 3 | Pending |
+| HOST-01 | Phase 1 | Pending |
+| HOST-02 | Phase 6 | Pending |
+| HOST-03 | Phase 6 | Pending |
 
 **Coverage:**
 - v1 requirements: 11 total
-- Mapped to phases: 0 (roadmap not yet created)
-- Unmapped: 11 ⚠️
+- Mapped to phases: 11 ✓
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-07-07*
-*Last updated: 2026-07-07 after initial definition*
+*Last updated: 2026-07-07 after roadmap creation (traceability populated)*
