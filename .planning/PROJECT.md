@@ -26,14 +26,15 @@ This project is being onboarded into a structured workflow to **course-correct**
 - ✓ Onboarding models: KEY self-bootstrap, EXTERNAL/x1 sidecar, and baked-genesis (existing, ADRs 0009/0012)
 - ✓ Opt-in in-browser IPFS publish plus coordinator pinning (existing, ADR 0011)
 - ✓ Self-host deploy tooling (Dockerfile + docker-compose + `docs/DEPLOY.md`) and a regtest CI live-path gate (existing, ADRs 0013/0014)
+- ✓ Operator authentication protects the control + telemetry surface: httpOnly opaque server-tracked session, fail-closed boot when `OPERATOR_PASSWORD` unset, no unauthenticated mutating/control route (HOST-01 - Phase 1, ADR 0015 supersedes 0004)
+- ✓ Operator creates and configures a cohort on demand from a protected `/operator` console (beacon type CAS/SMT, n-of-n threshold, capacity), not via a boot-time loop (SVC-01 - Phase 1)
+- ✓ Operator advertises a cohort into a per-service directory (public `GET /v1/directory` + `GET /v1/status` derived from the live set); the boot-time auto-advertise loop + fillers are removed (SVC-02 - Phase 1)
 
 ### Active
 
 <!-- The realignment toward the intended two-sided, self-hostable product. Hypotheses until shipped and validated. -->
 
 Service side (operator experience):
-- [ ] Operator can **create and configure** a cohort on demand (beacon type CAS/SMT, network, n-of-n threshold, capacity/roster) - not only via a boot-time auto-advertise loop
-- [ ] Operator can **advertise/publish** a cohort into a per-service directory so participants can find and join it
 - [ ] Operator can **monitor** members and submissions (who joined, pending updates, co-sign progress, anchor status)
 - [ ] Operator can **run aggregation and manage cohort lifecycle** (open -> close -> finalize; pause/cancel/reconfigure) without restarting the process
 
@@ -44,7 +45,6 @@ Participant side (attendee experience):
 - [ ] Participant can **track status and resolve** the updated DID once it is anchored
 
 Self-hostable for real:
-- [ ] The operator/control and telemetry surface is **protected by operator authentication** (today the only control lever is env vars + Ctrl+C; the audit flags "no auth anywhere" as the top blocker to a real public instance)
 - [ ] The full two-sided flow is **smooth end to end for two strangers** (a stranger operator plus a stranger participant complete the loop without insider knowledge)
 - [ ] The product **presents as a real aggregator**, not a booth/demo (retire the lingering "booth"/"attendee" framing in code, UI, and docs)
 
@@ -83,9 +83,13 @@ Self-hostable for real:
 |----------|-----------|---------|
 | Onboard the existing repo into a GSD-managed workflow to course-correct | An unstructured flow drifted from the intended end product | Pending |
 | Target is a two-sided product: services advertise/manage cohorts, participants discover/join/participate | The intended end product is two-sided, not a single demo flow; confirmed by the owner | Pending |
-| Discovery is a per-service cohort directory (not a federated registry, not invite-only) | Keeps each service a self-contained, self-hostable node with no shared infra | Pending |
-| Realign a clean, smooth, self-hostable two-sided core first; fold accreted features (x1/baked/IPFS/mainnet/CI/Docker) in behind it | The drift is demo-grade and not-smooth, not the features themselves | Pending |
+| Discovery is a per-service cohort directory (not a federated registry, not invite-only) | Keeps each service a self-contained, self-hostable node with no shared infra | ✓ Phase 1 (public `GET /v1/directory` + `/v1/status` shipped) |
+| Realign a clean, smooth, self-hostable two-sided core first; fold accreted features (x1/baked/IPFS/mainnet/CI/Docker) in behind it | The drift is demo-grade and not-smooth, not the features themselves | In progress (Phase 1 delivered the operator half) |
 | Consume published `@did-btcr2/*`; do not fork the library | This is a reference/example consumer application | ✓ Good (established) |
+| Operator auth = httpOnly opaque server-tracked session cookie (gates the SSE telemetry feed); fail-closed boot when `OPERATOR_PASSWORD` unset | Only scheme that gates the EventSource feed; enforces "no unauthenticated mutating/control surface" | ✓ Phase 1 (ADR 0015, supersedes ADR 0004) |
+| Remove the boot-time auto-advertise loop; `advertiseDraft` is the sole `runner.advertiseCohort` caller (cohorts exist only on operator action) | Retires the demo happy-path driver; makes advertise operator-driven (the core course-correction) | ✓ Phase 1 (D-17/D-18) |
+| Active Bitcoin network is the service's resolved network, shown read-only per cohort (never a per-cohort form value) | Honors "config-driven network, never hardcoded"; avoids simultaneous multi-network cohorts | ✓ Phase 1 (D-10) |
+| Known follow-up: login throttle keys on raw socket IP (per-proxy under ADR 0014), and session TTL misconfig can disable expiry | Surfaced by code review (WR-01/WR-02) + security audit (T-01-06, medium, non-blocking) | Open - fix recommended before public-internet deploy (01-SECURITY.md) |
 
 ## Evolution
 
@@ -105,4 +109,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-07 after initialization*
+*Last updated: 2026-07-08 after Phase 1 (Authenticated Operator Console + On-Demand Cohort Creation)*

@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 01
-current_phase_name: Authenticated Operator Console + On-Demand Cohort Creation
-status: verifying
-stopped_at: Phase 01 executed 4/4 + goal-verified (4/4); awaiting 3 non-blocking human visual checks (run /gsd-verify-work 1)
-last_updated: "2026-07-08T21:51:43Z"
+current_phase: 2
+current_phase_name: Participant Discovery + Browse-and-Pick Join
+status: planning
+stopped_at: Phase 1 complete (verified 4/4, UAT 3/3, secured threats_open 0); ready to plan Phase 2
+last_updated: "2026-07-08T23:02:34.068Z"
 last_activity: 2026-07-08
-last_activity_desc: Phase 01 executed (4/4 plans), verified 4/4 must-haves, awaiting human UAT (3 visual-fidelity checks)
+last_activity_desc: Phase 1 complete, transitioned to Phase 2
 progress:
   total_phases: 6
   completed_phases: 1
@@ -21,25 +21,25 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-07-07)
+See: .planning/PROJECT.md (updated 2026-07-08)
 
 **Core value:** A stranger can self-host a real aggregation service that advertises cohorts, and another stranger can point a participant at that service's URL, browse its cohorts, join, co-sign, and resolve - a genuinely two-sided, self-hostable product, not a demo.
-**Current focus:** Phase 01 — Authenticated Operator Console + On-Demand Cohort Creation
+**Current focus:** Phase 2 - Participant Discovery + Browse-and-Pick Join
 
 ## Current Position
 
-Phase: 01 (Authenticated Operator Console + On-Demand Cohort Creation) — AWAITING HUMAN VERIFICATION
-Plan: 4 of 4 (all executed + committed)
-Status: Goal-verified 4/4 must-haves; 3 non-blocking visual-fidelity checks pending in 01-UAT.md — run /gsd-verify-work 1 to finalize
-Last activity: 2026-07-08 — Phase 01 executed, verified 4/4, awaiting human UAT
+Phase: 2 — Participant Discovery + Browse-and-Pick Join
+Plan: Not started
+Status: Ready to plan (Phase 1 complete: verified 4/4, UAT 3/3 passed, threats_open 0)
+Last activity: 2026-07-08 — Phase 1 complete, transitioned to Phase 2
 
-Progress: [██████████] plans 4/4; phase pending human UAT
+Progress: [██░░░░░░░░] 17% (Phase 1 of 6 complete)
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 0
+- Total plans completed: 4
 - Average duration: - min
 - Total execution time: 0 hours
 
@@ -47,7 +47,7 @@ Progress: [██████████] plans 4/4; phase pending human UAT
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| - | - | - | - |
+| 1 | 4 | - | - |
 
 **Recent Trend:**
 
@@ -87,8 +87,8 @@ None yet.
 
 [Issues that affect future work]
 
-- No authentication anywhere in the control plane today (CONCERNS.md top blocker) - addressed in Phase 1, must stay green thereafter.
-- Cohort state is single-process, in-memory, one advertise loop; durability/crash-recovery is explicitly deferred to v2 (DUR-01).
+- ✓ [Phase 1] Operator authentication shipped (ADR 0015) - the control plane is no longer unauthenticated; this must stay green in every later phase. Non-blocking follow-up before public-internet deploy: T-01-06 login-throttle-per-proxy + WR-02 NaN-TTL hardening (see 01-SECURITY.md / 01-REVIEW.md).
+- Cohort state is single-process and in-memory; durability/crash-recovery is deferred to v2 (DUR-01). The boot-time auto-advertise loop that used to drive cohorts was removed in Phase 1 - cohorts now exist only on operator action.
 
 ## Deferred Items
 
@@ -103,6 +103,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-08T21:51:43Z
-Stopped at: Phase 01 executed 4/4 + verified 4/4; awaiting 3 non-blocking human visual checks
-Resume file: .planning/phases/01-authenticated-operator-console-on-demand-cohort-creation/01-UAT.md
+Last session: 2026-07-08T23:02:34Z
+Stopped at: Phase 1 complete (executed 4/4, verified 4/4, UAT 3/3 passed, secured threats_open 0); ready to plan Phase 2
+Resume file: None
