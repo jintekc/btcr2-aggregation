@@ -4,17 +4,17 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 01
 current_phase_name: Authenticated Operator Console + On-Demand Cohort Creation
-status: executing
+status: verifying
 stopped_at: Completed 01-02-PLAN.md (operator cohort drafts create/discard/list)
-last_updated: "2026-07-08T21:27:33.342Z"
+last_updated: "2026-07-08T21:37:05.797Z"
 last_activity: 2026-07-08
 last_activity_desc: Phase 01 execution started
 progress:
   total_phases: 6
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 4
-  completed_plans: 3
-  percent: 0
+  completed_plans: 4
+  percent: 17
 ---
 
 # Project State
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-07-07)
 
 Phase: 01 (Authenticated Operator Console + On-Demand Cohort Creation) — EXECUTING
 Plan: 4 of 4
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-07-08 — Phase 01 execution started
 
 Progress: [░░░░░░░░░░] 0%
@@ -58,6 +58,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01 P01 | 11 | 3 tasks | 15 files |
 | Phase 01 P02 | 6min | 2 tasks | 9 files |
 | Phase 01 P03 | 13 min | 3 tasks | 10 files |
+| Phase 01 P04 | 8m | 1 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -73,6 +74,8 @@ Recent decisions affecting current work:
 - [Phase 01]: Phase 1 P02: a cohort draft is app-level config only (never touches the runner until advertise, plan 03); active network is the service's resolved network, never a form value (D-10); capacity applied app-side as maxParticipants (D-11/D-19)
 - [Phase ?]: 01-03: advertiseDraft is the sole runner.advertiseCohort caller; the boot-time auto-advertise loop + boot-path fillers removed (D-17/D-18)
 - [Phase ?]: 01-03: public /v1/directory + /v1/status derive from live runner.session.cohorts filtered to pre-signing OPEN_PHASES; enrichment pruned on completion.finally so the open-count cannot drift (D-09/D-15)
+- [Phase ?]: Phase-1 e2e (e2e:operator) never calls runner.run(); the operator advertise route self-drives the cohort and the harness observes the 64-byte signature off signing-complete
+- [Phase ?]: e2e:operator registered but intentionally NOT wired into CI (deferred to a Phase-6 / CI concern)
 
 ### Pending Todos
 
@@ -99,6 +102,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-08T21:27:01.030Z
+Last session: 2026-07-08T21:36:58.506Z
 Stopped at: Completed 01-02-PLAN.md (operator cohort drafts create/discard/list)
 Resume file: None

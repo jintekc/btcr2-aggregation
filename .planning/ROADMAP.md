@@ -13,7 +13,7 @@ This milestone is a course-correction, not a greenfield build. The full `did:btc
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Authenticated Operator Console + On-Demand Cohort Creation** - Operator logs in and creates/configures/advertises a cohort on demand, replacing the auto-advertise loop
+- [x] **Phase 1: Authenticated Operator Console + On-Demand Cohort Creation** - Operator logs in and creates/configures/advertises a cohort on demand, replacing the auto-advertise loop (completed 2026-07-08)
 - [ ] **Phase 2: Participant Discovery + Browse-and-Pick Join** - Participant points at a service URL, browses its open cohorts, and joins one by choice
 - [ ] **Phase 3: Participant Submit, Co-Sign, Track, and Resolve** - From a chosen cohort, participant submits a DID update, co-signs, tracks the anchor, and resolves
 - [ ] **Phase 4: Operator Cohort Monitoring** - Operator watches members, submissions, co-sign progress, and anchor status live on the protected console
@@ -35,7 +35,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. The operator advertises the configured cohort and it appears as an open, joinable entry in that service's cohort directory.
   4. The full lifecycle still completes end to end for an operator-advertised cohort (co-sign -> anchor -> resolve), now driven by the operator's on-demand action rather than the perpetual auto-advertise loop.
 
-**Plans**: 3/4 plans executed
+**Plans**: 4/4 plans complete
 Plans:
 **Wave 1**
 
@@ -51,7 +51,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 01-04-PLAN.md - Hermetic login->create->advertise->co-sign->resolve e2e proof (success criterion 4, Wave 4)
+- [x] 01-04-PLAN.md - Hermetic login->create->advertise->co-sign->resolve e2e proof (success criterion 4, Wave 4)
 
 **UI hint**: yes
 
@@ -139,7 +139,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Authenticated Operator Console + On-Demand Cohort Creation | 3/4 | In Progress|  |
+| 1. Authenticated Operator Console + On-Demand Cohort Creation | 4/4 | Complete   | 2026-07-08 |
 | 2. Participant Discovery + Browse-and-Pick Join | 0/TBD | Not started | - |
 | 3. Participant Submit, Co-Sign, Track, and Resolve | 0/TBD | Not started | - |
 | 4. Operator Cohort Monitoring | 0/TBD | Not started | - |
