@@ -5,8 +5,8 @@ milestone_name: milestone
 current_phase: 1
 current_phase_name: Authenticated Operator Console + On-Demand Cohort Creation
 status: planning
-stopped_at: Phase 1 context gathered
-last_updated: "2026-07-08T18:00:39.983Z"
+stopped_at: Phase 01 UI-SPEC approved
+last_updated: "2026-07-08T18:25:27.013Z"
 last_activity: 2026-07-07
 last_activity_desc: Roadmap created (6 vertical-MVP phases, 11/11 v1 requirements mapped)
 progress:
@@ -92,6 +92,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-08T18:00:39.979Z
-Stopped at: Phase 1 context gathered
-Resume file: .planning/phases/01-authenticated-operator-console-on-demand-cohort-creation/01-CONTEXT.md
+Last session: 2026-07-08T18:25:27.009Z
+Stopped at: Phase 01 UI-SPEC approved
+Resume file: .planning/phases/01-authenticated-operator-console-on-demand-cohort-creation/01-UI-SPEC.md
