@@ -1,17 +1,20 @@
 ---
 phase: 01-authenticated-operator-console-on-demand-cohort-creation
 verified: 2026-07-08T00:00:00Z
-status: human_needed
+status: passed
 score: 4/4 must-haves verified
 behavior_unverified: 0
 overrides_applied: 0
 human_verification:
+
   - test: "Run `pnpm demo` with OPERATOR_PASSWORD set, open /operator: confirm the login screen visually matches the UI-SPEC (dark-slate, accent reserved to the Sign in CTA); wrong password shows the exact invalid-password copy; correct password reveals the console shell with a Sign out button; open / (root) shows the anonymous participant surface."
     expected: "Visual fidelity to 01-UI-SPEC.md; accent color reserved to the Sign in CTA / active nav / wordmark."
     why_human: "Visual/design fidelity cannot be verified by grep or automated tests (plan 01-01 Task 3 human-check, marked non-blocking)."
+
   - test: "With OPERATOR_PASSWORD set, sign in at /operator, create a CAS 2-of-2 capacity-2 draft: confirm it appears in `Your cohorts` with a neutral Draft badge and the active network; entering capacity below threshold shows the exact validation copy; discarding removes it."
     expected: "Visual fidelity to 01-UI-SPEC.md copy/badge-tone requirements."
     why_human: "Visual/design fidelity cannot be verified by grep or automated tests (plan 01-02 Task 2 human-check, marked non-blocking)."
+
   - test: "Sign in at /operator, advertise a draft: confirm its row flips to the accent Advertised badge and the transient success copy shows; open / (anonymous): PublicStatus shows Service online, the active network, and '1 open cohorts' (or 'No open cohorts right now' before advertising). Confirm accent appears only on the Advertise cohort CTA / active nav / wordmark."
     expected: "Visual fidelity to 01-UI-SPEC.md; accent-color discipline held."
     why_human: "Visual/design fidelity cannot be verified by grep or automated tests (plan 01-03 Task 3 human-check, marked non-blocking)."
