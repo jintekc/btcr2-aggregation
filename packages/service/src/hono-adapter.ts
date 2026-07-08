@@ -27,6 +27,7 @@ import {
   sessionProbeHandler,
   type OperatorAuthConfig,
 } from './operator-auth.js';
+import type { DraftInput, OperatorCohorts } from './operator-cohorts.js';
 import { mountStaticSite } from './static-site.js';
 import { mountArtifactRoutes, type ArtifactStore } from './store.js';
 import { resolveBtcr2 } from './resolve.js';
@@ -160,6 +161,14 @@ export interface HonoAppOptions {
    * participant surface still serves.
    */
   operatorAuth?: OperatorAuthConfig;
+  /**
+   * Operator on-demand cohort drafts (SVC-01). When present ALONGSIDE
+   * {@link operatorAuth}, the gated `POST/GET/DELETE /v1/operator/cohorts` routes are
+   * mounted so an authenticated operator can create, list, and discard cohort drafts.
+   * Inert without {@link operatorAuth} (the routes only mount inside the auth block, so
+   * they always inherit the session guard - never an unauthenticated mutating surface).
+   */
+  operatorCohorts?: OperatorCohorts;
 }
 
 /**
@@ -178,8 +187,18 @@ export function createHonoApp(
   transport: HttpServerTransport,
   opts: HonoAppOptions = {},
 ): Hono<Env> {
-  const { runner, webDistDir, store, broadcaster, network, networkName, bitcoin, ipfs, operatorAuth } =
-    opts;
+  const {
+    runner,
+    webDistDir,
+    store,
+    broadcaster,
+    network,
+    networkName,
+    bitcoin,
+    ipfs,
+    operatorAuth,
+    operatorCohorts,
+  } = opts;
   const app = new Hono<Env>();
 
   // Precompute the served network DTO once at construction (resolveNetwork throws on
@@ -274,6 +293,43 @@ export function createHonoApp(
     app.use('/dashboard/*', requireOperator(operatorAuth.sessions));
     app.post('/v1/operator/logout', logoutHandler(operatorAuth.sessions));
     app.get('/v1/operator/session', sessionProbeHandler());
+
+    // On-demand cohort drafts (SVC-01). Registered AFTER the requireSameOrigin +
+    // requireOperator prefix guards above, so every create/list/discard inherits both
+    // the session gate (T-02-01) and the CSRF check on the mutating verbs (T-02-03).
+    // Only mounted when the operator supplied a cohort surface; absent, the operator
+    // console still authenticates but exposes no cohort routes.
+    if (operatorCohorts) {
+      app.post(
+        '/v1/operator/cohorts',
+        // A create body is a tiny `{ beaconType, threshold, capacity }`; 4 KiB bounds
+        // it during streaming before c.req.json() buffers it (T-02-02). Mirrors the
+        // login / ipfs-pin body limits.
+        bodyLimit({ maxSize: 4 * 1024, onError: (c) => c.json({ error: 'request too large' }, 413) }),
+        async (c) => {
+          let body: unknown;
+          try {
+            body = await c.req.json();
+          } catch {
+            return c.json({ error: 'expected a JSON body { beaconType, threshold, capacity }' }, 400);
+          }
+          try {
+            // validateDraft throws a user-facing message on invalid input; surface it
+            // verbatim as the 400 body (the two numeric messages are the UI-SPEC copy).
+            const dto = operatorCohorts.createDraft(body as DraftInput);
+            return c.json(dto, 201);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            return c.json({ error: message }, 400);
+          }
+        },
+      );
+      app.get('/v1/operator/cohorts', (c) => c.json({ cohorts: operatorCohorts.listCohorts() }));
+      app.delete('/v1/operator/cohorts/:id', (c) => {
+        const ok = operatorCohorts.discardDraft(c.req.param('id'));
+        return ok ? c.json({ ok: true }) : c.json({ error: 'unknown draft' }, 404);
+      });
+    }
   }
 
   // Live telemetry feed. Gated (D-08): mounted only when a runner AND operator auth

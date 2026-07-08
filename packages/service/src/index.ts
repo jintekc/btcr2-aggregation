@@ -18,6 +18,7 @@ import {
 import type { BitcoinConnection, FeeEstimator } from '@did-btcr2/bitcoin';
 import { createHonoApp } from './hono-adapter.js';
 import { createLoginThrottle, createSessionStore } from './operator-auth.js';
+import { createOperatorCohorts } from './operator-cohorts.js';
 import { makeProvideTxData, type LiveTxConfig } from './tx.js';
 import { persistCohortArtifacts } from './persist.js';
 import { GenesisStagingCache, persistMemberGenesis } from './genesis-capture.js';
@@ -46,6 +47,13 @@ export {
   type LoginThrottle,
   type OperatorAuthConfig,
 } from './operator-auth.js';
+export {
+  createOperatorCohorts,
+  type OperatorCohorts,
+  type OperatorCohortsOptions,
+  type OperatorCohortDTO,
+  type DraftInput,
+} from './operator-cohorts.js';
 export { makeProvideTxData, MIN_LIVE_FUNDING_SATS, type LiveTxConfig } from './tx.js';
 export { bridgeRunnerToSse, type DashboardExtras } from './dashboard-sse.js';
 export {
@@ -485,6 +493,18 @@ export function createService(opts: CreateServiceOptions): Service {
     });
   }
 
+  // Operator on-demand cohort drafts (SVC-01). Constructed per-createService like the
+  // auth closures above, and ONLY when the operator surface is enabled - fail-closed
+  // (D-07): no operator password, no cohort routes. The active network is the service's
+  // single resolved network (D-10, never a form value); the recovery key rides from the
+  // service cohort config so a drafted cohort shares the operator's recovery leaf.
+  const operatorCohorts = operatorAuth
+    ? createOperatorCohorts({
+        activeNetwork: resolveNetwork(opts.config.network).name,
+        recoveryKey: opts.config.recoveryKey,
+      })
+    : undefined;
+
   const app = createHonoApp(transport, {
     runner,
     webDistDir: opts.webDistDir,
@@ -505,6 +525,7 @@ export function createService(opts: CreateServiceOptions): Service {
     // Threaded only when a password is configured; undefined leaves the operator
     // surface unmounted (fail-closed, D-07).
     operatorAuth,
+    operatorCohorts,
   });
   let server: ServerType | undefined;
 
