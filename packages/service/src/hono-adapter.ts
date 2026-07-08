@@ -19,6 +19,14 @@ import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { BitcoinConnection } from '@did-btcr2/bitcoin';
 import { bridgeRunnerToSse } from './dashboard-sse.js';
+import {
+  loginHandler,
+  logoutHandler,
+  requireOperator,
+  requireSameOrigin,
+  sessionProbeHandler,
+  type OperatorAuthConfig,
+} from './operator-auth.js';
 import { mountStaticSite } from './static-site.js';
 import { mountArtifactRoutes, type ArtifactStore } from './store.js';
 import { resolveBtcr2 } from './resolve.js';
@@ -140,6 +148,18 @@ export interface HonoAppOptions {
    * mounted unconditionally so the browser can cheaply discover availability.
    */
   ipfs?: IpfsNode;
+  /**
+   * Operator authentication (HOST-01, ADR 0015). When present, the operator surface is
+   * mounted: the public `POST /v1/operator/login`, the session guard on both the
+   * `/v1/operator/*` and `/dashboard/*` prefixes, and the gated
+   * `POST /v1/operator/logout` + `GET /v1/operator/session` routes; the runner's
+   * `/dashboard/events` telemetry feed is gated too (mounted only when a runner AND
+   * operator auth are both present). When ABSENT, none of that mounts - the
+   * fail-closed default (D-07): a service booted without an operator password exposes
+   * no operator/mutating routes and no gated telemetry at all, while the public
+   * participant surface still serves.
+   */
+  operatorAuth?: OperatorAuthConfig;
 }
 
 /**
@@ -158,7 +178,8 @@ export function createHonoApp(
   transport: HttpServerTransport,
   opts: HonoAppOptions = {},
 ): Hono<Env> {
-  const { runner, webDistDir, store, broadcaster, network, networkName, bitcoin, ipfs } = opts;
+  const { runner, webDistDir, store, broadcaster, network, networkName, bitcoin, ipfs, operatorAuth } =
+    opts;
   const app = new Hono<Env>();
 
   // Precompute the served network DTO once at construction (resolveNetwork throws on
@@ -232,7 +253,34 @@ export function createHonoApp(
     );
   }
 
-  if (runner) {
+  // Operator surface (HOST-01, ADR 0015). Mounted ONLY when operator auth is
+  // configured (fail-closed, D-07): a service booted without an OPERATOR_PASSWORD
+  // exposes no operator/mutating routes and no gated telemetry at all. Registration
+  // order is load-bearing (Hono matches in order, RESEARCH Pitfall 3): the public
+  // login POST and the same-origin CSRF guard come first, THEN the session guard on
+  // each gated prefix, THEN the gated routes - so the guard can never sit behind a
+  // route it is meant to protect. Login stays OUTSIDE requireOperator (it is how a
+  // session is obtained) but still gets the same-origin CSRF check.
+  if (operatorAuth) {
+    app.use('/v1/operator/*', requireSameOrigin());
+    app.post(
+      '/v1/operator/login',
+      // Bound the unauthenticated login body before it is parsed (a password JSON is
+      // tiny; 4 KiB is ample). Mirrors the /v1/ipfs/pin body limit.
+      bodyLimit({ maxSize: 4 * 1024, onError: (c) => c.json({ error: 'request too large' }, 413) }),
+      loginHandler(operatorAuth),
+    );
+    app.use('/v1/operator/*', requireOperator(operatorAuth.sessions));
+    app.use('/dashboard/*', requireOperator(operatorAuth.sessions));
+    app.post('/v1/operator/logout', logoutHandler(operatorAuth.sessions));
+    app.get('/v1/operator/session', sessionProbeHandler());
+  }
+
+  // Live telemetry feed. Gated (D-08): mounted only when a runner AND operator auth
+  // are both present, so it inherits the `/dashboard/*` guard registered above. The
+  // browser `EventSource` sends the httpOnly session cookie automatically, so no SSE
+  // transport change is needed - the guard runs before this handler.
+  if (runner && operatorAuth) {
     app.get('/dashboard/events', (c) => {
       dbg('SSE open GET /dashboard/events');
       const stream = openRawSse(c);

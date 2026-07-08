@@ -36,6 +36,17 @@ services:
       # 042 recovery leaf. REQUIRED before any beacon is funded for real; without
       # it cohorts get a throwaway key whose secret is discarded (funds-loss mode).
       RECOVERY_KEY: ${RECOVERY_KEY:-}
+      # Operator console password (HOST-01, ADR 0015). Set this to enable the
+      # login-gated operator console + gated telemetry. UNSET = fail-closed: the
+      # public participant surface still serves, but the console + mutating routes +
+      # /dashboard/events are disabled with a loud boot warning. Never commit a real
+      # value; keep it in a .env file, never baked into the image.
+      OPERATOR_PASSWORD: ${OPERATOR_PASSWORD:-}
+      # Optional: operator session lifetime in ms (default 24h) and the cookie Secure
+      # flag. Leave OPERATOR_COOKIE_SECURE default (on) behind a TLS proxy; set it to
+      # 0 ONLY for a local plain-http run, else the browser drops the session cookie.
+      OPERATOR_SESSION_TTL_MS: ${OPERATOR_SESSION_TTL_MS:-}
+      OPERATOR_COOKIE_SECURE: ${OPERATOR_COOKIE_SECURE:-}
       # Cohort sizing. MIN_PARTICIPANTS complete a cohort; FILLERS are operator-run
       # honest co-signers (each its OWN key, not a service key) so a lone browser
       # attendee can complete a real n-of-n cohort. FILLERS=0 for all-real cohorts.

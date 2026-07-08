@@ -103,6 +103,22 @@ export interface DemoServerOptions {
   ipfsAnnounce?: string[];
   /** Per-pin bitswap fetch bound, ms (tests shorten it; default 15s). */
   ipfsPinTimeoutMs?: number;
+  /**
+   * Operator console password (HOST-01, ADR 0015; env `OPERATOR_PASSWORD`). When set,
+   * the operator console + gated telemetry mount and require a valid session. When
+   * UNSET the service still boots and serves the public participant surface, but the
+   * operator surface is DISABLED with a loud boot warning (fail-closed, D-07, mirrors
+   * the ADR 0010 mainnet loud-boot pattern). Never bake this into the image; never log
+   * it (M4 .env-out-of-image lesson).
+   */
+  operatorPassword?: string;
+  /** Operator session TTL in ms (env `OPERATOR_SESSION_TTL_MS`; default 24h). */
+  operatorSessionTtlMs?: number;
+  /**
+   * Set the operator cookie `Secure` flag (default true). Env `OPERATOR_COOKIE_SECURE=0`
+   * opts out for a local-http run so the session cookie is not silently dropped.
+   */
+  operatorCookieSecure?: boolean;
   /** Suppress logs. */
   quiet?: boolean;
 }
@@ -185,6 +201,24 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
     );
   }
 
+  // Operator console credential (HOST-01, ADR 0015). Fail-closed: no password => the
+  // console + mutating routes + gated telemetry do NOT mount, but the public
+  // participant surface still serves. Loud boot warning mirrors the ADR 0010 mainnet
+  // banner. Never logged. Unlike mainnet this does NOT throw - a fresh self-hosted
+  // service is expected to boot before the operator sets a password (D-07).
+  const operatorPassword = opts.operatorPassword ?? process.env.OPERATOR_PASSWORD;
+  const operatorSessionTtlMs =
+    opts.operatorSessionTtlMs ??
+    (process.env.OPERATOR_SESSION_TTL_MS ? Number(process.env.OPERATOR_SESSION_TTL_MS) : undefined);
+  const operatorCookieSecure =
+    opts.operatorCookieSecure ?? (process.env.OPERATOR_COOKIE_SECURE === '0' ? false : undefined);
+  if (!operatorPassword) {
+    log('!!! OPERATOR CONSOLE DISABLED !!!');
+    log('  - no OPERATOR_PASSWORD set at boot; the public participant surface still serves');
+    log('  - the operator console, mutating cohort routes, and /dashboard/events are OFF');
+    log('  - set OPERATOR_PASSWORD (and restart) to enable operator sign-in');
+  }
+
   const bitcoin = useLive
     ? new BitcoinConnection({ network: net.name, rest: { host: net.esploraHost } })
     : createOfflineBitcoinConnection();
@@ -228,6 +262,10 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
     store,
     bitcoin,
     ipfs,
+    // Operator auth (possibly undefined => fail-closed, operator surface unmounted).
+    operatorPassword,
+    operatorSessionTtlMs,
+    operatorCookieSecure,
   });
   const { baseUrl } = await service.start(opts.port ?? 8080, opts.host ?? '127.0.0.1');
   log(

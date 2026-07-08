@@ -178,6 +178,9 @@ curl -fsS http://localhost:8080/v1/config
 | `ESPLORA_HOST` | registry default | Override the esplora REST host (needs `LIVE=1`). |
 | `ALLOW_MAINNET` | unset | Required for `NETWORK=bitcoin`, even offline. |
 | `RECOVERY_KEY` | unset | x-only recovery pubkey for funded cohorts. Required before funding. |
+| `OPERATOR_PASSWORD` | unset | Operator console password (HOST-01, ADR 0015). Set it to enable the login-gated console + gated telemetry. Unset = fail-closed: public participant surface still serves, operator surface disabled with a loud boot warning. Keep it in a `.env` file, never bake it into the image. |
+| `OPERATOR_SESSION_TTL_MS` | `86400000` (24h) | Operator session lifetime in ms. |
+| `OPERATOR_COOKIE_SECURE` | on | Session cookie `Secure` flag. Leave on behind a TLS proxy; set `0` ONLY for a local plain-http run (else the browser drops the cookie). |
 | `MIN_PARTICIPANTS` | `2` | Participants that complete a cohort. |
 | `FILLERS` | `1` (compose), `0` (bare image) | Operator-run honest co-signers (own keys). `0` = all-real cohorts. |
 | `IPFS` | unset | `1` = run a Helia pinning node. |

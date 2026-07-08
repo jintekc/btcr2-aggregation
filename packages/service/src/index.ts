@@ -17,6 +17,7 @@ import {
 } from '@btcr2-aggregation/shared';
 import type { BitcoinConnection, FeeEstimator } from '@did-btcr2/bitcoin';
 import { createHonoApp } from './hono-adapter.js';
+import { createLoginThrottle, createSessionStore } from './operator-auth.js';
 import { makeProvideTxData, type LiveTxConfig } from './tx.js';
 import { persistCohortArtifacts } from './persist.js';
 import { GenesisStagingCache, persistMemberGenesis } from './genesis-capture.js';
@@ -30,6 +31,21 @@ import type { ArtifactStore } from './store.js';
 import type { IpfsNode } from './ipfs.js';
 
 export { createHonoApp, type HonoAppOptions } from './hono-adapter.js';
+export {
+  SESSION_COOKIE,
+  passwordMatches,
+  newSessionId,
+  createSessionStore,
+  createLoginThrottle,
+  requireOperator,
+  requireSameOrigin,
+  loginHandler,
+  logoutHandler,
+  sessionProbeHandler,
+  type SessionStore,
+  type LoginThrottle,
+  type OperatorAuthConfig,
+} from './operator-auth.js';
 export { makeProvideTxData, MIN_LIVE_FUNDING_SATS, type LiveTxConfig } from './tx.js';
 export { bridgeRunnerToSse, type DashboardExtras } from './dashboard-sse.js';
 export {
@@ -211,6 +227,30 @@ export interface CreateServiceOptions {
    * Omit (default) for open cohorts - the pre-baked behavior, unchanged.
    */
   rosterPks?: Uint8Array[];
+  /**
+   * Operator console password (HOST-01, ADR 0015). When set, this service mounts the
+   * operator surface: `POST /v1/operator/login`, the session guard on
+   * `/v1/operator/*` + `/dashboard/*`, `POST /v1/operator/logout`,
+   * `GET /v1/operator/session`, and the gated `/dashboard/events` telemetry feed. When
+   * UNSET (the default), none of that mounts - fail-closed (D-07): the public
+   * participant surface still serves, but there is no operator/mutating surface and no
+   * gated telemetry. The password is compared with a constant-time check and NEVER
+   * logged; never bake it into an image (env only, M4 .env-out-of-image lesson).
+   */
+  operatorPassword?: string;
+  /**
+   * Operator session lifetime in ms (default 24h). Drives both the server-side session
+   * expiry and the login cookie's `Max-Age`. Only meaningful with {@link operatorPassword}.
+   */
+  operatorSessionTtlMs?: number;
+  /**
+   * Set the `Secure` flag on the operator session cookie (default true). Leave the
+   * default for any real deployment (TLS terminates at the reverse proxy, ADR 0014, so
+   * the browser sees https). Set false ONLY for a local-http run, else the browser
+   * silently drops the cookie over plain http and login 200s then every next request
+   * 401s (RESEARCH Pitfall 2). Only meaningful with {@link operatorPassword}.
+   */
+  operatorCookieSecure?: boolean;
 }
 
 export interface StartedService {
@@ -263,6 +303,24 @@ export function createService(opts: CreateServiceOptions): Service {
   // aggregate off the pre-derived baked address (ADR 0012). Keyed by cohort id
   // because each advertise round is a fresh cohort. Only used with `rosterPks`.
   const seatedRosterKeys = new Map<string, Set<string>>();
+
+  // Operator authentication (HOST-01, ADR 0015), constructed per-createService like the
+  // closures above (never a module singleton, so two services in one test process never
+  // share sessions) and ONLY when a password is configured. Absent, no operatorAuth is
+  // threaded into createHonoApp and the entire operator surface stays unmounted
+  // (fail-closed, D-07). Default TTL 24h; Secure cookie defaults on (TLS at the proxy).
+  const operatorSessionTtlMs = opts.operatorSessionTtlMs ?? 24 * 60 * 60 * 1000;
+  const operatorAuth = opts.operatorPassword
+    ? {
+        sessions: createSessionStore(operatorSessionTtlMs),
+        // ASVS V2 belt-and-suspenders (A5): bound brute-force against a weak password
+        // without a lockout that could self-DoS the operator. 10 attempts / 5 min.
+        throttle: createLoginThrottle({ maxAttempts: 10, windowMs: 5 * 60 * 1000 }),
+        expectedPassword: opts.operatorPassword,
+        cookieSecure: opts.operatorCookieSecure ?? true,
+        sessionTtlMs: operatorSessionTtlMs,
+      }
+    : undefined;
 
   const transport = new HttpServerTransport({
     // Genesis-aware sender resolution: a KEY (k1) sender's key is decoded from its
@@ -444,6 +502,9 @@ export function createService(opts: CreateServiceOptions): Service {
     // injected, so an operator can offer resolution without broadcasting.
     bitcoin: opts.bitcoin,
     ipfs: opts.ipfs,
+    // Threaded only when a password is configured; undefined leaves the operator
+    // surface unmounted (fail-closed, D-07).
+    operatorAuth,
   });
   let server: ServerType | undefined;
 
