@@ -52,6 +52,8 @@ export {
   type OperatorCohorts,
   type OperatorCohortsOptions,
   type OperatorCohortDTO,
+  type DirectoryCohortDTO,
+  type ServiceStatusDTO,
   type DraftInput,
 } from './operator-cohorts.js';
 export { makeProvideTxData, MIN_LIVE_FUNDING_SATS, type LiveTxConfig } from './tx.js';
@@ -500,6 +502,9 @@ export function createService(opts: CreateServiceOptions): Service {
   // service cohort config so a drafted cohort shares the operator's recovery leaf.
   const operatorCohorts = operatorAuth
     ? createOperatorCohorts({
+        // The live runner: advertiseDraft is the sole `advertiseCohort` caller (D-17)
+        // and directory/status read `runner.session.cohorts` as the source of truth (D-15).
+        runner,
         activeNetwork: resolveNetwork(opts.config.network).name,
         recoveryKey: opts.config.recoveryKey,
       })

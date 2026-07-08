@@ -233,6 +233,22 @@ export function createHonoApp(
   // returned (the client rebuilds the full config via `resolveNetwork(network)`).
   app.get('/v1/config', (c) => c.json(networkDto));
 
+  // Public cohort directory + service status (SVC-02, D-09/D-14/D-15). Always mounted
+  // (like /v1/config, OUTSIDE the operator-auth block): the anonymous participant
+  // surface browses the open cohorts and reads a truthful open-count with no session.
+  // Both derive from the live advertised set via `operatorCohorts`. When no operator
+  // surface is configured (fail-closed boot, no OPERATOR_PASSWORD) there is nothing to
+  // advertise, so they return an empty directory / zero open count rather than 500 -
+  // the anonymous surface always gets a sane answer.
+  app.get('/v1/directory', (c) => c.json(operatorCohorts ? operatorCohorts.directory() : []));
+  app.get('/v1/status', (c) =>
+    c.json(
+      operatorCohorts
+        ? operatorCohorts.status()
+        : { up: true as const, network: networkName ?? DEFAULT_NETWORK, openCohorts: 0 },
+    ),
+  );
+
   // IPFS publish surface (ADR 0011). The probe is unconditional (mirrors
   // /v1/config) so the SPA can discover availability with one same-origin fetch;
   // the pin route exists only when a node is actually running.
@@ -328,6 +344,15 @@ export function createHonoApp(
       app.delete('/v1/operator/cohorts/:id', (c) => {
         const ok = operatorCohorts.discardDraft(c.req.param('id'));
         return ok ? c.json({ ok: true }) : c.json({ error: 'unknown draft' }, 404);
+      });
+      // Advertise a draft (SVC-02). Inherits the requireSameOrigin + requireOperator
+      // prefix guards above, so it is a session-gated, CSRF-checked mutating action
+      // (T-03-01/T-03-03). `advertiseDraft` is the SOLE `runner.advertiseCohort` caller
+      // now (D-17); an unknown draft id -> 404 (already-advertised ids are gone from the
+      // drafts map, so they read as unknown too).
+      app.post('/v1/operator/cohorts/:id/advertise', (c) => {
+        const dto = operatorCohorts.advertiseDraft(c.req.param('id'));
+        return dto ? c.json(dto) : c.json({ error: 'unknown draft' }, 404);
       });
     }
   }

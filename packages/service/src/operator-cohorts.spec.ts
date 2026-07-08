@@ -24,9 +24,11 @@ const ACTIVE_NETWORK = 'signet';
 /**
  * Build an operator-enabled app wired exactly as `index.ts` wires it, over a REAL
  * runner so the advertise path (`runner.advertiseCohort`) and the live-set-derived
- * directory/status can be exercised. The runner publishes adverts once and never
- * repeats (`advertRepeatIntervalMs: 0`) so no 60 s republish timer lingers past a
- * test; `onProvideTxData` is a stub because no cohort here reaches signing.
+ * directory/status can be exercised. The advert uses the runner's default repeating
+ * broadcast (a fixed `advertRepeatIntervalMs: 0` would make it a `sendMessage` the
+ * `HttpServerTransport` rejects with MISSING_RECIPIENT, failing the cohort instantly);
+ * every test calls `runner.stop()` to clear that republish timer. `onProvideTxData` is
+ * a stub because no cohort here reaches signing.
  */
 function operatorCohortApp() {
   const identity = createIdentity(resolveNetwork(ACTIVE_NETWORK));
@@ -39,8 +41,6 @@ function operatorCohortApp() {
     onProvideTxData: async () => {
       throw new Error('signing not exercised in this spec');
     },
-    // Publish the advert once; do not arm a republish timer that would outlive the test.
-    advertRepeatIntervalMs: 0,
   });
   transport.start();
   const sessions = createSessionStore(60_000);
