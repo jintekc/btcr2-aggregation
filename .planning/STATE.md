@@ -2,18 +2,18 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 1
+current_phase: 01
 current_phase_name: Authenticated Operator Console + On-Demand Cohort Creation
 status: executing
 stopped_at: Phase 01 UI-SPEC approved
-last_updated: "2026-07-08T20:21:28.511Z"
-last_activity: 2026-07-07
-last_activity_desc: Roadmap created (6 vertical-MVP phases, 11/11 v1 requirements mapped)
+last_updated: "2026-07-08T20:48:46.091Z"
+last_activity: 2026-07-08
+last_activity_desc: Phase 01 execution started
 progress:
   total_phases: 6
   completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
+  total_plans: 4
+  completed_plans: 1
   percent: 0
 ---
 
@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-07)
 
 **Core value:** A stranger can self-host a real aggregation service that advertises cohorts, and another stranger can point a participant at that service's URL, browse its cohorts, join, co-sign, and resolve - a genuinely two-sided, self-hostable product, not a demo.
-**Current focus:** Phase 1 - Authenticated Operator Console + On-Demand Cohort Creation
+**Current focus:** Phase 01 — Authenticated Operator Console + On-Demand Cohort Creation
 
 ## Current Position
 
-Phase: 1 of 6 (Authenticated Operator Console + On-Demand Cohort Creation)
-Plan: 0 of TBD in current phase
+Phase: 01 (Authenticated Operator Console + On-Demand Cohort Creation) — EXECUTING
+Plan: 2 of 4
 Status: Ready to execute
-Last activity: 2026-07-07 - Roadmap created (6 vertical-MVP phases, 11/11 v1 requirements mapped)
+Last activity: 2026-07-08 — Phase 01 execution started
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -55,6 +55,7 @@ Progress: [░░░░░░░░░░] 0%
 - Trend: -
 
 *Updated after each plan completion*
+| Phase 01 P01 | 11 | 3 tasks | 15 files |
 
 ## Accumulated Context
 
@@ -66,6 +67,7 @@ Recent decisions affecting current work:
 - Roadmap: Two-sided product realignment - services advertise/manage cohorts, participants discover/join/participate (not a single demo flow).
 - Roadmap: Discovery is a per-service cohort directory (not federated, not invite-only).
 - Roadmap: Operator auth (HOST-01) bundled with the first operator control action (Phase 1) so no unauthenticated mutating operator route ever ships.
+- [Phase ?]: Phase 1: operator auth = httpOnly opaque server-tracked session cookie (only scheme that gates the EventSource SSE feed); fail-closed boot when OPERATOR_PASSWORD unset (ADR 0015, supersedes ADR 0004)
 
 ### Pending Todos
 
@@ -92,6 +94,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-08T18:25:27.009Z
+Last session: 2026-07-08T20:48:11.252Z
 Stopped at: Phase 01 UI-SPEC approved
 Resume file: .planning/phases/01-authenticated-operator-console-on-demand-cohort-creation/01-UI-SPEC.md

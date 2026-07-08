@@ -25,7 +25,7 @@ Requirements for the realigned two-sided product. Each maps to roadmap phases.
 
 ### Self-hostable for real (product quality)
 
-- [ ] **HOST-01**: The operator control and telemetry surface requires operator authentication; no unauthenticated client can perform operator actions or view operator-only telemetry
+- [x] **HOST-01**: The operator control and telemetry surface requires operator authentication; no unauthenticated client can perform operator actions or view operator-only telemetry
 - [ ] **HOST-02**: A stranger operator and a stranger participant can complete the full two-sided loop (advertise -> discover -> join -> submit -> co-sign -> anchor -> resolve) end to end without insider knowledge, verified by an automated end-to-end scenario
 - [ ] **HOST-03**: The product presents as a real self-hostable aggregator: the "booth"/"attendee" demo framing is retired from code comments, UI copy, and docs
 
@@ -71,11 +71,12 @@ Which phases cover which requirements. Populated during roadmap creation.
 | PART-02 | Phase 2 | Pending |
 | PART-03 | Phase 3 | Pending |
 | PART-04 | Phase 3 | Pending |
-| HOST-01 | Phase 1 | Pending |
+| HOST-01 | Phase 1 | Complete |
 | HOST-02 | Phase 6 | Pending |
 | HOST-03 | Phase 6 | Pending |
 
 **Coverage:**
+
 - v1 requirements: 11 total
 - Mapped to phases: 11 ✓
 - Unmapped: 0
