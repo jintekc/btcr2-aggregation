@@ -31,7 +31,12 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. From the console, the operator creates and configures a cohort on demand - choosing beacon type (CAS or SMT), Bitcoin network, n-of-n threshold, and capacity/roster - without editing boot-time env vars or restarting the process.
   3. The operator advertises the configured cohort and it appears as an open, joinable entry in that service's cohort directory.
   4. The full lifecycle still completes end to end for an operator-advertised cohort (co-sign -> anchor -> resolve), now driven by the operator's on-demand action rather than the perpetual auto-advertise loop.
-**Plans**: TBD
+**Plans**: 4 plans
+Plans:
+- [ ] 01-01-PLAN.md - Server-enforced operator auth + fail-closed boot + /operator login-gated shell (HOST-01, Wave 1)
+- [ ] 01-02-PLAN.md - On-demand create/configure/discard cohort draft + operator cohort list (SVC-01, Wave 2)
+- [ ] 01-03-PLAN.md - Advertise draft + public directory/status + remove the auto-advertise loop (SVC-02, Wave 3)
+- [ ] 01-04-PLAN.md - Hermetic login->create->advertise->co-sign->resolve e2e proof (success criterion 4, Wave 4)
 **UI hint**: yes
 
 ### Phase 2: Participant Discovery + Browse-and-Pick Join
@@ -103,7 +108,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Authenticated Operator Console + On-Demand Cohort Creation | 0/TBD | Not started | - |
+| 1. Authenticated Operator Console + On-Demand Cohort Creation | 0/4 | Not started | - |
 | 2. Participant Discovery + Browse-and-Pick Join | 0/TBD | Not started | - |
 | 3. Participant Submit, Co-Sign, Track, and Resolve | 0/TBD | Not started | - |
 | 4. Operator Cohort Monitoring | 0/TBD | Not started | - |
