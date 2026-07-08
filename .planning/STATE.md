@@ -99,6 +99,7 @@ Items acknowledged and carried forward from previous milestone close:
 | Durability | DUR-01: cohort state survives process restart | v2 | 2026-07-07 |
 | Participant mgmt | PMG-01: richer multi-cohort management view | v2 | 2026-07-07 |
 | Operator access | OACC-01: multiple operators / role granularity | v2 | 2026-07-07 |
+| CI / test debt | Rewire `e2e:browser` + `e2e:browser:prod` (booth-topology, broke when the auto-advertise loop was removed in 01-03) and add `e2e:operator` to CI; those 2 CI jobs stay red until then | Phase 6 | 2026-07-08 |
 
 ## Session Continuity
 
