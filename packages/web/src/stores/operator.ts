@@ -1,5 +1,14 @@
 import { create } from 'zustand';
-import { login as apiLogin, logout as apiLogout, sessionProbe } from '../lib/operator';
+import {
+  login as apiLogin,
+  logout as apiLogout,
+  createDraft as apiCreateDraft,
+  discardDraft as apiDiscardDraft,
+  listCohorts as apiListCohorts,
+  sessionProbe,
+  type DraftInput,
+  type OperatorCohortDTO,
+} from '../lib/operator';
 
 /**
  * Operator console auth state machine (mirrors the status-union pattern of
@@ -7,8 +16,15 @@ import { login as apiLogin, logout as apiLogout, sessionProbe } from '../lib/ope
  * (`GET /v1/operator/session`), never by reading the browser cookie - the session
  * cookie is httpOnly and unreadable by design (ADR 0015). `disabled` is the fail-closed
  * boot state (no operator password set, D-07).
+ *
+ * The store also owns the operator's cohort drafts (SVC-01): `submitDraft` creates,
+ * `discard` removes, and `refreshCohorts` reloads the list. The list is refreshed after
+ * a successful login/probe so a returning operator sees their existing drafts.
  */
 export type OperatorAuthStatus = 'checking' | 'logged-out' | 'logging-in' | 'logged-in' | 'disabled';
+
+/** Create-form lifecycle for the cohort draft submit. */
+export type CreateStatus = 'idle' | 'creating' | 'error';
 
 /** Exact invalid-password copy (UI-SPEC); never reveals whether a session/account exists. */
 const INVALID_PASSWORD =
@@ -19,23 +35,41 @@ const UNREACHABLE = 'Could not reach the service. Check that it is running, then
 interface OperatorState {
   auth: OperatorAuthStatus;
   error?: string;
+  /** The operator's own cohorts (drafts now; advertised entries once plan 03 lands). */
+  cohorts: OperatorCohortDTO[];
+  /** Create-form submit status; drives the button's `Creating…` label. */
+  createStatus: CreateStatus;
+  /** Server (or client) validation message for the create form, when present. */
+  formError?: string;
   /** Probe the session on mount: resolves to logged-in / logged-out / disabled. */
   probe: (baseUrl: string) => Promise<void>;
   /** Attempt sign-in; maps 200/401/429/404 to the matching status + copy. */
   signIn: (baseUrl: string, password: string) => Promise<void>;
   /** Sign out server-side, then drop to logged-out regardless of the response. */
   signOut: (baseUrl: string) => Promise<void>;
+  /** Reload the operator cohort list. */
+  refreshCohorts: (baseUrl: string) => Promise<void>;
+  /** Create a draft; on a 400 set `formError`, on success clear it and refresh the list. */
+  submitDraft: (baseUrl: string, input: DraftInput) => Promise<void>;
+  /** Discard an un-advertised draft, then refresh the list. */
+  discard: (baseUrl: string, id: string) => Promise<void>;
 }
 
-export const useOperator = create<OperatorState>((set) => ({
+export const useOperator = create<OperatorState>((set, get) => ({
   auth: 'checking',
   error: undefined,
+  cohorts: [],
+  createStatus: 'idle',
+  formError: undefined,
 
   async probe(baseUrl) {
     set({ auth: 'checking', error: undefined });
     try {
       const state = await sessionProbe(baseUrl);
       set({ auth: state });
+      if (state === 'logged-in') {
+        void get().refreshCohorts(baseUrl);
+      }
     } catch {
       // A network/stall signal on the probe leaves the operator at the login screen
       // (not 'disabled', which is reserved for the explicit 404 fail-closed signal).
@@ -49,6 +83,7 @@ export const useOperator = create<OperatorState>((set) => ({
       const status = await apiLogin(baseUrl, password);
       if (status === 200) {
         set({ auth: 'logged-in', error: undefined });
+        void get().refreshCohorts(baseUrl);
       } else if (status === 429) {
         set({ auth: 'logged-out', error: THROTTLED });
       } else if (status === 404) {
@@ -65,7 +100,37 @@ export const useOperator = create<OperatorState>((set) => ({
     try {
       await apiLogout(baseUrl);
     } finally {
-      set({ auth: 'logged-out', error: undefined });
+      set({ auth: 'logged-out', error: undefined, cohorts: [], formError: undefined, createStatus: 'idle' });
     }
+  },
+
+  async refreshCohorts(baseUrl) {
+    try {
+      const cohorts = await apiListCohorts(baseUrl);
+      set({ cohorts });
+    } catch {
+      // A transient list failure leaves the last-known list in place rather than
+      // wiping the operator's view; the next successful refresh reconciles it.
+    }
+  },
+
+  async submitDraft(baseUrl, input) {
+    set({ createStatus: 'creating', formError: undefined });
+    try {
+      const result = await apiCreateDraft(baseUrl, input);
+      if (result.ok) {
+        set({ createStatus: 'idle', formError: undefined });
+        await get().refreshCohorts(baseUrl);
+      } else {
+        set({ createStatus: 'error', formError: result.error });
+      }
+    } catch {
+      set({ createStatus: 'error', formError: UNREACHABLE });
+    }
+  },
+
+  async discard(baseUrl, id) {
+    await apiDiscardDraft(baseUrl, id);
+    await get().refreshCohorts(baseUrl);
   },
 }));

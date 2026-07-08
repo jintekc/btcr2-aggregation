@@ -59,3 +59,77 @@ export async function sessionProbe(baseUrl: string): Promise<SessionState> {
   }
   return 'logged-out';
 }
+
+/** Beacon types an operator may draft (mirrors the service DTO; no service dep). */
+export type OperatorBeaconType = 'CASBeacon' | 'SMTBeacon';
+
+/** The operator-safe cohort DTO returned by the gated cohort routes (SVC-01). */
+export interface OperatorCohortDTO {
+  draftId: string;
+  beaconType: OperatorBeaconType;
+  network: string;
+  threshold: number;
+  capacity: number;
+  state: 'draft';
+}
+
+/** The create-draft body posted to `POST /v1/operator/cohorts`. */
+export interface DraftInput {
+  beaconType: OperatorBeaconType;
+  threshold: number;
+  capacity: number;
+}
+
+/** Discriminated create result so the store can surface a 400's specific message. */
+export type CreateDraftResult = { ok: true; dto: OperatorCohortDTO } | { ok: false; error: string };
+
+/**
+ * POST a cohort draft. On 201 returns the created DTO; on any non-201 (notably the
+ * 400 validation path) surfaces the server's specific `error` message so the create
+ * form can render it verbatim (the two numeric validation strings are the UI-SPEC copy).
+ */
+export async function createDraft(baseUrl: string, input: DraftInput): Promise<CreateDraftResult> {
+  const res = await fetch(endpoint(baseUrl, '/v1/operator/cohorts'), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify(input),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+  if (res.status === 201) {
+    return { ok: true, dto: (await res.json()) as OperatorCohortDTO };
+  }
+  let error = 'Could not create the cohort. Try again.';
+  try {
+    const body = (await res.json()) as { error?: string };
+    if (typeof body.error === 'string' && body.error) {
+      error = body.error;
+    }
+  } catch {
+    // Non-JSON body (e.g. a 413 text) falls back to the generic message above.
+  }
+  return { ok: false, error };
+}
+
+/** GET the operator's own cohorts (drafts now; advertised entries once plan 03 lands). */
+export async function listCohorts(baseUrl: string): Promise<OperatorCohortDTO[]> {
+  const res = await fetch(endpoint(baseUrl, '/v1/operator/cohorts'), {
+    headers: { accept: 'application/json' },
+    credentials: 'same-origin',
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    throw new Error(`GET /v1/operator/cohorts failed: HTTP ${res.status}`);
+  }
+  const body = (await res.json()) as { cohorts: OperatorCohortDTO[] };
+  return body.cohorts;
+}
+
+/** DELETE (discard) an un-advertised draft by id. */
+export async function discardDraft(baseUrl: string, id: string): Promise<void> {
+  await fetch(endpoint(baseUrl, `/v1/operator/cohorts/${encodeURIComponent(id)}`), {
+    method: 'DELETE',
+    credentials: 'same-origin',
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+}

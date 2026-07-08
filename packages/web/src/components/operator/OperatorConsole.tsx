@@ -1,7 +1,9 @@
 import { useEffect } from 'react';
-import { Button, Card, SectionTitle } from '../../ui/primitives';
+import { Button, Card } from '../../ui/primitives';
 import { useOperator } from '../../stores/operator';
 import { LoginPanel } from './LoginPanel';
+import { CreateCohortForm } from './CreateCohortForm';
+import { OperatorCohortList } from './OperatorCohortList';
 
 /**
  * Login-gated operator console container (UI-SPEC). Probes the session on mount, then
@@ -52,12 +54,8 @@ export function OperatorConsole({ baseUrl }: { baseUrl: string }) {
           Sign out
         </Button>
       </div>
-      <Card className="p-5">
-        <SectionTitle>Your cohorts</SectionTitle>
-        <p className="mt-3 text-sm text-muted">
-          Cohort creation and this service&rsquo;s directory will appear here.
-        </p>
-      </Card>
+      <CreateCohortForm baseUrl={baseUrl} />
+      <OperatorCohortList baseUrl={baseUrl} />
     </div>
   );
 }
