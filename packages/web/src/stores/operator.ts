@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import {
   login as apiLogin,
   logout as apiLogout,
+  advertise as apiAdvertise,
   createDraft as apiCreateDraft,
   discardDraft as apiDiscardDraft,
   listCohorts as apiListCohorts,
@@ -26,6 +27,12 @@ export type OperatorAuthStatus = 'checking' | 'logged-out' | 'logging-in' | 'log
 /** Create-form lifecycle for the cohort draft submit. */
 export type CreateStatus = 'idle' | 'creating' | 'error';
 
+/** Advertise-action lifecycle (per draft row). */
+export type AdvertiseStatus = 'idle' | 'advertising' | 'error';
+
+/** Transient advertise success copy (spaced hyphen per house style; UI-SPEC intent). */
+const ADVERTISED_OK = 'Advertised - now joinable in the directory.';
+
 /** Exact invalid-password copy (UI-SPEC); never reveals whether a session/account exists. */
 const INVALID_PASSWORD =
   'Incorrect password. Check the operator password set for this service and try again.';
@@ -41,6 +48,12 @@ interface OperatorState {
   createStatus: CreateStatus;
   /** Server (or client) validation message for the create form, when present. */
   formError?: string;
+  /** Advertise-action status; drives the row's `Advertising…` label. */
+  advertiseStatus: AdvertiseStatus;
+  /** The draft id currently being advertised, so only that row shows the spinner. */
+  advertisingId?: string;
+  /** Transient good-tone confirmation shown after a successful advertise. */
+  advertiseMessage?: string;
   /** Probe the session on mount: resolves to logged-in / logged-out / disabled. */
   probe: (baseUrl: string) => Promise<void>;
   /** Attempt sign-in; maps 200/401/429/404 to the matching status + copy. */
@@ -51,6 +64,8 @@ interface OperatorState {
   refreshCohorts: (baseUrl: string) => Promise<void>;
   /** Create a draft; on a 400 set `formError`, on success clear it and refresh the list. */
   submitDraft: (baseUrl: string, input: DraftInput) => Promise<void>;
+  /** Advertise a draft; on success show the transient confirmation and refresh the list. */
+  advertise: (baseUrl: string, id: string) => Promise<void>;
   /** Discard an un-advertised draft, then refresh the list. */
   discard: (baseUrl: string, id: string) => Promise<void>;
 }
@@ -61,6 +76,9 @@ export const useOperator = create<OperatorState>((set, get) => ({
   cohorts: [],
   createStatus: 'idle',
   formError: undefined,
+  advertiseStatus: 'idle',
+  advertisingId: undefined,
+  advertiseMessage: undefined,
 
   async probe(baseUrl) {
     set({ auth: 'checking', error: undefined });
@@ -100,7 +118,16 @@ export const useOperator = create<OperatorState>((set, get) => ({
     try {
       await apiLogout(baseUrl);
     } finally {
-      set({ auth: 'logged-out', error: undefined, cohorts: [], formError: undefined, createStatus: 'idle' });
+      set({
+        auth: 'logged-out',
+        error: undefined,
+        cohorts: [],
+        formError: undefined,
+        createStatus: 'idle',
+        advertiseStatus: 'idle',
+        advertisingId: undefined,
+        advertiseMessage: undefined,
+      });
     }
   },
 
@@ -126,6 +153,28 @@ export const useOperator = create<OperatorState>((set, get) => ({
       }
     } catch {
       set({ createStatus: 'error', formError: UNREACHABLE });
+    }
+  },
+
+  async advertise(baseUrl, id) {
+    set({ advertiseStatus: 'advertising', advertisingId: id, advertiseMessage: undefined, formError: undefined });
+    try {
+      const ok = await apiAdvertise(baseUrl, id);
+      if (ok) {
+        set({ advertiseStatus: 'idle', advertisingId: undefined, advertiseMessage: ADVERTISED_OK });
+        await get().refreshCohorts(baseUrl);
+        // Clear the transient confirmation after a few seconds, but only if it is still
+        // the same message (a later action may have replaced it).
+        setTimeout(() => {
+          if (get().advertiseMessage === ADVERTISED_OK) {
+            set({ advertiseMessage: undefined });
+          }
+        }, 4000);
+      } else {
+        set({ advertiseStatus: 'error', advertisingId: undefined, formError: 'Could not advertise the draft. Try again.' });
+      }
+    } catch {
+      set({ advertiseStatus: 'error', advertisingId: undefined, formError: UNREACHABLE });
     }
   },
 

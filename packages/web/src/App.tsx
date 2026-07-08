@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { resolveNetwork } from '@btcr2-aggregation/shared';
 import { OperatorConsole } from './components/operator/OperatorConsole';
+import { PublicStatus } from './components/operator/PublicStatus';
 import { ParticipantView } from './components/participant/ParticipantView';
 import { useParticipant } from './stores/participant';
 
@@ -62,7 +63,14 @@ export function App() {
       </header>
 
       <main className="flex-1">
-        {isOperator ? <OperatorConsole baseUrl={baseUrl} /> : <ParticipantView baseUrl={baseUrl} />}
+        {isOperator ? (
+          <OperatorConsole baseUrl={baseUrl} />
+        ) : (
+          <div className="space-y-6">
+            <PublicStatus baseUrl={baseUrl} />
+            <ParticipantView baseUrl={baseUrl} />
+          </div>
+        )}
       </main>
 
       <footer className="mt-8 border-t border-edge pt-4 text-xs text-faint">

@@ -63,14 +63,35 @@ export async function sessionProbe(baseUrl: string): Promise<SessionState> {
 /** Beacon types an operator may draft (mirrors the service DTO; no service dep). */
 export type OperatorBeaconType = 'CASBeacon' | 'SMTBeacon';
 
-/** The operator-safe cohort DTO returned by the gated cohort routes (SVC-01). */
+/** The operator-safe cohort DTO returned by the gated cohort routes (SVC-01/SVC-02). */
 export interface OperatorCohortDTO {
+  /** Stable row id: the draft id while a draft, the live cohort id once advertised. */
   draftId: string;
   beaconType: OperatorBeaconType;
   network: string;
   threshold: number;
   capacity: number;
-  state: 'draft';
+  /** Accepted participants so far; 0 for a draft. */
+  joined: number;
+  state: 'draft' | 'advertised';
+}
+
+/** One open cohort in the public directory (GET /v1/directory, SVC-02/D-14). */
+export interface DirectoryCohortDTO {
+  cohortId: string;
+  beaconType: OperatorBeaconType;
+  network: string;
+  threshold: number;
+  capacity: number;
+  joined: number;
+  phase: string;
+}
+
+/** The public service status (GET /v1/status, D-09): up / active network / open count. */
+export interface ServiceStatus {
+  up: boolean;
+  network: string;
+  openCohorts: number;
 }
 
 /** The create-draft body posted to `POST /v1/operator/cohorts`. */
@@ -132,4 +153,50 @@ export async function discardDraft(baseUrl: string, id: string): Promise<void> {
     credentials: 'same-origin',
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
+}
+
+/**
+ * POST the advertise action for a draft (SVC-02). Gated + same-origin (the session
+ * cookie rides `credentials: 'same-origin'`); returns whether the server accepted it
+ * (200) so the store can surface the transient success message.
+ */
+export async function advertise(baseUrl: string, id: string): Promise<boolean> {
+  const res = await fetch(endpoint(baseUrl, `/v1/operator/cohorts/${encodeURIComponent(id)}/advertise`), {
+    method: 'POST',
+    credentials: 'same-origin',
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+  return res.ok;
+}
+
+/**
+ * GET the public service status (D-09). PUBLIC by construction: `credentials: 'omit'`
+ * so the anonymous status card never sends the operator session cookie.
+ */
+export async function fetchStatus(baseUrl: string): Promise<ServiceStatus> {
+  const res = await fetch(endpoint(baseUrl, '/v1/status'), {
+    headers: { accept: 'application/json' },
+    credentials: 'omit',
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    throw new Error(`GET /v1/status failed: HTTP ${res.status}`);
+  }
+  return (await res.json()) as ServiceStatus;
+}
+
+/**
+ * GET the public cohort directory (SVC-02/D-14). PUBLIC: `credentials: 'omit'` so the
+ * anonymous surface can browse the open cohorts without a session (Phase 2 consumes it).
+ */
+export async function fetchDirectory(baseUrl: string): Promise<DirectoryCohortDTO[]> {
+  const res = await fetch(endpoint(baseUrl, '/v1/directory'), {
+    headers: { accept: 'application/json' },
+    credentials: 'omit',
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    throw new Error(`GET /v1/directory failed: HTTP ${res.status}`);
+  }
+  return (await res.json()) as DirectoryCohortDTO[];
 }
