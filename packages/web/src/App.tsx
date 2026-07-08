@@ -1,36 +1,39 @@
 import { useEffect, useState } from 'react';
 import { resolveNetwork } from '@btcr2-aggregation/shared';
-import { DashboardView } from './components/dashboard/DashboardView';
+import { OperatorConsole } from './components/operator/OperatorConsole';
 import { ParticipantView } from './components/participant/ParticipantView';
 import { useParticipant } from './stores/participant';
 
-type Tab = 'participant' | 'dashboard';
-
-const TABS: { key: Tab; label: string; blurb: string }[] = [
-  { key: 'participant', label: 'Participant', blurb: 'Join a cohort and co-sign' },
-  { key: 'dashboard', label: 'Coordinator', blurb: 'Watch the live service feed' },
-];
-
 /**
- * Demo shell. Two views over the same same-origin service: the attendee
- * (Participant) and the coordinator monitor (Dashboard). The participant talks
- * to the service at this page's origin, proxied to the coordinator in dev and
- * served statically in prod.
+ * App shell over one same-origin service. The route decides the experience: `/operator`
+ * is the login-gated operator console (the server session middleware is the real
+ * boundary, D-04), and every other path is the anonymous participant experience. The
+ * runtime network config (GET /v1/config) and the network badge are shared by both.
  */
 export function App() {
-  const [tab, setTab] = useState<Tab>('participant');
   const baseUrl = window.location.origin;
+  const [pathname, setPathname] = useState(window.location.pathname);
+
+  // React to browser back/forward so a client-side nav (history.pushState) reflows
+  // without a full reload; the initial route is a normal page load (the SPA catch-all
+  // serves index.html for /operator).
+  useEffect(() => {
+    const onPop = () => setPathname(window.location.pathname);
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
 
   // Fetch the coordinator's Bitcoin network once on load so every in-browser DID /
   // address derivation targets the chain the coordinator actually runs, instead of a
-  // build-time constant (GET /v1/config). Runs once; the store gates identity
-  // generation until this resolves.
+  // build-time constant (GET /v1/config).
   const loadConfig = useParticipant((s) => s.loadConfig);
   const netLabel = useParticipant((s) => resolveNetwork(s.network).label);
   const isMainnet = useParticipant((s) => resolveNetwork(s.network).isMainnet);
   useEffect(() => {
     void loadConfig(baseUrl);
   }, [loadConfig, baseUrl]);
+
+  const isOperator = pathname === '/operator';
 
   return (
     <div className="mx-auto flex min-h-full max-w-6xl flex-col px-4 py-6 sm:px-6">
@@ -41,8 +44,9 @@ export function App() {
               did:btcr2 <span className="text-accent">aggregation</span>
             </h1>
             <p className="text-sm text-muted">
-              p2p MuSig2 cohort signing over HTTP/REST. Real keys, real transport, a fixture beacon
-              transaction.
+              {isOperator
+                ? 'Operator console for this self-hosted aggregation service.'
+                : 'p2p MuSig2 cohort signing over HTTP/REST. Real keys, real transport, a fixture beacon transaction.'}
             </p>
           </div>
           <span
@@ -55,31 +59,15 @@ export function App() {
             {isMainnet ? `${netLabel} · REAL FUNDS` : `${netLabel} · key-path Taproot`}
           </span>
         </div>
-
-        <nav className="mt-5 inline-flex rounded-xl border border-edge bg-surface p-1">
-          {TABS.map((t) => (
-            <button
-              key={t.key}
-              type="button"
-              onClick={() => setTab(t.key)}
-              className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
-                tab === t.key ? 'bg-accent text-accent-ink' : 'text-muted hover:text-ink'
-              }`}
-              title={t.blurb}
-            >
-              {t.label}
-            </button>
-          ))}
-        </nav>
       </header>
 
       <main className="flex-1">
-        {tab === 'participant' ? <ParticipantView baseUrl={baseUrl} /> : <DashboardView />}
+        {isOperator ? <OperatorConsole baseUrl={baseUrl} /> : <ParticipantView baseUrl={baseUrl} />}
       </main>
 
       <footer className="mt-8 border-t border-edge pt-4 text-xs text-faint">
-        Aggregation is trustless by design: every signer is a real, separate attendee. The
-        coordinator only routes messages and aggregates public nonces, it never holds a signing key.
+        Aggregation is trustless by design: every signer is a real, separate participant. The
+        service only routes messages and aggregates public nonces, it never holds a signing key.
       </footer>
     </div>
   );

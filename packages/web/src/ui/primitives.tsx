@@ -77,6 +77,105 @@ export function Button({
   );
 }
 
+/** A text/password/number input over the inset canvas surface (non-accent focus ring). */
+export function Input({
+  value,
+  onChange,
+  type = 'text',
+  placeholder,
+  id,
+  name,
+  autoComplete,
+  disabled = false,
+  className = '',
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  type?: 'text' | 'password' | 'number';
+  placeholder?: string;
+  id?: string;
+  name?: string;
+  autoComplete?: string;
+  disabled?: boolean;
+  className?: string;
+}) {
+  return (
+    <input
+      id={id}
+      name={name}
+      type={type}
+      value={value}
+      placeholder={placeholder}
+      autoComplete={autoComplete}
+      disabled={disabled}
+      onChange={(e) => onChange(e.target.value)}
+      className={`w-full rounded-lg border border-edge bg-canvas px-3 py-2 text-sm text-ink placeholder:text-faint transition focus:border-edge-strong focus:outline-none focus:ring-2 focus:ring-edge-strong disabled:cursor-not-allowed disabled:opacity-40 ${className}`}
+    />
+  );
+}
+
+/** A select control over the inset canvas surface (options are typed string values). */
+export function Select<T extends string>({
+  value,
+  onChange,
+  options,
+  id,
+  name,
+  disabled = false,
+  className = '',
+}: {
+  value: T;
+  onChange: (value: T) => void;
+  options: { value: T; label: string }[];
+  id?: string;
+  name?: string;
+  disabled?: boolean;
+  className?: string;
+}) {
+  return (
+    <select
+      id={id}
+      name={name}
+      value={value}
+      disabled={disabled}
+      onChange={(e) => onChange(e.target.value as T)}
+      className={`w-full rounded-lg border border-edge bg-canvas px-3 py-2 text-sm text-ink transition focus:border-edge-strong focus:outline-none focus:ring-2 focus:ring-edge-strong disabled:cursor-not-allowed disabled:opacity-40 ${className}`}
+    >
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+/** A labeled form control (uppercase micro-label, like SectionTitle) with an optional error. */
+export function Field({
+  label,
+  htmlFor,
+  error,
+  children,
+}: {
+  label: string;
+  htmlFor?: string;
+  error?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <label
+        htmlFor={htmlFor}
+        className="block text-xs font-semibold uppercase tracking-[0.14em] text-faint"
+      >
+        {label}
+      </label>
+      {children}
+      {error ? <p className="text-xs text-bad">{error}</p> : null}
+    </div>
+  );
+}
+
 const DOT_CLASS: Record<Tone, string> = {
   neutral: 'bg-faint',
   accent: 'bg-accent',
