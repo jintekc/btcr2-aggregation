@@ -16,6 +16,7 @@
     "e2e:x1": "tsc -b && tsx e2e/headless-cohort.ts --x1",
     "e2e:mixed": "tsc -b && tsx e2e/headless-cohort.ts --mixed",
     "e2e:x1:negative": "tsc -b && tsx e2e/headless-cohort.ts --negative",
+    "e2e:operator": "tsc -b && tsx e2e/operator-cohort.ts",
     "e2e:persist": "tsc -b && tsx e2e/persist-cohort.ts",
     "e2e:resolve": "tsc -b && tsx e2e/resolve-cohort.ts",
     "e2e:config": "tsc -b && tsx e2e/config.ts",
