@@ -12,7 +12,7 @@ Requirements for the realigned two-sided product. Each maps to roadmap phases.
 ### Service (operator experience)
 
 - [x] **SVC-01**: Operator can create and configure a new cohort on demand, choosing beacon type (CAS or SMT), Bitcoin network, n-of-n threshold, and capacity/roster, without editing boot-time env vars or restarting the process
-- [ ] **SVC-02**: Operator can advertise (publish) a configured cohort so it becomes visible and joinable in that service's cohort directory
+- [x] **SVC-02**: Operator can advertise (publish) a configured cohort so it becomes visible and joinable in that service's cohort directory
 - [ ] **SVC-03**: Operator can monitor a cohort in real time (members joined, pending DID-update submissions, co-sign progress, anchor status)
 - [ ] **SVC-04**: Operator can run aggregation and manage a cohort's lifecycle (open -> close -> finalize) and pause, cancel, or reconfigure advertising without restarting the process
 
@@ -64,7 +64,7 @@ Which phases cover which requirements. Populated during roadmap creation.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | SVC-01 | Phase 1 | Complete |
-| SVC-02 | Phase 1 | Pending |
+| SVC-02 | Phase 1 | Complete |
 | SVC-03 | Phase 4 | Pending |
 | SVC-04 | Phase 5 | Pending |
 | PART-01 | Phase 2 | Pending |

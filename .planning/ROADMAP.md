@@ -35,7 +35,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. The operator advertises the configured cohort and it appears as an open, joinable entry in that service's cohort directory.
   4. The full lifecycle still completes end to end for an operator-advertised cohort (co-sign -> anchor -> resolve), now driven by the operator's on-demand action rather than the perpetual auto-advertise loop.
 
-**Plans**: 2/4 plans executed
+**Plans**: 3/4 plans executed
 Plans:
 **Wave 1**
 
@@ -47,7 +47,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 01-03-PLAN.md - Advertise draft + public directory/status + remove the auto-advertise loop (SVC-02, Wave 3)
+- [x] 01-03-PLAN.md - Advertise draft + public directory/status + remove the auto-advertise loop (SVC-02, Wave 3)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
@@ -139,7 +139,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Authenticated Operator Console + On-Demand Cohort Creation | 2/4 | In Progress|  |
+| 1. Authenticated Operator Console + On-Demand Cohort Creation | 3/4 | In Progress|  |
 | 2. Participant Discovery + Browse-and-Pick Join | 0/TBD | Not started | - |
 | 3. Participant Submit, Co-Sign, Track, and Resolve | 0/TBD | Not started | - |
 | 4. Operator Cohort Monitoring | 0/TBD | Not started | - |

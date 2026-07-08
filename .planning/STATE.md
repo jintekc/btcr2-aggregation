@@ -6,14 +6,14 @@ current_phase: 01
 current_phase_name: Authenticated Operator Console + On-Demand Cohort Creation
 status: executing
 stopped_at: Completed 01-02-PLAN.md (operator cohort drafts create/discard/list)
-last_updated: "2026-07-08T21:06:09.602Z"
+last_updated: "2026-07-08T21:27:33.342Z"
 last_activity: 2026-07-08
 last_activity_desc: Phase 01 execution started
 progress:
   total_phases: 6
   completed_phases: 0
   total_plans: 4
-  completed_plans: 2
+  completed_plans: 3
   percent: 0
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-07-07)
 ## Current Position
 
 Phase: 01 (Authenticated Operator Console + On-Demand Cohort Creation) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Last activity: 2026-07-08 — Phase 01 execution started
 
@@ -57,6 +57,7 @@ Progress: [░░░░░░░░░░] 0%
 *Updated after each plan completion*
 | Phase 01 P01 | 11 | 3 tasks | 15 files |
 | Phase 01 P02 | 6min | 2 tasks | 9 files |
+| Phase 01 P03 | 13 min | 3 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -70,6 +71,8 @@ Recent decisions affecting current work:
 - Roadmap: Operator auth (HOST-01) bundled with the first operator control action (Phase 1) so no unauthenticated mutating operator route ever ships.
 - [Phase ?]: Phase 1: operator auth = httpOnly opaque server-tracked session cookie (only scheme that gates the EventSource SSE feed); fail-closed boot when OPERATOR_PASSWORD unset (ADR 0015, supersedes ADR 0004)
 - [Phase 01]: Phase 1 P02: a cohort draft is app-level config only (never touches the runner until advertise, plan 03); active network is the service's resolved network, never a form value (D-10); capacity applied app-side as maxParticipants (D-11/D-19)
+- [Phase ?]: 01-03: advertiseDraft is the sole runner.advertiseCohort caller; the boot-time auto-advertise loop + boot-path fillers removed (D-17/D-18)
+- [Phase ?]: 01-03: public /v1/directory + /v1/status derive from live runner.session.cohorts filtered to pre-signing OPEN_PHASES; enrichment pruned on completion.finally so the open-count cannot drift (D-09/D-15)
 
 ### Pending Todos
 
@@ -96,6 +99,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-08T21:06:09.520Z
+Last session: 2026-07-08T21:27:01.030Z
 Stopped at: Completed 01-02-PLAN.md (operator cohort drafts create/discard/list)
 Resume file: None
