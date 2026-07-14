@@ -54,7 +54,13 @@ export async function fetchDirectoryState(
  * conflated. It never maintains a parallel client-side cohort list: every render is from the
  * latest fetched rows (Phase-1 D-15 / RESEARCH anti-pattern).
  */
-export function DirectoryList({ baseUrl, onPick }: { baseUrl: string; onPick?: (cohortId: string) => void }) {
+export function DirectoryList({
+  baseUrl,
+  onPick,
+}: {
+  baseUrl: string;
+  onPick?: (row: DirectoryCohortDTO) => void;
+}) {
   const [rows, setRows] = useState<DirectoryCohortDTO[] | undefined>(undefined);
   const [reachable, setReachable] = useState(true);
 

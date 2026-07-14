@@ -15,12 +15,13 @@ function MetricLabel({ children }: { children: string }) {
  * threshold, and a copyable Cohort ID.
  *
  * The `Join` button is a real function of joinability, not a stub: it is enabled only when
- * the row is joinable AND an `onPick` handler is supplied. This plan renders the row
- * without `onPick`, so Join is correctly disabled (a Full / Filling / Collecting-updates
- * row is display-only regardless); plan 04 supplies `onPick` to light it up on joinable
- * rows. Accent stays scarce: only the Open Badge and the single Join button may carry it.
+ * the row is joinable AND an `onPick` handler is supplied. Absent `onPick`, Join is
+ * correctly disabled (a Full / Filling / Collecting-updates row is display-only regardless).
+ * BrowseView (plan 04) supplies `onPick` to light it up on joinable rows and receives the
+ * whole picked row so the inline identity step and the seated confirmation can read its live
+ * seats/status. Accent stays scarce: only the Open Badge and the single Join button may carry it.
  */
-export function CohortRow({ row, onPick }: { row: DirectoryCohortDTO; onPick?: (cohortId: string) => void }) {
+export function CohortRow({ row, onPick }: { row: DirectoryCohortDTO; onPick?: (row: DirectoryCohortDTO) => void }) {
   const net = resolveNetwork(row.network);
   const full = row.joined >= row.capacity;
   const openSeats = row.capacity - row.joined;
@@ -45,7 +46,7 @@ export function CohortRow({ row, onPick }: { row: DirectoryCohortDTO; onPick?: (
         <Button
           variant="primary"
           disabled={!joinable}
-          onClick={onPick ? () => onPick(row.cohortId) : undefined}
+          onClick={onPick ? () => onPick(row) : undefined}
         >
           Join
         </Button>
