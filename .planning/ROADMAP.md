@@ -14,7 +14,7 @@ This milestone is a course-correction, not a greenfield build. The full `did:btc
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Authenticated Operator Console + On-Demand Cohort Creation** - Operator logs in and creates/configures/advertises a cohort on demand, replacing the auto-advertise loop (completed 2026-07-08)
-- [ ] **Phase 2: Participant Discovery + Browse-and-Pick Join** - Participant points at a service URL, browses its open cohorts, and joins one by choice
+- [x] **Phase 2: Participant Discovery + Browse-and-Pick Join** - Participant points at a service URL, browses its open cohorts, and joins one by choice (completed 2026-07-14)
 - [ ] **Phase 3: Participant Submit, Co-Sign, Track, and Resolve** - From a chosen cohort, participant submits a DID update, co-signs, tracks the anchor, and resolves
 - [ ] **Phase 4: Operator Cohort Monitoring** - Operator watches members, submissions, co-sign progress, and anchor status live on the protected console
 - [ ] **Phase 5: Operator Cohort Lifecycle Control** - Operator runs open->close->finalize and pauses/cancels/reconfigures advertising without restarting
@@ -67,7 +67,7 @@ Plans:
   2. The participant selects a specific open cohort from the directory and joins it by choice, rather than auto-joining whatever advert arrives.
   3. A joined participant is seated in the chosen cohort (counts against its capacity), and a full or closed cohort cannot be joined.
 
-**Plans**: 3/4 plans executed
+**Plans**: 4/4 plans complete
 Plans:
 
 **Wave 1**
@@ -81,7 +81,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 02-04-PLAN.md - Pick -> inline identity -> join -> seated confirmation -> reused co-sign/resolve tail + Leave (PART-02, criterion 3, Wave 3)
+- [x] 02-04-PLAN.md - Pick -> inline identity -> join -> seated confirmation -> reused co-sign/resolve tail + Leave (PART-02, criterion 3, Wave 3)
 
 **UI hint**: yes
 
@@ -155,7 +155,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Authenticated Operator Console + On-Demand Cohort Creation | 4/4 | Complete    | 2026-07-08 |
-| 2. Participant Discovery + Browse-and-Pick Join | 3/4 | In Progress|  |
+| 2. Participant Discovery + Browse-and-Pick Join | 4/4 | Complete   | 2026-07-14 |
 | 3. Participant Submit, Co-Sign, Track, and Resolve | 0/TBD | Not started | - |
 | 4. Operator Cohort Monitoring | 0/TBD | Not started | - |
 | 5. Operator Cohort Lifecycle Control | 0/TBD | Not started | - |
