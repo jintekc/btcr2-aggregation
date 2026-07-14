@@ -24,6 +24,16 @@ findings:
   warning: 2
   info: 5
   total: 8
+open:
+  critical: 0
+  warning: 0
+  info: 5
+  total: 5
+resolved:
+  - CR-01
+  - WR-01
+  - WR-02
+resolved_in: 0a88e54
 status: issues_found
 ---
 
@@ -56,6 +66,14 @@ an orphaned-interval ordering hazard in `join`, and residual dead code (KeyGenPa
 ## Critical Issues
 
 ### CR-01: Directory poll can fail a genuinely-seated participant and stall the whole cohort
+
+**Status:** RESOLVED (commit `0a88e54`). The store now tracks opt-in as an `optedIn`
+field (set at `cohort-joined`). `handleDirectorySnapshot` only fails when the cohort
+leaves Advertised while we are NOT opted in (we provably missed it); once opted in, a
+closed cohort is ambiguous and the poll no longer tears the member down. A bounded
+`JOIN_SEAT_GRACE_MS` backstop timer, armed at `cohort-joined` and cleared on
+seat/complete/fail/teardown/leave, owns the silent "opted in but never seated" outcome.
+Regression tests cover the member-protection case and the preserved not-opted-in path.
 
 **File:** `packages/web/src/stores/participant.ts:606-634` (poll setup + `handleDirectorySnapshot`)
 
@@ -119,6 +137,12 @@ Even a single-cycle grace closes the common race; pair it with clearing the coun
 
 ### WR-01: BrowseView never surfaces the store's `failed` status - errors are swallowed from the UI
 
+**Status:** RESOLVED (commit `0a88e54`). BrowseView now subscribes to `status` and renders
+an explicit `status === 'failed' && !joinClosed` branch (a "Join failed" card surfacing
+`error` with a "Back to directory" action), placed before the seated and picked branches.
+A post-seat failure no longer shows a false seated card, and a pre-seat connect failure no
+longer silently re-enables Join with no feedback.
+
 **File:** `packages/web/src/components/browse/BrowseView.tsx:48-114`
 
 **Issue:** BrowseView branches only on `joinClosed`, `seated`, `pickedRow`, then default. The
@@ -141,6 +165,12 @@ surfaces `error` and offers "Back to directory" (mirroring the `joinClosed` card
 the `error` into `JoinIdentityStep`/the seated card so a post-seat failure is visible.
 
 ### WR-02: Join-time poll is created after `await participant.start()`, orphaning it if a seat/complete event lands during start
+
+**Status:** RESOLVED (commit `0a88e54`). After `await participant.start()`, `join` now
+re-checks the round (`live !== participant || seated || status in {complete, failed}`) and
+returns without arming the directory poll (or the grace timer) when a seat/terminal event
+already fired during `start()`, so no interval is orphaned against an already
+seated/terminal round.
 
 **File:** `packages/web/src/stores/participant.ts:594-613`
 
