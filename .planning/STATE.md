@@ -5,10 +5,10 @@ milestone_name: milestone
 current_phase: 2
 current_phase_name: Participant Discovery + Browse-and-Pick Join
 status: planning
-stopped_at: Phase 2 UI-SPEC approved
+stopped_at: Phase 2 planned (4 plans, 3 waves, ready to execute)
 last_updated: "2026-07-14T16:14:28.544Z"
-last_activity: 2026-07-08
-last_activity_desc: Phase 1 complete, transitioned to Phase 2
+last_activity: 2026-07-14
+last_activity_desc: Phase 2 planning complete (4 plans, 3 waves, plan-check passed)
 progress:
   total_phases: 6
   completed_phases: 1
@@ -28,10 +28,10 @@ See: .planning/PROJECT.md (updated 2026-07-08)
 
 ## Current Position
 
-Phase: 2 — Participant Discovery + Browse-and-Pick Join
-Plan: Not started
-Status: Ready to plan (Phase 1 complete: verified 4/4, UAT 3/3 passed, threats_open 0)
-Last activity: 2026-07-08 — Phase 1 complete, transitioned to Phase 2
+Phase: 2 - Participant Discovery + Browse-and-Pick Join
+Plan: 4 plans across 3 waves (W1: 02-01; W2: 02-02, 02-03; W3: 02-04)
+Status: Ready to execute (Phase 2 planned 2026-07-14: plan-check PASSED, 16/16 decisions + PART-01/PART-02 covered)
+Last activity: 2026-07-14 - Phase 2 planning complete
 
 Progress: [██░░░░░░░░] 17% (Phase 1 of 6 complete)
 
