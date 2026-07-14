@@ -23,7 +23,6 @@ export function KeyGenPanel({ baseUrl }: { baseUrl: string }) {
   const configStatus = useParticipant((s) => s.configStatus);
   const generate = useParticipant((s) => s.generate);
   const importSecret = useParticipant((s) => s.importSecret);
-  const join = useParticipant((s) => s.join);
   const leave = useParticipant((s) => s.leave);
 
   const [kind, setKind] = useState<IdType>('KEY');
@@ -133,7 +132,12 @@ export function KeyGenPanel({ baseUrl }: { baseUrl: string }) {
           <div className="flex flex-wrap items-center gap-2 pt-1">
             {!connected ? (
               <>
-                <Button onClick={() => join(baseUrl)}>Join the cohort</Button>
+                {/* The standalone context-free Join is retired under browse-and-pick:
+                    join now requires a picked cohortId supplied by the directory
+                    (plan 04's inline identity step wires it). This orphaned panel is
+                    no longer the landing; it is kept only as the identity-acquisition
+                    reference plan 04 extracts JoinIdentityStep from. */}
+                <Button disabled>Join the cohort</Button>
                 <Button variant="ghost" onClick={() => generate(idType)}>
                   Regenerate
                 </Button>
@@ -141,7 +145,7 @@ export function KeyGenPanel({ baseUrl }: { baseUrl: string }) {
             ) : status === 'failed' ? (
               <>
                 <Badge tone="bad">failed</Badge>
-                <Button onClick={() => join(baseUrl)}>Retry</Button>
+                <Button disabled>Retry</Button>
                 <Button variant="ghost" onClick={leave}>
                   Reset
                 </Button>

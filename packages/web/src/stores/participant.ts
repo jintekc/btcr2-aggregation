@@ -25,6 +25,7 @@ import {
 } from '@btcr2-aggregation/shared';
 import { elapsed } from '../lib/clock';
 import { fetchNetworkConfig } from '../lib/config';
+import { fetchDirectory, type DirectoryCohortDTO } from '../lib/operator';
 import { fetchIpfsInfo, requestPin, type IpfsInfoDTO } from '../lib/ipfs';
 import type { BrowserIpfsNode } from '../lib/ipfs-node';
 import {
@@ -113,6 +114,20 @@ interface ParticipantState {
   steps: Record<StepKey, StepStatus>;
   cohortId: string | null;
   beaconAddress: string | null;
+  /**
+   * True once the picked cohort formed with us in it (the `cohort-ready` seat, D-11).
+   * Flips true ONLY in the cohort-ready handler; `cohort-joined` (opt-in sent, not
+   * accepted) does not set it. The directory poll drives the negative before this is
+   * ever true.
+   */
+  seated: boolean;
+  /**
+   * True when the picked cohort filled or closed before we were seated (D-06/D-12): a
+   * distinct terminal cause from an ordinary failure or an unreachable service.
+   */
+  joinClosed: boolean;
+  /** The cohort id the participant picked to join (browse-and-pick, D-14); null when idle. */
+  pickedCohortId: string | null;
   result: ParticipantResult | null;
   /** The controller's downloadable, sovereign resolution sidecar (once included). */
   sidecar: Sidecar | null;
@@ -158,10 +173,21 @@ interface ParticipantState {
    * therefore the same DID) from the secret, mirroring the KEY path.
    */
   importSecret(hex: string, kind?: IdType): string | null;
-  /** The one explicit user gate: connect to the service and auto-drive the protocol. */
-  join(baseUrl: string): Promise<void>;
+  /**
+   * The one explicit user gate: connect to the service and join the PICKED cohort
+   * (browse-and-pick, PART-02/D-14). The chosen `cohortId` is threaded into
+   * `createParticipant` so the runner opts into that cohort alone.
+   */
+  join(baseUrl: string, cohortId: string): Promise<void>;
   /** Tear down the live participant and return to a fresh-but-identified state. */
   leave(): void;
+  /**
+   * Feed the latest public directory snapshot to the join lifecycle (D-06/D-12).
+   * While awaiting a seat for the picked cohort, a snapshot in which that cohort is
+   * no longer Advertised resolves the join to a deterministic "filled or closed"
+   * terminal state; once seated it is a no-op. Driven by the join-time directory poll.
+   */
+  handleDirectorySnapshot(rows: DirectoryCohortDTO[]): void;
   /** Download the resolution sidecar JSON (the artifacts a resolver needs). */
   downloadSidecar(): void;
   /**
@@ -224,17 +250,22 @@ function teardownIpfs(): void {
   }
 }
 
-// Watchdog for a join that never discovers a cohort (coordinator unreachable):
-// without it, transport.start() resolves and the SSE loops retry forever, so the
-// UI would sit in 'connecting' silently. The timer flips to a failed state.
-let joinWatchdog: ReturnType<typeof setTimeout> | null = null;
-const JOIN_WATCHDOG_MS = 15000;
+// The join-time directory poll (D-06/D-12): while awaiting a seat for the picked
+// cohort, poll the PUBLIC directory (`GET /v1/directory`, the HTTP source of truth
+// for every live cohort) every ~5s. A successful poll in which the picked cohort is
+// no longer Advertised means it just filled or closed before we were seated - a
+// deterministic terminal state. A poll ERROR is ignored so an unreachable service
+// never masquerades as a closed cohort. Kept at module scope like `live`: a
+// long-lived handle, not a render value. Cleared on seat/complete/fail/leave.
+let directoryPoll: ReturnType<typeof setInterval> | null = null;
+const DIRECTORY_POLL_MS = 5000;
 
 /**
- * Stop and forget the live participant. Critical after a cohort completes/fails:
- * the runner joins EVERY advert (shouldJoin always true), so a still-live runner
- * would auto-join the booth's next re-advertised cohort and silently re-run the
- * flow, reusing the attendee's key in a signature they never asked for.
+ * Stop and forget the live participant. Critical after a cohort completes/fails or
+ * closes: under browse-and-pick the runner opts into only the picked cohort, but a
+ * still-live runner would keep its SSE streams open and could re-act on a replayed
+ * advert for that same cohort id, reusing the participant's key in a signature they
+ * never asked for. One cohort per join: tear the runner down at every terminal state.
  */
 function teardownLive(): void {
   if (live) {
@@ -247,11 +278,23 @@ function teardownLive(): void {
   }
 }
 
-function clearWatchdog(): void {
-  if (joinWatchdog !== null) {
-    clearTimeout(joinWatchdog);
-    joinWatchdog = null;
+function clearDirectoryPoll(): void {
+  if (directoryPoll !== null) {
+    clearInterval(directoryPoll);
+    directoryPoll = null;
   }
+}
+
+/**
+ * Pure browse-and-pick outcome predicate (D-06/D-12): given the latest public
+ * directory snapshot, has the picked cohort left the joinable set? A cohort accepts
+ * new members ONLY while `phase === 'Advertised'` (it locks membership the instant it
+ * reaches its threshold, RESEARCH Finding 3), so the picked cohort is "filled or
+ * closed" when no row is both its id AND still Advertised - whether that row advanced
+ * phase or vanished entirely. Returns false while it is still present and Advertised.
+ */
+export function pickedCohortClosed(rows: DirectoryCohortDTO[], pickedId: string): boolean {
+  return !rows.some((row) => row.cohortId === pickedId && row.phase === 'Advertised');
 }
 
 const INITIAL_STEPS: Record<StepKey, StepStatus> = {
@@ -316,7 +359,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
   function fail(reason: string): void {
     failActiveStep();
     set({ status: 'failed', error: reason });
-    clearWatchdog();
+    clearDirectoryPoll();
     teardownLive();
   }
 
@@ -332,6 +375,9 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       steps: { ...INITIAL_STEPS },
       cohortId: null,
       beaconAddress: null,
+      seated: false,
+      joinClosed: false,
+      pickedCohortId: null,
       error: null,
       // The first-update SingletonBeacon address to fund is the key's genesis P2TR
       // address for both models: for k1 it is one of the deterministic genesis beacons,
@@ -353,6 +399,9 @@ export const useParticipant = create<ParticipantState>((set, get) => {
     steps: { ...INITIAL_STEPS },
     cohortId: null,
     beaconAddress: null,
+    seated: false,
+    joinClosed: false,
+    pickedCohortId: null,
     error: null,
     log: [],
     beaconRegAddress: null,
@@ -404,7 +453,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       }
     },
 
-    async join(baseUrl) {
+    async join(baseUrl, cohortId) {
       const { identity, status } = get();
       if (!identity || status === 'connecting' || status === 'live') {
         return;
@@ -413,20 +462,29 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       // Re-join after a completed/failed round: tear down the prior participant
       // first so we never leak its SSE streams or leave two runners listening.
       // The IPFS node goes too: its blocks belong to the finished round.
-      clearWatchdog();
+      clearDirectoryPoll();
       teardownLive();
       teardownIpfs();
       clearCaptured();
-      set({ status: 'connecting', error: null, steps: { ...INITIAL_STEPS }, ...INITIAL_OUTCOME });
-      append('info', `connecting to coordinator at ${baseUrl}`);
+      set({
+        status: 'connecting',
+        error: null,
+        steps: { ...INITIAL_STEPS },
+        seated: false,
+        joinClosed: false,
+        pickedCohortId: cohortId,
+        ...INITIAL_OUTCOME,
+      });
+      append('info', `connecting to ${baseUrl} to join cohort ${cohortId}`);
 
-      const participant = createParticipant({ identity, baseUrl });
+      // Browse-and-pick (PART-02/D-14): the picked cohortId is threaded into the
+      // runner so `shouldJoin` opts into that cohort alone and ignores every other
+      // advert on the public transport.
+      const participant = createParticipant({ identity, baseUrl, cohortId });
       live = participant;
       const r = participant.runner;
 
       r.on('cohort-discovered', (advert) => {
-        // Reached the coordinator: the unreachable-coordinator watchdog can stand down.
-        clearWatchdog();
         append('info', `discovered cohort ${advert.cohortId} (${advert.beaconType})`);
       });
       r.on('cohort-joined', ({ cohortId }) => {
@@ -436,14 +494,22 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         if (st === 'complete' || st === 'failed') {
           return;
         }
-        clearWatchdog();
+        // cohort-joined = the opt-in was SENT, NOT that a seat was granted (D-11): the
+        // protocol emits no accept event. Treat this as "opted in, waiting for the
+        // cohort to fill"; `seated` flips only on cohort-ready. The directory poll keeps
+        // running so a fill/close before seating still resolves deterministically.
         set({ cohortId, status: 'live' });
         setStep('join', 'done');
         setStep('submit', 'active');
         append('good', `joined cohort ${cohortId}; running distributed keygen`);
       });
       r.on('cohort-ready', ({ cohortId, beaconAddress }) => {
-        set({ beaconAddress });
+        // The DEFINITIVE seat (D-11): the cohort formed with us in it and membership
+        // is locked. This is the only place `seated` flips true. The directory poll
+        // can stand down now - a seated cohort legitimately leaves the Advertised
+        // set, and that must not read as "filled or closed".
+        set({ beaconAddress, seated: true });
+        clearDirectoryPoll();
         append('info', `cohort ${cohortId} keygen complete; beacon ${beaconAddress}`);
       });
       r.on('update-submitted', ({ cohortId }) => {
@@ -504,9 +570,9 @@ export const useParticipant = create<ParticipantState>((set, get) => {
           (ipfs) => set({ ipfsInfo: ipfs }),
           () => {},
         );
-        // Stop here: one cohort per Join. Otherwise the still-live runner would
-        // auto-join the booth's next advert and reuse this key unbidden.
-        clearWatchdog();
+        // Stop here: one cohort per join. Leaving the runner live would keep its SSE
+        // streams open and risk re-acting on a replayed advert, reusing this key unbidden.
+        clearDirectoryPoll();
         teardownLive();
       });
       r.on('cohort-failed', ({ cohortId, reason }) => {
@@ -528,16 +594,23 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       try {
         await participant.start();
         setStep('join', 'active');
-        append('info', 'listening for cohort adverts');
-        // If no advert is discovered within the window, the coordinator is
-        // unreachable; surface a failure rather than spinning forever.
-        joinWatchdog = setTimeout(() => {
-          joinWatchdog = null;
-          if (get().status === 'connecting') {
-            append('bad', 'could not reach the coordinator (no cohort advert received)');
-            fail('Could not reach the coordinator. Check the connection and try again.');
-          }
-        }, JOIN_WATCHDOG_MS);
+        append('info', `listening for the advert for cohort ${cohortId}`);
+        // Directory-driven join outcome (D-06/D-12), replacing the old fixed no-advert
+        // timer: while awaiting a seat, poll the public directory (the HTTP source of
+        // truth for all live cohorts) every ~5s. A successful poll in which the picked
+        // cohort is no longer Advertised means it just filled or closed -> a
+        // deterministic terminal state (handleDirectorySnapshot). A poll ERROR is
+        // swallowed: an unreachable service must never masquerade as a closed cohort;
+        // the next tick retries. The poll is cleared on seat (cohort-ready),
+        // cohort-complete, fail, and leave.
+        directoryPoll = setInterval(() => {
+          fetchDirectory(baseUrl).then(
+            (rows) => get().handleDirectorySnapshot(rows),
+            () => {
+              // Ignore: a fetch error is "unreachable", not "closed" (D-12).
+            },
+          );
+        }, DIRECTORY_POLL_MS);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         append('bad', `failed to connect: ${message}`);
@@ -545,8 +618,23 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       }
     },
 
+    handleDirectorySnapshot(rows) {
+      const { status, seated, pickedCohortId } = get();
+      // Only meaningful while awaiting a seat for a picked cohort. Once seated, the
+      // picked cohort legitimately leaves the Advertised set (it locked membership),
+      // so this is a no-op; likewise if we already left the connecting/live window.
+      if (seated || pickedCohortId === null || (status !== 'connecting' && status !== 'live')) {
+        return;
+      }
+      if (pickedCohortClosed(rows, pickedCohortId)) {
+        append('warn', `cohort ${pickedCohortId} left the open set before seating; it just filled or closed`);
+        set({ joinClosed: true });
+        fail('That cohort just filled or closed. Pick another from the directory.');
+      }
+    },
+
     leave() {
-      clearWatchdog();
+      clearDirectoryPoll();
       teardownLive();
       teardownIpfs();
       clearCaptured();
@@ -556,6 +644,9 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         steps: { ...INITIAL_STEPS },
         cohortId: null,
         beaconAddress: null,
+        seated: false,
+        joinClosed: false,
+        pickedCohortId: null,
         error: null,
         ...INITIAL_OUTCOME,
       });
