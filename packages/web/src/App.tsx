@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react';
 import { resolveNetwork } from '@btcr2-aggregation/shared';
+import { BrowseView } from './components/browse/BrowseView';
 import { OperatorConsole } from './components/operator/OperatorConsole';
-import { PublicStatus } from './components/operator/PublicStatus';
-import { ParticipantView } from './components/participant/ParticipantView';
 import { useParticipant } from './stores/participant';
 
 /**
@@ -47,7 +46,7 @@ export function App() {
             <p className="text-sm text-muted">
               {isOperator
                 ? 'Operator console for this self-hosted aggregation service.'
-                : 'p2p MuSig2 cohort signing over HTTP/REST. Real keys, real transport, a fixture beacon transaction.'}
+                : "Browse this service's open cohorts and pick one to join and co-sign."}
             </p>
           </div>
           <span
@@ -66,10 +65,7 @@ export function App() {
         {isOperator ? (
           <OperatorConsole baseUrl={baseUrl} />
         ) : (
-          <div className="space-y-6">
-            <PublicStatus baseUrl={baseUrl} />
-            <ParticipantView baseUrl={baseUrl} />
-          </div>
+          <BrowseView baseUrl={baseUrl} />
         )}
       </main>
 
