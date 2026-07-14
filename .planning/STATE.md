@@ -2,17 +2,17 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 2
-current_phase_name: Participant Discovery + Browse-and-Pick Join
-status: planning
+current_phase: 02
+current_phase_name: participant-discovery-browse-and-pick-join
+status: executing
 stopped_at: Phase 2 planned (4 plans, 3 waves, ready to execute)
-last_updated: "2026-07-14T16:14:28.544Z"
+last_updated: "2026-07-14T20:10:46.141Z"
 last_activity: 2026-07-14
-last_activity_desc: Phase 2 planning complete (4 plans, 3 waves, plan-check passed)
+last_activity_desc: Phase 02 execution started
 progress:
   total_phases: 6
   completed_phases: 1
-  total_plans: 4
+  total_plans: 8
   completed_plans: 4
   percent: 17
 ---
@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-08)
 
 **Core value:** A stranger can self-host a real aggregation service that advertises cohorts, and another stranger can point a participant at that service's URL, browse its cohorts, join, co-sign, and resolve - a genuinely two-sided, self-hostable product, not a demo.
-**Current focus:** Phase 2 - Participant Discovery + Browse-and-Pick Join
+**Current focus:** Phase 02 - participant-discovery-browse-and-pick-join
 
 ## Current Position
 
-Phase: 2 - Participant Discovery + Browse-and-Pick Join
-Plan: 4 plans across 3 waves (W1: 02-01; W2: 02-02, 02-03; W3: 02-04)
-Status: Ready to execute (Phase 2 planned 2026-07-14: plan-check PASSED, 16/16 decisions + PART-01/PART-02 covered)
-Last activity: 2026-07-14 - Phase 2 planning complete
+Phase: 02 (participant-discovery-browse-and-pick-join) - EXECUTING
+Plan: 2 of 4
+Status: Ready to execute
+Last activity: 2026-07-14 - Phase 02 plan 01 executed (join-by-filter + browse capstone)
 
 Progress: [██░░░░░░░░] 17% (Phase 1 of 6 complete)
 
@@ -59,6 +59,7 @@ Progress: [██░░░░░░░░] 17% (Phase 1 of 6 complete)
 | Phase 01 P02 | 6min | 2 tasks | 9 files |
 | Phase 01 P03 | 13 min | 3 tasks | 10 files |
 | Phase 01 P04 | 8m | 1 tasks | 2 files |
+| Phase 02 P01 | 14 min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -103,6 +104,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-14T16:14:28.539Z
+Last session: 2026-07-14T20:10:32.611Z
 Stopped at: Phase 2 UI-SPEC approved
 Resume file: .planning/phases/02-participant-discovery-browse-and-pick-join/02-UI-SPEC.md

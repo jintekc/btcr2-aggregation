@@ -18,8 +18,8 @@ Requirements for the realigned two-sided product. Each maps to roadmap phases.
 
 ### Participant (attendee experience)
 
-- [ ] **PART-01**: Participant can point a client at a service's URL and browse that service's advertised open cohorts, with enough per-cohort detail (beacon type, network, open seats, status) to choose one
-- [ ] **PART-02**: Participant can join an advertised open cohort of their choice (browse-and-pick), rather than auto-joining whatever advert arrives
+- [x] **PART-01**: Participant can point a client at a service's URL and browse that service's advertised open cohorts, with enough per-cohort detail (beacon type, network, open seats, status) to choose one
+- [x] **PART-02**: Participant can join an advertised open cohort of their choice (browse-and-pick), rather than auto-joining whatever advert arrives
 - [ ] **PART-03**: Participant can submit a DID update and take part in the cohort's n-of-n MuSig2 co-signing round
 - [ ] **PART-04**: Participant can track co-sign and anchor progress for a joined cohort and resolve the updated DID once it is anchored
 
@@ -67,8 +67,8 @@ Which phases cover which requirements. Populated during roadmap creation.
 | SVC-02 | Phase 1 | Complete |
 | SVC-03 | Phase 4 | Pending |
 | SVC-04 | Phase 5 | Pending |
-| PART-01 | Phase 2 | Pending |
-| PART-02 | Phase 2 | Pending |
+| PART-01 | Phase 2 | Complete |
+| PART-02 | Phase 2 | Complete |
 | PART-03 | Phase 3 | Pending |
 | PART-04 | Phase 3 | Pending |
 | HOST-01 | Phase 1 | Complete |

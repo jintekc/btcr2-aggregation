@@ -67,12 +67,12 @@ Plans:
   2. The participant selects a specific open cohort from the directory and joins it by choice, rather than auto-joining whatever advert arrives.
   3. A joined participant is seated in the chosen cohort (counts against its capacity), and a full or closed cohort cannot be joined.
 
-**Plans**: 4 plans
+**Plans**: 1/4 plans executed
 Plans:
 
 **Wave 1**
 
-- [ ] 02-01-PLAN.md - Join-by-filter mechanism (shouldJoin -> picked cohortId) + hermetic browse->pick->join->co-sign capstone (PART-02, criterion 3, Wave 1)
+- [x] 02-01-PLAN.md - Join-by-filter mechanism (shouldJoin -> picked cohortId) + hermetic browse->pick->join->co-sign capstone (PART-02, criterion 3, Wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -155,7 +155,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Authenticated Operator Console + On-Demand Cohort Creation | 4/4 | Complete    | 2026-07-08 |
-| 2. Participant Discovery + Browse-and-Pick Join | 0/4 | Not started | - |
+| 2. Participant Discovery + Browse-and-Pick Join | 1/4 | In Progress|  |
 | 3. Participant Submit, Co-Sign, Track, and Resolve | 0/TBD | Not started | - |
 | 4. Operator Cohort Monitoring | 0/TBD | Not started | - |
 | 5. Operator Cohort Lifecycle Control | 0/TBD | Not started | - |
