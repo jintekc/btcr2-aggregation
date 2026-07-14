@@ -67,7 +67,7 @@ Plans:
   2. The participant selects a specific open cohort from the directory and joins it by choice, rather than auto-joining whatever advert arrives.
   3. A joined participant is seated in the chosen cohort (counts against its capacity), and a full or closed cohort cannot be joined.
 
-**Plans**: 1/4 plans executed
+**Plans**: 2/4 plans executed
 Plans:
 
 **Wave 1**
@@ -76,7 +76,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 02-02-PLAN.md - Anonymous browse directory landing at / (service-identity header + ~5s-polled list + plain-language labels + empty/unreachable states) (PART-01, Wave 2)
+- [x] 02-02-PLAN.md - Anonymous browse directory landing at / (service-identity header + ~5s-polled list + plain-language labels + empty/unreachable states) (PART-01, Wave 2)
 - [ ] 02-03-PLAN.md - Participant store lifecycle: join(baseUrl, cohortId) + cohort-ready seat + directory-driven filled/closed outcome, watchdog removed (PART-02, Wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
@@ -155,7 +155,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Authenticated Operator Console + On-Demand Cohort Creation | 4/4 | Complete    | 2026-07-08 |
-| 2. Participant Discovery + Browse-and-Pick Join | 1/4 | In Progress|  |
+| 2. Participant Discovery + Browse-and-Pick Join | 2/4 | In Progress|  |
 | 3. Participant Submit, Co-Sign, Track, and Resolve | 0/TBD | Not started | - |
 | 4. Operator Cohort Monitoring | 0/TBD | Not started | - |
 | 5. Operator Cohort Lifecycle Control | 0/TBD | Not started | - |
