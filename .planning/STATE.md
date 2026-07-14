@@ -5,8 +5,8 @@ milestone_name: milestone
 current_phase: 2
 current_phase_name: Participant Discovery + Browse-and-Pick Join
 status: planning
-stopped_at: Phase 2 context gathered
-last_updated: "2026-07-14T16:02:19.930Z"
+stopped_at: Phase 2 UI-SPEC approved
+last_updated: "2026-07-14T16:14:28.544Z"
 last_activity: 2026-07-08
 last_activity_desc: Phase 1 complete, transitioned to Phase 2
 progress:
@@ -103,6 +103,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-14T16:02:19.925Z
-Stopped at: Phase 2 context gathered
-Resume file: .planning/phases/02-participant-discovery-browse-and-pick-join/02-CONTEXT.md
+Last session: 2026-07-14T16:14:28.539Z
+Stopped at: Phase 2 UI-SPEC approved
+Resume file: .planning/phases/02-participant-discovery-browse-and-pick-join/02-UI-SPEC.md
