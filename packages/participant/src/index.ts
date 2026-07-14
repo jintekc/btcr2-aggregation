@@ -23,6 +23,33 @@ export interface CreateParticipantOptions {
    * Defaults to CAS.
    */
   beaconType?: BeaconType;
+  /**
+   * The browse-and-pick picked cohort (PART-02, D-14): when set, this participant
+   * joins ONLY the advert whose `cohortId` matches this value and ignores every
+   * other advert on the public transport. This is the single browse-and-pick
+   * mechanism - the participant chose one cohort from the directory, so it opts
+   * into that cohort alone rather than whatever advert happens to arrive.
+   *
+   * Omitting it keeps the legacy accept-all behavior (join every advertised
+   * cohort). Phase 2 does NOT rely on that path: a browsing participant always
+   * carries the picked cohortId, and accept-all only survives as the pre-Phase-2
+   * default for callers (the in-process demo drivers) that never picked.
+   */
+  cohortId?: string;
+}
+
+/**
+ * Pure browse-and-pick predicate (PART-02, D-14): does an advertised cohort match
+ * the one this participant picked? Returns `true` when no cohort was picked
+ * (`pickedCohortId` undefined = legacy accept-all) OR the picked id is exactly the
+ * advert's id; `false` otherwise. Selectivity is enforced entirely client-side,
+ * before any opt-in is sent, so a non-matching advert never reaches the service.
+ */
+export function matchesPickedCohort(
+  pickedCohortId: string | undefined,
+  advertCohortId: string,
+): boolean {
+  return pickedCohortId === undefined || pickedCohortId === advertCohortId;
 }
 
 /** Coerce an advert's `beaconType` (typed `string`) to a known {@link BeaconType}. */
@@ -118,6 +145,13 @@ export function createParticipant(opts: CreateParticipantOptions): Participant {
     // k1 opt-in is byte-identical to before.
     genesisDocument,
     shouldJoin: async (advert: CohortAdvert) => {
+      // Browse-and-pick (PART-02, D-14): the picked filter is the single
+      // browse-and-pick mechanism. When the participant chose a cohort, ignore
+      // every advert except that one - selectivity is enforced here, client-side,
+      // before the opt-in, so a non-matching advert sends nothing to the service.
+      if (!matchesPickedCohort(opts.cohortId, advert.cohortId)) {
+        return false;
+      }
       cohortBeaconTypes.set(advert.cohortId, normalizeBeaconType(advert.beaconType));
       return true;
     },
