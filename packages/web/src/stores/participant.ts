@@ -122,6 +122,15 @@ interface ParticipantState {
    */
   seated: boolean;
   /**
+   * True once we have OPTED IN to the picked cohort (the `cohort-joined` event: opt-in
+   * SENT, not yet a granted seat). Distinguishes the two directory-poll outcomes (CR-01):
+   * before opt-in, the picked cohort leaving Advertised means we missed it (fail now);
+   * after opt-in, it is ambiguous (forming with us vs. filled without us) and the
+   * bounded join-grace timer, not the poll, owns the outcome so a real member is never
+   * torn down mid-keygen. Reset wherever `seated`/`joinClosed` reset.
+   */
+  optedIn: boolean;
+  /**
    * True when the picked cohort filled or closed before we were seated (D-06/D-12): a
    * distinct terminal cause from an ordinary failure or an unreachable service.
    */
@@ -260,6 +269,23 @@ function teardownIpfs(): void {
 let directoryPoll: ReturnType<typeof setInterval> | null = null;
 const DIRECTORY_POLL_MS = 5000;
 
+// Join-seat grace window (CR-01). Once we have opted in (cohort-joined fired), the
+// picked cohort leaving the Advertised set is AMBIGUOUS: it may be forming WITH us
+// (cohort-ready imminent, since a cohort locks membership at its threshold BEFORE
+// keygen finishes) or filled WITHOUT us. The protocol emits no accept/reject signal,
+// so the client cannot distinguish immediately and MUST NOT tear down a genuine member
+// mid-keygen (that would drop it from the n-of-n MuSig2 round and stall every member).
+// This backstop timer, armed at cohort-joined, owns the silent "opted in but never
+// seated" outcome: if no cohort-ready lands within the window, the join resolves to a
+// deterministic filled-or-closed terminal instead of hanging. The server's
+// PHASE_TIMEOUT_MS is the real bound; this window is only generous slack for
+// real-internet keygen + SSE latency. Cleared on seat/complete/fail/leave.
+let joinGrace: ReturnType<typeof setTimeout> | null = null;
+const JOIN_SEAT_GRACE_MS = 90000;
+// One-shot flag so a repeated directory poll (every ~5s) logs the "awaiting seat"
+// note at most once per opted-in wait. Reset whenever the grace window is (re)armed.
+let joinGraceLogged = false;
+
 /**
  * Stop and forget the live participant. Critical after a cohort completes/fails or
  * closes: under browse-and-pick the runner opts into only the picked cohort, but a
@@ -276,6 +302,8 @@ function teardownLive(): void {
     }
     live = null;
   }
+  // The seat is meaningless without a live runner: tear the grace timer down with it.
+  clearJoinGrace();
 }
 
 function clearDirectoryPoll(): void {
@@ -283,6 +311,14 @@ function clearDirectoryPoll(): void {
     clearInterval(directoryPoll);
     directoryPoll = null;
   }
+}
+
+function clearJoinGrace(): void {
+  if (joinGrace !== null) {
+    clearTimeout(joinGrace);
+    joinGrace = null;
+  }
+  joinGraceLogged = false;
 }
 
 /**
@@ -360,6 +396,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
     failActiveStep();
     set({ status: 'failed', error: reason });
     clearDirectoryPoll();
+    clearJoinGrace();
     teardownLive();
   }
 
@@ -376,6 +413,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       cohortId: null,
       beaconAddress: null,
       seated: false,
+      optedIn: false,
       joinClosed: false,
       pickedCohortId: null,
       error: null,
@@ -400,6 +438,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
     cohortId: null,
     beaconAddress: null,
     seated: false,
+    optedIn: false,
     joinClosed: false,
     pickedCohortId: null,
     error: null,
@@ -463,6 +502,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       // first so we never leak its SSE streams or leave two runners listening.
       // The IPFS node goes too: its blocks belong to the finished round.
       clearDirectoryPoll();
+      clearJoinGrace();
       teardownLive();
       teardownIpfs();
       clearCaptured();
@@ -471,6 +511,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         error: null,
         steps: { ...INITIAL_STEPS },
         seated: false,
+        optedIn: false,
         joinClosed: false,
         pickedCohortId: cohortId,
         ...INITIAL_OUTCOME,
@@ -496,12 +537,23 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         }
         // cohort-joined = the opt-in was SENT, NOT that a seat was granted (D-11): the
         // protocol emits no accept event. Treat this as "opted in, waiting for the
-        // cohort to fill"; `seated` flips only on cohort-ready. The directory poll keeps
-        // running so a fill/close before seating still resolves deterministically.
-        set({ cohortId, status: 'live' });
+        // cohort to fill"; `seated` flips only on cohort-ready.
+        set({ cohortId, status: 'live', optedIn: true });
         setStep('join', 'done');
         setStep('submit', 'active');
         append('good', `joined cohort ${cohortId}; running distributed keygen`);
+        // From this point the directory poll must NOT tear us down on its own (CR-01):
+        // now that we have opted in, the cohort leaving Advertised is ambiguous. Arm the
+        // bounded grace backstop instead; cohort-ready clears it, and if no seat ever
+        // arrives it resolves the silent "opted in but not a member" case deterministically.
+        clearJoinGrace();
+        joinGrace = setTimeout(() => {
+          const { seated, status } = get();
+          if (!seated && (status === 'connecting' || status === 'live')) {
+            set({ joinClosed: true });
+            fail('That cohort filled or closed before you were seated. Pick another from the directory.');
+          }
+        }, JOIN_SEAT_GRACE_MS);
       });
       r.on('cohort-ready', ({ cohortId, beaconAddress }) => {
         // The DEFINITIVE seat (D-11): the cohort formed with us in it and membership
@@ -510,6 +562,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         // set, and that must not read as "filled or closed".
         set({ beaconAddress, seated: true });
         clearDirectoryPoll();
+        clearJoinGrace();
         append('info', `cohort ${cohortId} keygen complete; beacon ${beaconAddress}`);
       });
       r.on('update-submitted', ({ cohortId }) => {
@@ -573,6 +626,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         // Stop here: one cohort per join. Leaving the runner live would keep its SSE
         // streams open and risk re-acting on a replayed advert, reusing this key unbidden.
         clearDirectoryPoll();
+        clearJoinGrace();
         teardownLive();
       });
       r.on('cohort-failed', ({ cohortId, reason }) => {
@@ -593,6 +647,19 @@ export const useParticipant = create<ParticipantState>((set, get) => {
 
       try {
         await participant.start();
+        // WR-02: a fast hermetic/in-process path can open SSE and replay the current
+        // advert DURING start(), so cohort-joined/cohort-ready/cohort-complete may have
+        // already fired and run their poll/grace teardowns before this point. Re-check
+        // the round before arming anything: if it was replaced by a re-join, is already
+        // seated, or already reached a terminal state, do not install an orphaned interval.
+        if (
+          live !== participant ||
+          get().seated ||
+          get().status === 'complete' ||
+          get().status === 'failed'
+        ) {
+          return;
+        }
         setStep('join', 'active');
         append('info', `listening for the advert for cohort ${cohortId}`);
         // Directory-driven join outcome (D-06/D-12), replacing the old fixed no-advert
@@ -619,22 +686,41 @@ export const useParticipant = create<ParticipantState>((set, get) => {
     },
 
     handleDirectorySnapshot(rows) {
-      const { status, seated, pickedCohortId } = get();
+      const { status, seated, pickedCohortId, optedIn } = get();
       // Only meaningful while awaiting a seat for a picked cohort. Once seated, the
       // picked cohort legitimately leaves the Advertised set (it locked membership),
       // so this is a no-op; likewise if we already left the connecting/live window.
       if (seated || pickedCohortId === null || (status !== 'connecting' && status !== 'live')) {
         return;
       }
-      if (pickedCohortClosed(rows, pickedCohortId)) {
+      if (!pickedCohortClosed(rows, pickedCohortId)) {
+        return;
+      }
+      // The picked cohort has left the Advertised set while we are still unseated.
+      if (!optedIn) {
+        // We never opted in (no cohort-joined yet): the cohort filled or closed before
+        // we could join, so we are provably not a member. Failing now is correct and
+        // preserves the legitimate "closed before I could opt in" path.
         append('warn', `cohort ${pickedCohortId} left the open set before seating; it just filled or closed`);
         set({ joinClosed: true });
         fail('That cohort just filled or closed. Pick another from the directory.');
+        return;
+      }
+      // We already opted in. A cohort leaving Advertised is now AMBIGUOUS (CR-01): a
+      // cohort locks membership at its threshold BEFORE keygen finishes, so this may be
+      // OUR cohort forming with cohort-ready imminent, or one that filled without us. The
+      // protocol gives no accept/reject signal, so tearing down here would drop a genuine
+      // member mid-keygen and stall the whole n-of-n round. The join-grace timer (armed at
+      // cohort-joined) owns this outcome; the poll only waits. Log once, idempotently.
+      if (!joinGraceLogged) {
+        joinGraceLogged = true;
+        append('info', `cohort ${pickedCohortId} left the open set; awaiting seat confirmation`);
       }
     },
 
     leave() {
       clearDirectoryPoll();
+      clearJoinGrace();
       teardownLive();
       teardownIpfs();
       clearCaptured();
@@ -645,6 +731,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         cohortId: null,
         beaconAddress: null,
         seated: false,
+        optedIn: false,
         joinClosed: false,
         pickedCohortId: null,
         error: null,

@@ -85,6 +85,10 @@ describe('participant store - browse-and-pick join outcome', () => {
       useParticipant.setState({
         status: 'live',
         seated: false,
+        // Default the tests to the NOT-opted-in case (no cohort-joined yet): the picked
+        // cohort leaving Advertised then legitimately means we missed it. The opted-in
+        // member-protection case (CR-01) sets optedIn: true explicitly below.
+        optedIn: false,
         joinClosed: false,
         pickedCohortId: 'abc',
         error: null,
@@ -93,7 +97,9 @@ describe('participant store - browse-and-pick join outcome', () => {
       });
     });
 
-    it('transitions to a filled-or-closed terminal state when the picked cohort leaves Advertised before seating', () => {
+    it('transitions to a filled-or-closed terminal state when the picked cohort leaves Advertised before opting in', () => {
+      // Preserved path (CR-01): not yet opted in (no cohort-joined), so a cohort that
+      // leaves the Advertised set closed before we could join - failing now is correct.
       useParticipant.getState().handleDirectorySnapshot([]);
       const s = useParticipant.getState();
       expect(s.status).toBe('failed');
@@ -101,8 +107,46 @@ describe('participant store - browse-and-pick join outcome', () => {
       expect(s.error).toMatch(/filled or closed/i);
     });
 
+    it('also fails the not-opted-in path when connecting (pre-live close)', () => {
+      // The legitimate "closed before I could opt in" path also holds from 'connecting'.
+      useParticipant.setState({ status: 'connecting', optedIn: false });
+      useParticipant.getState().handleDirectorySnapshot([dirRow('other', 'Advertised')]);
+      const s = useParticipant.getState();
+      expect(s.status).toBe('failed');
+      expect(s.joinClosed).toBe(true);
+    });
+
+    it('protects an opted-in member when the picked cohort leaves Advertised (CR-01)', () => {
+      // CR-01 core: after cohort-joined (optedIn: true) but before cohort-ready (seated
+      // still false), a directory poll that no longer lists the picked cohort as
+      // Advertised is AMBIGUOUS - the cohort locks membership at threshold BEFORE keygen
+      // finishes, so this member may be forming with cohort-ready imminent. The poll must
+      // NOT tear it down (that would drop it from the n-of-n round and stall every member);
+      // the bounded join-grace timer owns the outcome. Assert the member is protected.
+      useParticipant.setState({ optedIn: true });
+      useParticipant.getState().handleDirectorySnapshot([]);
+      const s = useParticipant.getState();
+      expect(s.status).toBe('live');
+      expect(s.joinClosed).toBe(false);
+      expect(s.seated).toBe(false);
+      expect(s.error).toBeNull();
+    });
+
+    it('keeps protecting an opted-in member across repeated closed polls (idempotent)', () => {
+      // Repeated poll ticks (every ~5s) must never accumulate into a teardown: the
+      // opted-in member stays live no matter how many closed snapshots arrive.
+      useParticipant.setState({ optedIn: true });
+      const store = useParticipant.getState();
+      store.handleDirectorySnapshot([]);
+      store.handleDirectorySnapshot([]);
+      store.handleDirectorySnapshot([dirRow('other', 'CohortSet')]);
+      const s = useParticipant.getState();
+      expect(s.status).toBe('live');
+      expect(s.joinClosed).toBe(false);
+    });
+
     it('is a no-op once seated (a seated cohort legitimately leaves Advertised)', () => {
-      useParticipant.setState({ seated: true });
+      useParticipant.setState({ seated: true, optedIn: true });
       useParticipant.getState().handleDirectorySnapshot([]);
       const s = useParticipant.getState();
       expect(s.status).toBe('live');

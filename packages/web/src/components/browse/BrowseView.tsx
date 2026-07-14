@@ -29,6 +29,7 @@ export function BrowseView({ baseUrl }: { baseUrl: string }) {
   // the store owns the actual join lifecycle keyed on the same cohort id.
   const [pickedRow, setPickedRow] = useState<DirectoryCohortDTO | null>(null);
 
+  const status = useParticipant((s) => s.status);
   const seated = useParticipant((s) => s.seated);
   const joinClosed = useParticipant((s) => s.joinClosed);
   const error = useParticipant((s) => s.error);
@@ -52,6 +53,28 @@ export function BrowseView({ baseUrl }: { baseUrl: string }) {
         <Card className="space-y-3 border-bad/40 bg-bad/10 p-5">
           <p className="text-sm text-bad">
             {error ?? 'That cohort just filled or closed. Pick another from the directory.'}
+          </p>
+          <Button variant="ghost" onClick={backToDirectory}>
+            Back to directory
+          </Button>
+        </Card>
+      </div>
+    );
+  }
+
+  // A general join failure that is NOT a filled-or-closed close (WR-01): a post-seat
+  // failure (cohort-failed / mid-signing error keeps seated true, joinClosed false) or a
+  // pre-seat connect/runtime failure (seated + joinClosed both false). Both were previously
+  // invisible - the former showed a false "seated" success card, the latter silently
+  // re-enabled Join with no feedback. Surface the reason and offer a return to the directory.
+  if (status === 'failed' && !joinClosed) {
+    return (
+      <div className="space-y-8">
+        <ServiceIdentityHeader baseUrl={baseUrl} />
+        <Card className="space-y-3 border-bad/40 bg-bad/10 p-5">
+          <h2 className="text-xl font-bold tracking-tight text-ink">Join failed</h2>
+          <p className="text-sm text-bad">
+            {error ?? 'The join failed. Pick another cohort from the directory.'}
           </p>
           <Button variant="ghost" onClick={backToDirectory}>
             Back to directory
