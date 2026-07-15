@@ -18,6 +18,7 @@
     "e2e:x1:negative": "tsc -b && tsx e2e/headless-cohort.ts --negative",
     "e2e:operator": "tsc -b && tsx e2e/operator-cohort.ts",
     "e2e:browse": "tsc -b && tsx e2e/browse-join-cohort.ts",
+    "e2e:fallback": "tsc -b && tsx e2e/fallback-cohort.ts",
     "e2e:persist": "tsc -b && tsx e2e/persist-cohort.ts",
     "e2e:resolve": "tsc -b && tsx e2e/resolve-cohort.ts",
     "e2e:config": "tsc -b && tsx e2e/config.ts",
