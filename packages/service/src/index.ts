@@ -138,17 +138,28 @@ export interface CreateServiceOptions {
    */
   maxBodyBytes?: number;
   /**
-   * Per-cohort overall TTL, in ms. Left undefined the runner NEVER times a
+   * Per-cohort overall TTL, in ms: the two-sided cohort lifetime budget from
+   * advertise to signing-complete. Left undefined the runner NEVER times a
    * cohort out, so a participant who joins then walks away mid-flow leaves the
    * cohort's completion promise pending forever (it can neither complete nor
-   * fail). The long-lived booth MUST set this so a stalled cohort rejects and
-   * the advertise loop can move on.
+   * fail). A long-lived self-hosted service MUST set this so an abandoned cohort
+   * rejects instead of lingering. On expiry the runner rejects the completion,
+   * and the operator surface records the cohort as expired (surfaced, not
+   * silently deleted) so the operator can re-advertise it. The demo-server
+   * default is a generous discovery window (30 min); see
+   * {@link file://./demo-server.ts} `DEFAULT_COHORT_TTL_MS`.
    */
   cohortTtlMs?: number;
   /**
-   * Per-phase stall timeout, in ms. Bounds each protocol phase (keygen, nonce,
-   * signing); if a participant drops mid-round the phase times out and the
-   * cohort fails fast for the remaining members instead of hanging.
+   * Per-phase stall timeout, in ms: the maximum time allowed between phase
+   * transitions, reset on every phase change. This is the runner's single stall
+   * timer with no per-phase exemption, so it also bounds the Advertised phase -
+   * an idle, unjoined advertised cohort is torn down when this fires. Sized as a
+   * generous discovery window so strangers have time to find and join a cohort
+   * (the two-sided lifetime knob), not the old fail-fast booth default. On expiry
+   * the completion rejects and the operator surface records the cohort as
+   * expired rather than silently dropping it. See
+   * {@link file://./demo-server.ts} `DEFAULT_PHASE_TIMEOUT_MS`.
    */
   phaseTimeoutMs?: number;
   /**

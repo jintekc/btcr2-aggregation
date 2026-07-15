@@ -12,6 +12,35 @@ import { createOfflineBitcoinConnection } from './offline-chain.js';
  */
 const DEFAULT_WEB_DIST = fileURLToPath(new URL('../../web/dist', import.meta.url));
 
+/**
+ * Default per-phase stall timeout (30 minutes), env-tunable via `PHASE_TIMEOUT_MS`.
+ *
+ * An operator-advertised cohort must stay discoverable long enough for STRANGERS to
+ * find and join it over time (the two-sided North Star), not just for in-process peers
+ * that joined within seconds (the removed booth topology). The library exposes exactly
+ * ONE inter-phase stall timer with no way to exempt the Advertised phase (see
+ * {@link CreateServiceOptions.phaseTimeoutMs}): an idle Advertised cohort never
+ * transitions, so this stall timer is what would otherwise tear it down. Raising the
+ * default to a generous 30-minute discovery window is the clean library-native lever.
+ *
+ * The single-timer tradeoff: a genuine mid-signing stall (a participant vanishing
+ * mid-round) now also waits this long before the runner acts. Plan 02-07 (F1c) turns
+ * that from a hard failure into a graceful k-of-n script-path fallback, so the long
+ * window costs discovery reach without costing signing liveness. An operator who wants
+ * snappier signing liveness lowers `PHASE_TIMEOUT_MS`, at the cost of a shorter window
+ * for strangers to discover an idle cohort.
+ */
+export const DEFAULT_PHASE_TIMEOUT_MS = 1_800_000;
+
+/**
+ * Default overall per-cohort TTL (30 minutes), env-tunable via `COHORT_TTL_MS`. The
+ * wall-clock budget from advertise to signing-complete; on expiry the cohort's
+ * completion rejects so an abandoned cohort cannot pin itself open forever. Matched to
+ * {@link DEFAULT_PHASE_TIMEOUT_MS} so the discovery window is the same generous 30
+ * minutes whether a cohort sits idle in Advertised or stalls after a partial join.
+ */
+export const DEFAULT_COHORT_TTL_MS = 1_800_000;
+
 export interface DemoServerOptions {
   /** Port to listen on (default 8080). */
   port?: number;
@@ -29,12 +58,25 @@ export interface DemoServerOptions {
    */
   fillers?: number;
   /**
-   * Per-cohort TTL in ms (default 180000 = 3 min). A cohort that does not complete
-   * within this window rejects on its own completion promise, so a participant who
-   * joins and then walks away mid-flow cannot pin a cohort open forever.
+   * Overall per-cohort TTL in ms (default {@link DEFAULT_COHORT_TTL_MS} = 30 min;
+   * env `COHORT_TTL_MS`). A cohort that does not complete within this window rejects on
+   * its own completion promise, so a participant who joins and then walks away mid-flow
+   * cannot pin a cohort open forever. Sized as a generous discovery window so an
+   * advertised cohort stays joinable long enough for a stranger to find it.
    */
   cohortTtlMs?: number;
-  /** Per-phase stall timeout in ms (default 60000 = 1 min). */
+  /**
+   * Per-phase stall timeout in ms (default {@link DEFAULT_PHASE_TIMEOUT_MS} = 30 min;
+   * env `PHASE_TIMEOUT_MS`). This is the library's single inter-phase stall timer, with
+   * no Advertised-phase exemption, so it doubles as the idle-Advertised lifetime: an
+   * advertised, unjoined cohort is torn down when this fires. Defaulted to a generous
+   * discovery window so strangers can find and join a cohort over time (the two-sided
+   * North Star), replacing the 60s booth-era default that tore idle cohorts down before
+   * anyone could join. The tradeoff (a genuine mid-signing stall also waits this long)
+   * is documented on {@link DEFAULT_PHASE_TIMEOUT_MS} and softened by plan 02-07's
+   * k-of-n fallback; lower `PHASE_TIMEOUT_MS` for snappier signing liveness at the cost
+   * of a shorter discovery window.
+   */
   phaseTimeoutMs?: number;
   /**
    * Absolute path to the built web SPA to serve from this origin. Defaults to
@@ -141,8 +183,8 @@ export interface DemoServer {
  */
 export async function startDemoServer(opts: DemoServerOptions = {}): Promise<DemoServer> {
   const minParticipants = opts.minParticipants ?? 2;
-  const cohortTtlMs = opts.cohortTtlMs ?? 180000;
-  const phaseTimeoutMs = opts.phaseTimeoutMs ?? 60000;
+  const cohortTtlMs = opts.cohortTtlMs ?? DEFAULT_COHORT_TTL_MS;
+  const phaseTimeoutMs = opts.phaseTimeoutMs ?? DEFAULT_PHASE_TIMEOUT_MS;
   const log = opts.quiet ? () => {} : (msg: string) => console.log(`[demo] ${msg}`);
 
   // Serve the built web SPA from this origin when available (explicit path,
