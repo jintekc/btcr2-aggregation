@@ -94,11 +94,14 @@ export interface ServiceStatus {
   openCohorts: number;
 }
 
-/** The create-draft body posted to `POST /v1/operator/cohorts`. */
+/**
+ * The create-draft body posted to `POST /v1/operator/cohorts`. A cohort has ONE size n
+ * that is both the seat count and the n in n-of-n; a capacity above the co-sign threshold
+ * is unrepresentable (F1b), so the request body carries only beaconType + size.
+ */
 export interface DraftInput {
   beaconType: OperatorBeaconType;
-  threshold: number;
-  capacity: number;
+  size: number;
 }
 
 /** Discriminated create result so the store can surface a 400's specific message. */

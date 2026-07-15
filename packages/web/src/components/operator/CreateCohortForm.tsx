@@ -4,9 +4,8 @@ import { useOperator } from '../../stores/operator';
 import { useParticipant } from '../../stores/participant';
 import type { OperatorBeaconType } from '../../lib/operator';
 
-/** Exact UI-SPEC validation strings; the server returns the same copy on its 400. */
-const THRESHOLD_ERROR = 'Threshold must be at least 1 signer.';
-const CAPACITY_ERROR = 'Capacity must be at least the co-sign threshold.';
+/** Exact UI-SPEC validation string; the server returns the same copy on its 400. */
+const SIZE_ERROR = 'Cohort size must be at least 1 signer.';
 
 const BEACON_OPTIONS: { value: OperatorBeaconType; label: string }[] = [
   { value: 'CASBeacon', label: 'CAS' },
@@ -15,11 +14,13 @@ const BEACON_OPTIONS: { value: OperatorBeaconType; label: string }[] = [
 
 /**
  * Create-a-cohort form (SVC-01, UI-SPEC). An authenticated operator picks a beacon type
- * (CAS/SMT), an n-of-n co-sign threshold, and a seat capacity; the service's single
- * active network is shown read-only as a Badge, NEVER an editable control (D-10). Client
- * validation surfaces the exact UI-SPEC strings before the round-trip; the server's 400
- * message (identical copy) is rendered as the `formError` banner as a backstop. The
- * Create button is a non-destructive ghost - accent stays reserved for Advertise (plan 03).
+ * (CAS/SMT) and a single cohort size n; the service's single active network is shown
+ * read-only as a Badge, NEVER an editable control (D-10). One number n is both the seat
+ * count and the n in n-of-n, so a capacity above the co-sign threshold cannot be entered
+ * (F1b): the directory can never advertise a seat that never fills. Client validation
+ * surfaces the exact UI-SPEC string before the round-trip; the server's 400 message
+ * (identical copy) is rendered as the `formError` banner as a backstop. The Create button
+ * is a non-destructive ghost - accent stays reserved for Advertise (plan 03).
  */
 export function CreateCohortForm({ baseUrl }: { baseUrl: string }) {
   const activeNetwork = useParticipant((s) => s.network);
@@ -28,26 +29,20 @@ export function CreateCohortForm({ baseUrl }: { baseUrl: string }) {
   const submitDraft = useOperator((s) => s.submitDraft);
 
   const [beaconType, setBeaconType] = useState<OperatorBeaconType>('CASBeacon');
-  const [thresholdText, setThresholdText] = useState('2');
-  const [capacityText, setCapacityText] = useState('2');
+  const [sizeText, setSizeText] = useState('2');
   const [clientError, setClientError] = useState<string | undefined>(undefined);
 
   const creating = createStatus === 'creating';
 
   function submit() {
-    const threshold = Number(thresholdText);
-    const capacity = Number(capacityText);
-    // Mirror the server guard-clause order so the operator sees the same message.
-    if (!Number.isInteger(threshold) || threshold < 1) {
-      setClientError(THRESHOLD_ERROR);
-      return;
-    }
-    if (!Number.isInteger(capacity) || capacity < threshold) {
-      setClientError(CAPACITY_ERROR);
+    const size = Number(sizeText);
+    // One size n: min === max === n on the server, so the client only guards the floor.
+    if (!Number.isInteger(size) || size < 1) {
+      setClientError(SIZE_ERROR);
       return;
     }
     setClientError(undefined);
-    void submitDraft(baseUrl, { beaconType, threshold, capacity });
+    void submitDraft(baseUrl, { beaconType, size });
   }
 
   // Show the client validation message if present, else the server's 400 message.
@@ -77,24 +72,17 @@ export function CreateCohortForm({ baseUrl }: { baseUrl: string }) {
           />
         </Field>
 
-        <Field label="Co-sign threshold (n-of-n)" htmlFor="cohort-threshold">
+        <Field label="Cohort size (n-of-n)" htmlFor="cohort-size">
           <Input
-            id="cohort-threshold"
+            id="cohort-size"
             type="number"
-            value={thresholdText}
-            onChange={setThresholdText}
+            value={sizeText}
+            onChange={setSizeText}
             disabled={creating}
           />
-        </Field>
-
-        <Field label="Capacity (max seats)" htmlFor="cohort-capacity">
-          <Input
-            id="cohort-capacity"
-            type="number"
-            value={capacityText}
-            onChange={setCapacityText}
-            disabled={creating}
-          />
+          <p className="mt-1 text-xs text-faint">
+            Everyone in the cohort co-signs, so this one number is both the number of seats and the n in n-of-n.
+          </p>
         </Field>
 
         {shownError ? (
