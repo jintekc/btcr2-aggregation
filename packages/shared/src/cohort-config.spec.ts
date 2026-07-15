@@ -37,3 +37,40 @@ describe('buildCohortConfig recovery key', () => {
     expect(() => buildCohortConfig(2, 'CASBeacon', 'mutinynet', '00'.repeat(32))).toThrow(/x-only|off-curve/);
   });
 });
+
+// Coverage of the configurable k-of-n script-path fallback threshold (F1c, ADR 042).
+// n-of-n MuSig2 stays the primary spend; fallbackThreshold only sizes the ADR 042
+// fallback tapleaf committed into the beacon address (via beacon-address.ts). Omitted,
+// the library derives n-1 floored at 1; provided, it must be a positive integer that
+// does not exceed the participant count (a k > n fallback leaf can never be satisfied).
+describe('buildCohortConfig fallback threshold', () => {
+  it('sets fallbackThreshold on the config when a valid one is provided', () => {
+    const config = buildCohortConfig(3, 'CASBeacon', 'mutinynet', undefined, 2);
+    expect(config.fallbackThreshold).toBe(2);
+    // The primary cohort shape is unchanged; the fallback is an additive leaf.
+    expect(config.minParticipants).toBe(3);
+    expect(config.beaconType).toBe('CASBeacon');
+  });
+
+  it('accepts a fallbackThreshold equal to the participant count', () => {
+    const config = buildCohortConfig(3, 'CASBeacon', 'mutinynet', undefined, 3);
+    expect(config.fallbackThreshold).toBe(3);
+  });
+
+  it('leaves fallbackThreshold unset when omitted (library derives n-1 floored at 1)', () => {
+    const config = buildCohortConfig(3);
+    expect(config.fallbackThreshold).toBeUndefined();
+  });
+
+  it('rejects a fallbackThreshold below 1', () => {
+    expect(() => buildCohortConfig(3, 'CASBeacon', 'mutinynet', undefined, 0)).toThrow(/fallbackThreshold/);
+  });
+
+  it('rejects a fallbackThreshold above the participant count', () => {
+    expect(() => buildCohortConfig(3, 'CASBeacon', 'mutinynet', undefined, 4)).toThrow(/fallbackThreshold/);
+  });
+
+  it('rejects a non-integer fallbackThreshold', () => {
+    expect(() => buildCohortConfig(3, 'CASBeacon', 'mutinynet', undefined, 1.5)).toThrow(/fallbackThreshold/);
+  });
+});
