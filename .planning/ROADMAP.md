@@ -67,8 +67,12 @@ Plans:
   2. The participant selects a specific open cohort from the directory and joins it by choice, rather than auto-joining whatever advert arrives.
   3. A joined participant is seated in the chosen cohort (counts against its capacity), and a full or closed cohort cannot be joined.
 
-**Plans**: 4/4 plans complete
+**Plans**: 5/7 plans executed
 Plans:
+
+- [x] 02-05-PLAN.md
+- [ ] 02-06-PLAN.md
+- [ ] 02-07-PLAN.md
 
 **Wave 1**
 
@@ -155,7 +159,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Authenticated Operator Console + On-Demand Cohort Creation | 4/4 | Complete    | 2026-07-08 |
-| 2. Participant Discovery + Browse-and-Pick Join | 4/4 | Complete   | 2026-07-14 |
+| 2. Participant Discovery + Browse-and-Pick Join | 5/7 | In Progress|  |
 | 3. Participant Submit, Co-Sign, Track, and Resolve | 0/TBD | Not started | - |
 | 4. Operator Cohort Monitoring | 0/TBD | Not started | - |
 | 5. Operator Cohort Lifecycle Control | 0/TBD | Not started | - |

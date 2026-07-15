@@ -5,16 +5,15 @@ milestone_name: milestone
 current_phase: 02
 current_phase_name: participant-discovery-browse-and-pick-join
 status: gap_closure
-stopped_at: Phase 2 UAT found 2 gaps (F1 cohort-size/label, F2 cohort expiry) + k-of-n fallback; 3 gap plans (02-05/06/07) planned + plan-check PASSED; ready for /gsd-execute-phase 2 --gaps-only
-last_updated: "2026-07-15T00:30:00.000Z"
+stopped_at: Completed 02-05-PLAN.md (F1a/F1b single cohort-size)
+last_updated: "2026-07-15T17:50:04.263Z"
 last_activity: 2026-07-15
-last_activity_desc: Phase 02 UAT diagnosed F1/F2 + wired k-of-n direction; 3 gap-closure plans created and verified
+last_activity_desc: Phase 02 gap-closure planned (F1/F2 + k-of-n fallback), plan-check passed
 progress:
-  total_phases: 6
-  completed_phases: 2
-  total_plans: 8
-  completed_plans: 8
-  percent: 33
+  total_phases: 2
+  completed_phases: 1
+  total_plans: 11
+  completed_plans: 9
 ---
 
 # Project State
@@ -63,6 +62,11 @@ Progress: [██░░░░░░░░] 17% (Phase 1 of 6 complete)
 | Phase 02 P02 | 5 min | 3 tasks | 8 files |
 | Phase 02 P03 | 12min | 1 tasks | 3 files |
 | Phase 02 P04 | 2 min | 2 tasks | 4 files |
+**Per-Plan Metrics:**
+
+| Plan | Duration | Tasks | Files |
+|------|----------|-------|-------|
+| Phase 02 P05 | 6min | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -80,6 +84,7 @@ Recent decisions affecting current work:
 - [Phase ?]: 01-03: public /v1/directory + /v1/status derive from live runner.session.cohorts filtered to pre-signing OPEN_PHASES; enrichment pruned on completion.finally so the open-count cannot drift (D-09/D-15)
 - [Phase ?]: Phase-1 e2e (e2e:operator) never calls runner.run(); the operator advertise route self-drives the cohort and the harness observes the 64-byte signature off signing-complete
 - [Phase ?]: e2e:operator registered but intentionally NOT wired into CI (deferred to a Phase-6 / CI concern)
+- [Phase ?]: 02-05 (F1a/F1b): collapse operator cohort size to one n (min == max == n); capacity > threshold unrepresentable server-side; directory rows honest with zero display change
 
 ### Pending Todos
 
@@ -107,7 +112,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-15T00:30:00.000Z
-Stopped at: Phase 2 UAT diagnosed F1/F2; 3 gap-closure plans (02-05/06/07) created + plan-check PASSED
-Resume file: .planning/phases/02-participant-discovery-browse-and-pick-join/02-05-PLAN.md
+Last session: 2026-07-15T17:49:50.189Z
+Stopped at: Completed 02-05-PLAN.md (F1a/F1b single cohort-size)
+Resume file: .planning/phases/02-participant-discovery-browse-and-pick-join/02-06-PLAN.md
 Next command: /gsd-execute-phase 2 --gaps-only
