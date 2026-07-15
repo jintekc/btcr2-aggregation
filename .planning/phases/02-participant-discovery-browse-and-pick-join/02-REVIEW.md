@@ -1,173 +1,147 @@
 ---
 phase: 02-participant-discovery-browse-and-pick-join
-reviewed: 2026-07-15T18:38:13Z
+reviewed: 2026-07-15T23:10:29Z
 depth: deep
-files_reviewed: 17
+files_reviewed: 15
 files_reviewed_list:
-  - e2e/browse-join-cohort.ts
-  - e2e/fallback-cohort.ts
-  - e2e/operator-cohort.ts
-  - package.json
-  - packages/service/src/demo-server.ts
-  - packages/service/src/hono-adapter.ts
-  - packages/service/src/index.ts
-  - packages/service/src/live-tx.spec.ts
-  - packages/service/src/operator-cohorts.spec.ts
   - packages/service/src/operator-cohorts.ts
-  - packages/service/src/tx.ts
-  - packages/shared/src/cohort-config.spec.ts
-  - packages/shared/src/index.ts
-  - packages/web/src/components/operator/CreateCohortForm.tsx
-  - packages/web/src/components/operator/OperatorCohortList.tsx
+  - packages/service/src/operator-cohorts.spec.ts
+  - packages/service/src/index.ts
+  - packages/service/src/hono-adapter.ts
   - packages/web/src/lib/operator.ts
+  - packages/web/src/lib/directory.ts
   - packages/web/src/stores/operator.ts
+  - packages/web/src/components/operator/CreateCohortForm.tsx
+  - packages/web/src/components/browse/CohortRow.tsx
+  - packages/web/src/components/operator/OperatorCohortList.tsx
+  - packages/web/src/components/browse/DirectoryList.spec.ts
+  - e2e/operator-cohort.ts
+  - e2e/browse-join-cohort.ts
+  - e2e/kofn-cohort.ts
+  - package.json
 findings:
   critical: 0
-  warning: 3
+  warning: 0
   info: 3
-  total: 6
+  total: 3
 status: issues_found
 ---
 
-# Phase 2: Code Review Report (gap-closure F1a/F1b/F2/F1c)
+# Phase 2: Code Review Report (plan 02-08 / gap G-02-1, k-of-n cohort model)
 
-**Reviewed:** 2026-07-15T18:38:13Z
-**Depth:** deep (cross-file: import graph + call chains)
-**Files Reviewed:** 17
-**Status:** issues_found
-
-> Supersedes the initial Phase 2 review (2026-07-14). This pass covers only the
-> gap-closure diff from base `d991d5c`.
+**Reviewed:** 2026-07-15T23:10:29Z
+**Depth:** deep
+**Files Reviewed:** 15
+**Status:** issues_found (3 info, 0 blocker, 0 warning)
 
 ## Summary
 
-This gap-closure diff collapses the operator cohort model to a single n-of-n size
-(F1a/F1b), adds a discovery-window lifetime plus surfaced-expiry + a gated re-advertise
-route (F2), and activates the ADR-042 k-of-n script-path fallback with a fixture-tx change
-so the hermetic prevout commits both spend paths (F1c).
+This review supersedes the earlier gap-closure review at the same path. It targets the two-field
+k-of-n cohort model: cohort size n (`minParticipants == maxParticipants == n`) plus signing
+threshold k (`fallbackThreshold = k`), with the optimistic n-of-n MuSig2 spend unchanged and k as
+the ADR-042 stall-fallback floor.
 
-The four security/correctness focus areas hold up under adversarial tracing:
+I traced every focus area adversarially and each holds up:
 
-- **min == max == n is unbypassable.** `validateDraft` reads only `{ beaconType, size }`
-  from the untrusted body; `createDraft` builds the config from `size` alone and then forces
-  `config.maxParticipants = size` (operator-cohorts.ts:313-320). No request field can inject
-  `minParticipants`/`maxParticipants`; `buildCohortConfig` sets `minParticipants = size`.
-  Extra body fields are silently ignored.
-- **The re-advertise route inherits both guards.** `POST /v1/operator/cohorts/:id/readvertise`
-  is registered inside `if (operatorAuth) { ... if (operatorCohorts) { ... } }`, after
-  `app.use('/v1/operator/*', requireSameOrigin())` and `requireOperator()`
-  (hono-adapter.ts:299-365). The e2e pins the no-cookie 401 (operator-cohort.ts:389-394;
-  operator-cohorts.spec.ts:389-393). No unauthenticated mutating surface is added.
-- **The terminal record set is bounded.** `MAX_TERMINAL = 24` with oldest-first eviction
-  (operator-cohorts.ts:216, 241-250); Map insertion order gives a correct FIFO evict.
-- **fallbackThreshold bounds are [1, participants]** (shared/index.ts:352-361) and n-of-n
-  stays primary: `autoFallbackOnStall` defaults off in the library/createService and the
-  operator path never passes a `fallbackThreshold`, so the optimistic key path is the normal
-  outcome.
-- **The tx.ts fixture change does not weaken the LIVE path.** Only the `if (!live)` fixture
-  branch changed (tx.ts:67-78); the live branch still calls `buildAggregationBeaconTx`
-  unchanged (tx.ts:117-129). `buildFixtureTxData`'s `beaconOutput` is optional and legacy
-  callers keep the bare-key output (shared/index.ts:530-553).
+- **Server validation (`validateDraft`, operator-cohorts.ts:234-255) is airtight against a
+  hand-crafted body.** `k = threshold ?? size` correctly defaults both `undefined` and `null` to n
+  (both nullish); `0 ?? size` correctly stays 0 and is rejected. `Number.isInteger(k)` rejects
+  string `'2'`, boolean, array, object, `Infinity`/`NaN` (from `1e309`), `-0`, and floats; the
+  `[1, size]` bound rejects 0, negatives, and `> size`. The guard runs BEFORE `buildCohortConfig`,
+  so the library's own `fallbackThreshold` guard (shared/index.ts:352-361) is only a backstop and a
+  raw library throw is never the 400 body. THRESHOLD_ERROR is byte-identical across
+  operator-cohorts.ts:84, CreateCohortForm.tsx:10, and the spec at :86. The fallback-off guard
+  (Decision 4) rejects `k < size` when `autoFallbackOnStall` is off and is threaded consistently
+  from `createService` into both the runner and `createOperatorCohorts` (index.ts:432 and :549), so
+  the runner's fallback capability and the operator surface's over-promise gate can never diverge.
+- **Atomic DTO flip (T-KOFN-05) is complete.** All four emit sites carry `threshold = k` with the
+  `?? minParticipants` defensive coalesce: createDraft DTO (:392), `directory()` (:360-361),
+  `readvertiseExpired` (:454-455), and the `listCohorts` expired branch (:480). `advertiseDraft`
+  copies the draft DTO (:421-422) and `listCohorts`'s advertised branch maps `directory()` output,
+  so both inherit the flip. No reader interprets `threshold` as n: `isJoinable`, `statusLabel`, and
+  `CohortRow` all key seat/fullness logic on `capacity` (= n), never on `threshold`.
+- **min == max == n pin is verbatim** (createDraft :383 `config.maxParticipants = size` after
+  `buildCohortConfig`, which sets only `minParticipants`). The config-contract spec
+  (operator-cohorts.spec.ts:480-497) pins `min === max === 3 && fallbackThreshold === 2`. Only
+  `fallbackThreshold` carries k (T-KOFN-04, no phantom seat).
+- **Display honesty holds.** `cosignValue`/`cosignCaption` (directory.ts:98-112) render `k-of-n` and
+  the k==n / k<n captions the spec asserts. No em-dash (U+2014) in any changed file (grep clean);
+  `MetricLabel` uses `font-semibold` (600), no `font-medium` (500) in changed components; the two
+  `font-medium` hits are in KeyGenPanel/JoinIdentityStep, both out of scope for this diff.
+- **e2e/kofn-cohort.ts is false-green-proof.** n=4/k=2 is genuinely distinguishable from the
+  library's implicit n-1=3 default; Leg 1 hard-gates on `fallback-started` + `path === 'script-path'`
+  + both survivors' `cohort-complete` (via `Promise.all`), and a broken k-thread would surface as
+  `cohort-failed` and fail loudly. Leg 2 (1 survivor < k) asserts `cohort-failed` with a
+  `/fallback/i` reason. The Leg 2 pass/fail is driven SOLELY by the service-side
+  `signing-complete` vs `cohort-failed` race; participant-side `cohort-complete` events feed only
+  `survivorsComplete`/`survivorCompletions`, which Leg 2 never inspects (guarded by `if (outcome.ok)`
+  and the Leg 2 branch reads only `outcome`). Even a regression that made the service emit
+  `signing-complete` in Leg 2 would correctly FAIL the leg. See IN-01 for the benign counter smell.
+- **Security: no new unauthenticated mutating surface.** The create/advertise/readvertise routes are
+  registered inside the `if (operatorAuth) { ... if (operatorCohorts) { ... } }` block in
+  hono-adapter.ts, after `requireSameOrigin` + `requireOperator` prefix guards, so they inherit the
+  session gate and CSRF check unchanged. `/v1/directory` and `/v1/status` remain public reads.
 
-No blockers. Three warnings and three info items follow.
+No blocker or warning-severity defects were found. The three info items below are minor.
 
-## Warnings
+## Narrative Findings (AI reviewer)
 
-### WR-01: Advertise / re-advertise failures surface in the wrong UI component
+### Info
 
-**File:** `packages/web/src/stores/operator.ts:180-183, 202-205` (rendered by `packages/web/src/components/operator/CreateCohortForm.tsx:49,88`)
-**Issue:** On a failed `advertise`/`readvertise`, the store writes the error into `formError`
-("Could not advertise the draft. Try again." / `UNREACHABLE`). But `formError` is only
-rendered by `CreateCohortForm` (`shownError = clientError ?? formError`), not by
-`OperatorCohortList`/`CohortRow` where the failing action lives. A failed Advertise on a
-draft row therefore paints its error banner in the "Create a cohort" form, disconnected from
-the row the operator clicked, and the row's `advertiseStatus: 'error'` is never shown. This
-is an incorrect error surface: the operator gets no feedback next to the action that failed.
-**Fix:** Route advertise/re-advertise failures to an action-scoped field (e.g.
-`advertiseError?: string`) rendered inside `CohortRow`, and stop overloading `formError`
-(whose own JSDoc scopes it to "the create form"):
+#### IN-01: `survivorsComplete` counter in kofn-cohort.ts is non-idempotent
+
+**File:** `e2e/kofn-cohort.ts:256-258` (increment) and `:343`, `:348` (Leg 1 use)
+**Issue:** `survivorsComplete += 1` fires on every participant `cohort-complete` event. The prompt's
+own observation that a survivor logged `cohort-complete` twice confirms this event can fire more than
+once per participant, so the counter can exceed the true distinct-survivor count. It is used in Leg 1
+as `if (survivorsComplete < K)` (:343) and in the success log (:349). This is harmless in practice
+because `withTimeout(Promise.all(survivorCompletions), 15_000)` (:298) is the real gate and requires
+each distinct survivor promise to resolve, so a double-emit by one survivor cannot mask a missing
+survivor. But the counter is redundant/misleading as a secondary gate, and the underlying double-emit
+(a survivor reporting `cohort-complete` while the cohort ultimately fails in Leg 2) is a latent
+participant-side semantic smell worth noting, though it originates in `@did-btcr2/aggregation`
+(out of this diff's scope), not in the reviewed code.
+**Fix:** Track distinct survivors with a `Set<participantIndex>` and derive the count from `.size`,
+or drop the counter entirely and rely on the `Promise.all(survivorCompletions)` gate that already
+proves each survivor completed:
 ```ts
-// operator.ts advertise() failure branch
-set({ advertiseStatus: 'error', advertisingId: undefined,
-      advertiseError: 'Could not advertise the draft. Try again.' });
-```
-then render `advertiseError` in `CohortRow`.
-
-### WR-02: A `null` / non-object create body yields a raw TypeError as the 400 message
-
-**File:** `packages/service/src/operator-cohorts.ts:194-203` (route `packages/service/src/hono-adapter.ts:325-340`)
-**Issue:** `validateDraft` starts with `const { beaconType, size } = input;`. The route only
-guards non-JSON (catch → clean 400); a syntactically valid body of `null` (or a JSON
-string/number) parses fine, then destructuring `null` throws `TypeError: Cannot destructure
-property 'beaconType' of 'null'`. The route `catch` returns `c.json({ error: err.message },
-400)`, so the caller receives an internal JS error string as the "validation" message. Still
-a 400, but it leaks internal error text and breaks the guard-clause / user-facing-message
-convention used by every other branch.
-**Fix:** Guard the shape first, guard-clause style:
-```ts
-function validateDraft(input: DraftInput) {
-  if (typeof input !== 'object' || input === null) {
-    throw new Error('operator: expected a JSON body { beaconType, size }');
-  }
-  const { beaconType, size } = input;
-  ...
-}
+const survivors = new Set<number>();
+// in the handler: survivors.add(dropCount + i);
+// then: if (survivors.size < K) fail(...);
 ```
 
-### WR-03: An advertised cohort is invisible in the operator list during the signing phases
+#### IN-02: create-form threshold field can silently desync from size (k < n by accident)
 
-**File:** `packages/service/src/operator-cohorts.ts:397-407` (via `directory()` at 287-309; `OPEN_PHASES` at 62)
-**Issue:** `listCohorts` derives its advertised rows from `directory()`, which lists only
-cohorts whose phase is in `OPEN_PHASES` (`Advertised`, `CohortSet`, `CollectingUpdates`).
-Once a cohort transitions into signing (`SigningStarted` and later) it is no longer in
-`OPEN_PHASES`, and it is not yet pruned (success) or moved to `terminal` (reject), so it
-appears in neither `advertisedDtos` nor `expiredDtos`: the cohort disappears from the
-operator's own "Your cohorts" list for the whole signing window, then reappears only as gone
-(success) or `expired` (stall/TTL). On the LIVE path that window can be up to `phaseTimeoutMs`
-(defaulted to 30 min here), so an operator watching an in-flight cohort sees it vanish. This
-is adjacent to F2's "never silently vanish" intent. (Pre-existing from Phase 1's
-directory-derived list; the F2 work reinforces the invariant it violates without closing it.)
-**Fix:** List in-flight advertised cohorts from the `advertised` map keyed by live id (with
-the current phase) and reserve the `OPEN_PHASES` filter for the public `directory()` only.
-Deferring to Phase 4 (operator monitoring) is acceptable only if explicitly tracked.
+**File:** `packages/web/src/components/operator/CreateCohortForm.tsx:35-36`
+**Issue:** `thresholdText` is initialized to the constant `'2'` independently of `sizeText` (also
+`'2'`). The design's "defaults k = n" only holds at the initial mount value. If the operator raises
+the size (e.g. to 5) without touching the threshold field, the form submits `{ size: 5, threshold: 2 }`
+- an unintended k<n cohort. On a fallback-enabled service this is accepted and advertised as `2-of-5`;
+on a fallback-off service it is rejected with FALLBACK_OFF_ERROR. The value is visible in its own
+field with help copy, so this is not a correctness bug, but the "unanimous by default" intent is
+easy to defeat silently.
+**Fix:** Either keep the threshold in lockstep with size until the operator explicitly edits it (track
+a `thresholdTouched` flag and mirror `sizeText` into `thresholdText` while untouched), or clamp/warn
+in `submit()` when `threshold < size` and the operator has not changed the threshold field.
 
-## Info
+#### IN-03: createDraft surfaces any `buildCohortConfig` throw verbatim as the 400 body
 
-### IN-01: Stranded JSDoc block attached to `MAX_TERMINAL` instead of the function it describes
-
-**File:** `packages/service/src/operator-cohorts.ts:205-216`
-**Issue:** Two `/**` blocks stack before `const MAX_TERMINAL`. The first (205-210, "Build the
-per-service operator cohort surface. `drafts` is closure state ...") documents
-`createOperatorCohorts`, but the F2 edit inserted `MAX_TERMINAL` between it and the function,
-so the doc is now attached to the constant and `createOperatorCohorts` (218) is undocumented.
-**Fix:** Move the 205-210 block down to immediately above `export function createOperatorCohorts`,
-leaving only the `MAX_TERMINAL` block (211-216) on the constant.
-
-### IN-02: No upper bound on cohort `size`
-
-**File:** `packages/service/src/operator-cohorts.ts:199-201`
-**Issue:** `validateDraft` accepts any integer `size >= 1`. An authenticated operator can
-create and advertise a cohort with an absurd `n` (e.g. millions); it becomes an `n`-of-`n`
-cohort that can never fill and expires on the stall timer, and the number flows into the
-public directory's `threshold`/`capacity`. Operator-gated, so low risk, but there is no sane
-ceiling.
-**Fix:** Add an upper guard (`size > MAX_COHORT_SIZE`) with a user-facing message in the same
-guard-clause block.
-
-### IN-03: Advertise / re-advertise routes have no handler-level try/catch
-
-**File:** `packages/service/src/hono-adapter.ts:353-365`
-**Issue:** `advertiseDraft`/`readvertiseExpired` call `runner.advertiseCohort(...)`
-synchronously; the create route wraps its call in try/catch, but advertise and re-advertise
-do not. If `advertiseCohort` throws, the operator gets an opaque Hono 500 instead of a clean
-error, and on advertise the draft is left un-deleted. Not reachable with the current
-single-size config, but inconsistent with the create route and brittle if the runner's
-validation tightens.
-**Fix:** Wrap both handlers in the same try/catch → `c.json({ error }, ...)` pattern the
-create route uses.
+**File:** `packages/service/src/hono-adapter.ts:337-340` (catch-all) with
+`packages/service/src/operator-cohorts.ts:382`
+**Issue:** The create route returns `err.message` verbatim on any throw from `createDraft`.
+`validateDraft` guards the known bad-input cases (beacon type, size, threshold, fallback-off) with
+UI-SPEC copy, so those are intentional. But `buildCohortConfig` can still throw for other reasons
+(e.g. an invalid `recoveryKey`, shared/index.ts:339-350), and that internal message would become the
+400 body. In practice `recoveryKey` is server-supplied (from the cohort config, not the form), so an
+untrusted caller cannot influence it - hence info, not warning. Worth a defensive note so a future
+form field that reaches `buildCohortConfig` does not inadvertently leak an internal error string.
+**Fix:** Keep validated user-facing throws distinguishable from library throws (e.g. a sentinel error
+type or a whitelist of the known messages), returning a generic "could not create cohort" for
+anything else while logging the detail server-side, mirroring the resolve/tx routes' generic-502
+pattern.
 
 ---
 
-_Reviewed: 2026-07-15T18:38:13Z_
+_Reviewed: 2026-07-15T23:10:29Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: deep_
