@@ -79,6 +79,22 @@ export interface DemoServerOptions {
    */
   phaseTimeoutMs?: number;
   /**
+   * Activate the ADR 042 k-of-n script-path fallback for signing liveness (F1c;
+   * env `AUTO_FALLBACK=0` disables, default ON). n-of-n MuSig2 stays the primary
+   * spend and the normal outcome; this only converts a STALLED optimistic signing
+   * round (a co-signer vanishing mid-round so the single stall timer fires while
+   * signing is in flight) from a hard `cohort-failed` into a graceful k-of-n
+   * script-path recovery, so one defector cannot deny the whole cohort its anchor.
+   *
+   * This is the counterpart to the generous {@link DEFAULT_PHASE_TIMEOUT_MS}
+   * discovery window: a longer `phaseTimeoutMs` means the fallback also fires later,
+   * but it turns the eventual signing stall from a failure into a recovery, so the
+   * long window costs discovery reach without costing signing liveness. Inert on the
+   * fixture/offline default (nothing is broadcast); a live fallback broadcast stays
+   * behind the existing `live` + mainnet rails.
+   */
+  autoFallbackOnStall?: boolean;
+  /**
    * Absolute path to the built web SPA to serve from this origin. Defaults to
    * `packages/web/dist` when it exists (run `pnpm -r build` first); pass `null`
    * to serve the protocol + dashboard only (no UI).
@@ -185,6 +201,11 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
   const minParticipants = opts.minParticipants ?? 2;
   const cohortTtlMs = opts.cohortTtlMs ?? DEFAULT_COHORT_TTL_MS;
   const phaseTimeoutMs = opts.phaseTimeoutMs ?? DEFAULT_PHASE_TIMEOUT_MS;
+  // ADR 042 k-of-n script-path fallback (F1c): default ON for the self-hosted product
+  // so a stalled signing round recovers instead of hard-failing; `AUTO_FALLBACK=0`
+  // opts out. Only converts a SIGNING-phase stall into a fallback (the library scopes
+  // it); an idle Advertised cohort still expires on the same stall timer (plan 02-06).
+  const autoFallbackOnStall = opts.autoFallbackOnStall ?? process.env.AUTO_FALLBACK !== '0';
   const log = opts.quiet ? () => {} : (msg: string) => console.log(`[demo] ${msg}`);
 
   // Serve the built web SPA from this origin when available (explicit path,
@@ -303,6 +324,8 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
     heartbeatIntervalMs: 15000,
     cohortTtlMs,
     phaseTimeoutMs,
+    // Signing-liveness fallback default-on for the product (env AUTO_FALLBACK=0 off).
+    autoFallbackOnStall,
     webDistDir: resolvedDist,
     store,
     bitcoin,

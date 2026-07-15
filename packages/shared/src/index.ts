@@ -316,12 +316,25 @@ export function deriveRecoveryKey(): string {
  * fixture path; an operator funding a beacon with real value MUST pass a recovery
  * key whose secret they actually hold (derived offline; only the public key belongs
  * here). See docs/adr/0010-mainnet-guard-rails.md.
+ *
+ * `fallbackThreshold` is the OPTIONAL k of the ADR 042 k-of-n script-path fallback
+ * leaf (F1c). n-of-n MuSig2 stays the primary, cheaper, more private spend; the
+ * fallback is a liveness backstop that only signs if the optimistic round stalls
+ * (activated per-service by `autoFallbackOnStall`, see `createService`). Set here it
+ * flows onto the returned {@link CohortConfig} and into the beacon address's fallback
+ * tapleaf that `deriveCohortBeaconAddress`/`computeBeaconAddress` already commit (see
+ * `beacon-address.ts`), so the address covers both spend paths with no further wiring.
+ * When omitted, the library derives the default (n-1 floored at 1). When provided it
+ * must be a positive integer no greater than `participants`: a leaf that needs more
+ * signers than the cohort has can never be satisfied, so the fallback would be dead
+ * weight in the address.
  */
 export function buildCohortConfig(
   participants: number,
   beaconType: BeaconType = 'CASBeacon',
   network: NetworkName = NETWORK,
   recoveryKey?: string,
+  fallbackThreshold?: number,
 ): CohortConfig {
   if (recoveryKey !== undefined) {
     if (!/^[0-9a-f]{64}$/i.test(recoveryKey)) {
@@ -336,12 +349,25 @@ export function buildCohortConfig(
       throw new Error('recoveryKey is not a valid x-only Schnorr public key (off-curve x coordinate)');
     }
   }
+  if (fallbackThreshold !== undefined) {
+    // Guard-clause house style: fail fast on a k that can never produce a valid
+    // fallback leaf, rather than baking a dead spend path into the beacon address.
+    if (!Number.isInteger(fallbackThreshold) || fallbackThreshold < 1 || fallbackThreshold > participants) {
+      throw new Error(
+        `fallbackThreshold must be an integer in [1, ${participants}] (got ${fallbackThreshold}); ` +
+          'the k-of-n fallback leaf cannot need more signers than the cohort seats',
+      );
+    }
+  }
   return {
     beaconType,
     minParticipants: participants,
     network,
     recoveryKey: recoveryKey?.toLowerCase() ?? deriveRecoveryKey(),
     recoverySequence: 144,
+    // Only set when provided; left off, the library uses its own n-1 default so the
+    // 4-arg callers are byte-identical.
+    ...(fallbackThreshold !== undefined ? { fallbackThreshold } : {}),
   };
 }
 

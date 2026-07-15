@@ -163,6 +163,26 @@ export interface CreateServiceOptions {
    */
   phaseTimeoutMs?: number;
   /**
+   * Activate the ADR 042 k-of-n script-path fallback for signing liveness (F1c).
+   * n-of-n MuSig2 stays the PRIMARY, cheaper, more private spend and the normal
+   * outcome; this only changes what happens when the optimistic signing round
+   * STALLS. With it true, a stalled optimistic round (a co-signer vanishing
+   * mid-signing so the {@link phaseTimeoutMs} stall timer fires while signing is in
+   * flight) falls back to the k-of-n script path (`triggerFallback`) instead of
+   * emitting `cohort-failed`, so a single defector cannot deny the whole cohort its
+   * anchor. Scoped to the SIGNING phases by the library: a stall in the Advertised
+   * phase (an idle, unjoined cohort) still expires - that is the operator-visible
+   * discovery-window expiry from plan 02-06, a distinct concern from this one.
+   *
+   * Default off (library parity) so existing callers/tests are byte-identical; the
+   * demo server opts in by default (env `AUTO_FALLBACK=0` to disable). Inert on the
+   * fixture/offline path (nothing is broadcast), so it never disturbs the hermetic
+   * gate unless a stall is deliberately forced (see `e2e/fallback-cohort.ts`). The
+   * fallback leaf's k is sized by the cohort config's `fallbackThreshold`
+   * (`buildCohortConfig`, default n-1), already committed into the beacon address.
+   */
+  autoFallbackOnStall?: boolean;
+  /**
    * Absolute path to the built web SPA (e.g. `packages/web/dist`). When set, the
    * server also serves the app from this origin (production same-origin
    * topology). Omit for the headless M1 path, which serves no UI.
@@ -404,6 +424,12 @@ export function createService(opts: CreateServiceOptions): Service {
     // passes both so abandoned/stalled cohorts reject instead of wedging.
     cohortTtlMs: opts.cohortTtlMs,
     phaseTimeoutMs: opts.phaseTimeoutMs,
+    // ADR 042 k-of-n script-path fallback on a SIGNING-phase stall (F1c). Undefined
+    // => the library default (off), so the optimistic n-of-n key path stays the
+    // primary spend and existing callers are unchanged; the demo server threads
+    // `true` so the self-hosted product recovers liveness instead of hard-failing a
+    // cohort when one co-signer drops mid-round.
+    autoFallbackOnStall: opts.autoFallbackOnStall,
     // Fixed-roster gate for pre-provisioned (baked) cohorts: accept an opt-in only
     // when its key is BOUND to the authenticated sender (participantPk ===
     // communicationPk, which the transport cross-checks against the sender's
