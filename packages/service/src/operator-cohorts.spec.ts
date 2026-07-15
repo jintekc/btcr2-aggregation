@@ -81,61 +81,55 @@ async function createDraft(
 }
 
 describe('POST /v1/operator/cohorts (create draft)', () => {
-  it('creates a validated CAS 2-of-2 capacity-2 draft on the service active network', async () => {
+  it('creates a validated CAS size-2 draft with threshold === capacity === n on the active network', async () => {
     const { app } = operatorCohortApp();
     const cookie = await login(app);
-    const res = await createDraft(app, cookie, { beaconType: 'CASBeacon', threshold: 2, capacity: 2 });
+    const res = await createDraft(app, cookie, { beaconType: 'CASBeacon', size: 2 });
     expect(res.status).toBe(201);
     const dto = (await res.json()) as OperatorCohortDTO;
     expect(dto.beaconType).toBe('CASBeacon');
     expect(dto.network).toBe(ACTIVE_NETWORK); // D-10: active network, never a form value
+    // F1b: one size n collapses to min === max === n, so both bounds equal the size.
     expect(dto.threshold).toBe(2);
     expect(dto.capacity).toBe(2);
     expect(dto.state).toBe('draft');
     expect(dto.draftId).toMatch(/[0-9a-f-]{36}/i); // a UUID
   });
 
-  it('accepts an SMT draft with capacity above the threshold', async () => {
+  it('accepts a larger SMT size and still reports threshold === capacity === n', async () => {
     const { app } = operatorCohortApp();
     const cookie = await login(app);
-    const res = await createDraft(app, cookie, { beaconType: 'SMTBeacon', threshold: 2, capacity: 5 });
+    const res = await createDraft(app, cookie, { beaconType: 'SMTBeacon', size: 5 });
     expect(res.status).toBe(201);
     const dto = (await res.json()) as OperatorCohortDTO;
     expect(dto.beaconType).toBe('SMTBeacon');
+    // No unfillable seat: a size of 5 pins a 5-of-5 cohort with 5 seats.
+    expect(dto.threshold).toBe(5);
     expect(dto.capacity).toBe(5);
   });
 
-  it('rejects capacity below the threshold with the specific 400 message', async () => {
+  it('rejects a size below 1 with the specific 400 message', async () => {
     const { app } = operatorCohortApp();
     const cookie = await login(app);
-    const res = await createDraft(app, cookie, { beaconType: 'CASBeacon', threshold: 3, capacity: 2 });
+    const res = await createDraft(app, cookie, { beaconType: 'CASBeacon', size: 0 });
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
-    expect(body.error).toBe('Capacity must be at least the co-sign threshold.');
-  });
-
-  it('rejects a threshold below 1 with the specific 400 message', async () => {
-    const { app } = operatorCohortApp();
-    const cookie = await login(app);
-    const res = await createDraft(app, cookie, { beaconType: 'CASBeacon', threshold: 0, capacity: 2 });
-    expect(res.status).toBe(400);
-    const body = (await res.json()) as { error: string };
-    expect(body.error).toBe('Threshold must be at least 1 signer.');
+    expect(body.error).toBe('Cohort size must be at least 1 signer.');
   });
 
   it('rejects an unknown beacon type with a 400', async () => {
     const { app } = operatorCohortApp();
     const cookie = await login(app);
-    const res = await createDraft(app, cookie, { beaconType: 'SingletonBeacon', threshold: 2, capacity: 2 });
+    const res = await createDraft(app, cookie, { beaconType: 'SingletonBeacon', size: 2 });
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
     expect(body.error).toMatch(/beacon type/i);
   });
 
-  it('rejects a non-integer threshold with a 400', async () => {
+  it('rejects a non-integer size with a 400', async () => {
     const { app } = operatorCohortApp();
     const cookie = await login(app);
-    const res = await createDraft(app, cookie, { beaconType: 'CASBeacon', threshold: 1.5, capacity: 2 });
+    const res = await createDraft(app, cookie, { beaconType: 'CASBeacon', size: 1.5 });
     expect(res.status).toBe(400);
   });
 
@@ -155,7 +149,7 @@ describe('GET /v1/operator/cohorts (list) + DELETE (discard)', () => {
   it('lists a created draft and removes it on discard', async () => {
     const { app } = operatorCohortApp();
     const cookie = await login(app);
-    const created = await createDraft(app, cookie, { beaconType: 'CASBeacon', threshold: 2, capacity: 4 });
+    const created = await createDraft(app, cookie, { beaconType: 'CASBeacon', size: 4 });
     const dto = (await created.json()) as OperatorCohortDTO;
 
     const listed = await app.request('/v1/operator/cohorts', { headers: { cookie } });
@@ -193,7 +187,7 @@ describe('operator cohort routes are gated (no session -> 401)', () => {
     const res = await app.request('/v1/operator/cohorts', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ beaconType: 'CASBeacon', threshold: 2, capacity: 2 }),
+      body: JSON.stringify({ beaconType: 'CASBeacon', size: 2 }),
     });
     expect(res.status).toBe(401);
   });
@@ -227,7 +221,7 @@ describe('POST /v1/operator/cohorts/:id/advertise (advertise a draft)', () => {
   it('advertises a draft: it leaves the drafts list and becomes an open directory entry', async () => {
     const { app, runner } = operatorCohortApp();
     const cookie = await login(app);
-    const created = await createDraft(app, cookie, { beaconType: 'CASBeacon', threshold: 2, capacity: 3 });
+    const created = await createDraft(app, cookie, { beaconType: 'CASBeacon', size: 2 });
     const draft = (await created.json()) as OperatorCohortDTO;
 
     const spy = vi.spyOn(runner, 'advertiseCohort');
@@ -254,7 +248,7 @@ describe('POST /v1/operator/cohorts/:id/advertise (advertise a draft)', () => {
     expect(directory[0].beaconType).toBe('CASBeacon');
     expect(directory[0].network).toBe(ACTIVE_NETWORK);
     expect(directory[0].threshold).toBe(2);
-    expect(directory[0].capacity).toBe(3);
+    expect(directory[0].capacity).toBe(2);
     expect(directory[0].joined).toBe(0);
 
     // The public status open-count matches the directory length (one source, D-09).
@@ -271,7 +265,7 @@ describe('POST /v1/operator/cohorts/:id/advertise (advertise a draft)', () => {
   it('drops the cohort from directory + status after its completion settles (no drift)', async () => {
     const { app, runner } = operatorCohortApp();
     const cookie = await login(app);
-    const created = await createDraft(app, cookie, { beaconType: 'CASBeacon', threshold: 2, capacity: 2 });
+    const created = await createDraft(app, cookie, { beaconType: 'CASBeacon', size: 2 });
     const draft = (await created.json()) as OperatorCohortDTO;
     const advDto = (await (await advertise(app, cookie, draft.draftId)).json()) as OperatorCohortDTO;
     const cohortId = advDto.draftId;
