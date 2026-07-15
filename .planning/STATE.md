@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 02
 current_phase_name: participant-discovery-browse-and-pick-join
 status: gap_closure
-stopped_at: Completed 02-05-PLAN.md (F1a/F1b single cohort-size)
-last_updated: "2026-07-15T17:50:04.263Z"
+stopped_at: Completed 02-06-PLAN.md (F2 discovery-window lifetime + surfaced expiry)
+last_updated: "2026-07-15T14:05:00.000Z"
 last_activity: 2026-07-15
-last_activity_desc: Phase 02 gap-closure planned (F1/F2 + k-of-n fallback), plan-check passed
+last_activity_desc: Executed 02-06 (F2 30-min discovery-window defaults + surfaced expiry + gated re-advertise)
 progress:
   total_phases: 2
   completed_phases: 1
   total_plans: 11
-  completed_plans: 9
+  completed_plans: 10
 ---
 
 # Project State
@@ -27,10 +27,10 @@ See: .planning/PROJECT.md (updated 2026-07-08)
 
 ## Current Position
 
-Phase: 02 (participant-discovery-browse-and-pick-join) - GAP CLOSURE PENDING
-Plan: 4 of 4 executed + verified (human_needed); UAT Test 1 found F1 (cohort-size/label) + F2 (cohort expiry); 3 gap plans 02-05/06/07 created + plan-check PASSED; UAT Test 2 deferred to post-gap re-verify
-Status: Run /gsd-execute-phase 2 --gaps-only to build the fixes (F1a/F1b single cohort-size, F2 lifetime+expiry, F1c k-of-n script-path fallback), then re-verify Test 2.
-Last activity: 2026-07-15 - Phase 02 gap-closure planned (F1/F2 + k-of-n fallback), plan-check passed
+Phase: 02 (participant-discovery-browse-and-pick-join) - GAP CLOSURE IN PROGRESS
+Plan: gap plans 02-05 (F1a/F1b) + 02-06 (F2) executed; 02-07 (F1c k-of-n script-path fallback) remaining; UAT Test 2 deferred to post-gap re-verify
+Status: Run /gsd-execute-phase 2 --gaps-only to build 02-07 (F1c k-of-n script-path fallback), then re-verify Test 2.
+Last activity: 2026-07-15 - Executed 02-06 (F2 30-min discovery-window defaults + surfaced expiry + gated re-advertise)
 
 Progress: [██░░░░░░░░] 17% (Phase 1 of 6 complete)
 
@@ -67,6 +67,7 @@ Progress: [██░░░░░░░░] 17% (Phase 1 of 6 complete)
 | Plan | Duration | Tasks | Files |
 |------|----------|-------|-------|
 | Phase 02 P05 | 6min | 3 tasks | 7 files |
+| Phase 02 P06 | 18min | 3 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -85,6 +86,7 @@ Recent decisions affecting current work:
 - [Phase ?]: Phase-1 e2e (e2e:operator) never calls runner.run(); the operator advertise route self-drives the cohort and the harness observes the 64-byte signature off signing-complete
 - [Phase ?]: e2e:operator registered but intentionally NOT wired into CI (deferred to a Phase-6 / CI concern)
 - [Phase ?]: 02-05 (F1a/F1b): collapse operator cohort size to one n (min == max == n); capacity > threshold unrepresentable server-side; directory rows honest with zero display change
+- [Phase 02]: 02-06 (F2): raise the single stall/TTL timer defaults to a 30-min discovery window (env-tunable); retain a bounded operator-only 'expired' terminal record on completion rejection (surfaced via listCohorts, never directory/status); readvertiseExpired is a second operator-driven advertiseCohort caller (D-17 preserved) behind the gated POST /v1/operator/cohorts/:id/readvertise
 
 ### Pending Todos
 
@@ -112,7 +114,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-15T17:49:50.189Z
-Stopped at: Completed 02-05-PLAN.md (F1a/F1b single cohort-size)
-Resume file: .planning/phases/02-participant-discovery-browse-and-pick-join/02-06-PLAN.md
+Last session: 2026-07-15T14:05:00.000Z
+Stopped at: Completed 02-06-PLAN.md (F2 discovery-window lifetime + surfaced expiry)
+Resume file: .planning/phases/02-participant-discovery-browse-and-pick-join/02-07-PLAN.md
 Next command: /gsd-execute-phase 2 --gaps-only

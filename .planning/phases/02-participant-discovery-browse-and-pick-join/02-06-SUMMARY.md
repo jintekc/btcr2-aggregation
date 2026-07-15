@@ -150,6 +150,12 @@ None - no external service configuration required. Operators wanting snappier si
 - Plan 02-07 (F1c) will convert the longer single-timer stall budget from a hard mid-signing failure into a graceful k-of-n script-path fallback; this plan deliberately did NOT wire any fallback option (timer defaults + expiry surfacing only).
 - CI debt unchanged: `e2e:browser` / `e2e:browser:prod` remain deferred to Phase 6; `e2e:operator` (now including the F2 leg) is still not wired into CI.
 
+## Self-Check: PASSED
+
+- SUMMARY.md exists on disk.
+- Task commits `a586ff0` (RED), `b1fcdf8` (GREEN), `a56a1b8` (Task 3), `98bd3a6` (docs) all present in git history.
+- `operator-cohorts.spec.ts` (20) + `config.spec.ts` + `operator-boot.spec.ts` all green (34 tests); `pnpm e2e:operator` exit 0; web `tsc --noEmit` + `vite build` clean; service `tsc -b` clean; lint clean.
+
 ---
 *Phase: 02-participant-discovery-browse-and-pick-join*
 *Completed: 2026-07-15*

@@ -71,7 +71,7 @@ Plans:
 Plans:
 
 - [x] 02-05-PLAN.md
-- [ ] 02-06-PLAN.md
+- [x] 02-06-PLAN.md
 - [ ] 02-07-PLAN.md
 
 **Wave 1**
@@ -159,7 +159,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Authenticated Operator Console + On-Demand Cohort Creation | 4/4 | Complete    | 2026-07-08 |
-| 2. Participant Discovery + Browse-and-Pick Join | 5/7 | In Progress|  |
+| 2. Participant Discovery + Browse-and-Pick Join | 6/7 | In Progress|  |
 | 3. Participant Submit, Co-Sign, Track, and Resolve | 0/TBD | Not started | - |
 | 4. Operator Cohort Monitoring | 0/TBD | Not started | - |
 | 5. Operator Cohort Lifecycle Control | 0/TBD | Not started | - |
