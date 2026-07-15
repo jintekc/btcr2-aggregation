@@ -73,7 +73,15 @@ export interface OperatorCohortDTO {
   capacity: number;
   /** Accepted participants so far; 0 for a draft. */
   joined: number;
-  state: 'draft' | 'advertised';
+  /**
+   * `'draft'` un-advertised, `'advertised'` live in the directory, `'expired'` a
+   * terminal record whose advertised cohort's completion rejected (stall / TTL / stop).
+   * An expired cohort is surfaced to the operator (never silently deleted) and can be
+   * re-advertised; it is NOT a participant-directory entry (F2).
+   */
+  state: 'draft' | 'advertised' | 'expired';
+  /** Short human-readable reason, present ONLY on `state: 'expired'` rows. */
+  reason?: string;
 }
 
 /** One open cohort in the public directory (GET /v1/directory, SVC-02/D-14). */
@@ -165,6 +173,20 @@ export async function discardDraft(baseUrl: string, id: string): Promise<void> {
  */
 export async function advertise(baseUrl: string, id: string): Promise<boolean> {
   const res = await fetch(endpoint(baseUrl, `/v1/operator/cohorts/${encodeURIComponent(id)}/advertise`), {
+    method: 'POST',
+    credentials: 'same-origin',
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+  return res.ok;
+}
+
+/**
+ * POST the re-advertise action for an EXPIRED cohort (SVC-02, F2). Gated + same-origin
+ * (the session cookie rides `credentials: 'same-origin'`); returns whether the server
+ * accepted it (200) so the store can surface the transient success message and refresh.
+ */
+export async function readvertise(baseUrl: string, id: string): Promise<boolean> {
+  const res = await fetch(endpoint(baseUrl, `/v1/operator/cohorts/${encodeURIComponent(id)}/readvertise`), {
     method: 'POST',
     credentials: 'same-origin',
     signal: AbortSignal.timeout(TIMEOUT_MS),

@@ -57,7 +57,9 @@ interface OperatorCohortDTO {
   threshold: number;
   capacity: number;
   joined: number;
-  state: 'draft' | 'advertised';
+  state: 'draft' | 'advertised' | 'expired';
+  /** Short reason present only on `state: 'expired'` rows (F2). */
+  reason?: string;
 }
 
 /** The public directory entry shape (subset asserted). */
@@ -325,9 +327,156 @@ export async function runOperatorCohort(options: OperatorCohortOptions = {}): Pr
   }
 }
 
+/** Poll `p` every `intervalMs` until `predicate` holds or the overall `ms` budget runs out. */
+async function pollUntil<T>(
+  produce: () => Promise<T>,
+  predicate: (value: T) => boolean,
+  ms: number,
+  label: string,
+  intervalMs = 50,
+): Promise<T> {
+  const deadline = Date.now() + ms;
+  let last: T = await produce();
+  while (!predicate(last)) {
+    if (Date.now() >= deadline) {
+      throw new Error(`${label} not satisfied within ${ms}ms`);
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+    last = await produce();
+  }
+  return last;
+}
+
+/**
+ * The F2 expiry leg: prove an idle, unjoined advertised cohort is (1) torn down from the
+ * PARTICIPANT directory when its single stall timer fires, but (2) surfaced to the
+ * OPERATOR as `state: 'expired'` with a reason instead of vanishing, and (3) revivable
+ * via the gated re-advertise route. Boots a fresh hermetic service with a deliberately
+ * SHORT phaseTimeoutMs/cohortTtlMs so the idle-Advertised expiry is deterministic, and
+ * starts NO participant (the cohort must expire from inactivity, not complete).
+ */
+export async function runExpiryLeg(options: OperatorCohortOptions = {}): Promise<string[]> {
+  const log = options.quiet ? () => {} : (msg: string) => console.log(msg);
+  const problems: string[] = [];
+  const fail = (problem: string): void => {
+    problems.push(problem);
+  };
+
+  // A short window makes the idle-Advertised expiry deterministic without a long wait:
+  // the runner's single stall timer fires ~300ms after advertise with no participant
+  // driving the cohort forward, rejecting the completion (the signal the operator surface
+  // records as expired).
+  const EXPIRY_MS = 300;
+  const service = createService({
+    identity: createIdentity(),
+    config: buildCohortConfig(THRESHOLD, 'CASBeacon'),
+    operatorPassword: OPERATOR_PASSWORD,
+    operatorCookieSecure: false,
+    phaseTimeoutMs: EXPIRY_MS,
+    cohortTtlMs: EXPIRY_MS,
+  });
+  service.runner.on('error', (err) => log(`[service] error: ${err.message}`));
+
+  const { baseUrl } = await service.start(options.port ?? 0);
+  log(`[expiry] service listening on ${baseUrl}`);
+
+  try {
+    // Login + capture the operator_session cookie (Node fetch has no cookie jar).
+    const loginRes = await fetch(`${baseUrl}/v1/operator/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: OPERATOR_PASSWORD }),
+    });
+    const setCookie = loginRes.headers.getSetCookie().find((c) => c.startsWith('operator_session='));
+    await loginRes.text();
+    if (loginRes.status !== 200 || !setCookie) {
+      fail(`[expiry] operator login should be 200 with a session cookie, got ${loginRes.status}`);
+      return problems;
+    }
+    const cookie = setCookie.split(';')[0];
+
+    // Create + advertise a cohort, then leave it completely idle (no participant).
+    const createRes = await fetch(`${baseUrl}/v1/operator/cohorts`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ beaconType: 'CASBeacon', size: THRESHOLD }),
+    });
+    const draft = (await createRes.json()) as OperatorCohortDTO;
+    const advertiseRes = await fetch(`${baseUrl}/v1/operator/cohorts/${draft.draftId}/advertise`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+    const advertised = (await advertiseRes.json()) as OperatorCohortDTO;
+    const expiredId = advertised.draftId;
+    log(`[expiry] advertised idle cohort ${expiredId}; waiting for the stall timer to expire it...`);
+
+    // Poll the operator list until the advertised row flips to state: 'expired'.
+    const listExpired = await withTimeout(
+      pollUntil(
+        async () => {
+          const res = await fetch(`${baseUrl}/v1/operator/cohorts`, { headers: { cookie } });
+          const body = (await res.json()) as { cohorts: OperatorCohortDTO[] };
+          return body.cohorts;
+        },
+        (cohorts) => cohorts.some((c) => c.draftId === expiredId && c.state === 'expired'),
+        10_000,
+        '[expiry] cohort flips to expired',
+      ),
+      12_000,
+      '[expiry] expiry poll',
+    );
+
+    const expiredRow = listExpired.find((c) => c.draftId === expiredId);
+    if (!expiredRow) {
+      fail(`[expiry] cohort ${expiredId} never appeared as expired in the operator list`);
+    } else {
+      if (expiredRow.state !== 'expired') {
+        fail(`[expiry] cohort ${expiredId} should be state 'expired', got '${expiredRow.state}'`);
+      }
+      if (!expiredRow.reason) {
+        fail(`[expiry] expired cohort ${expiredId} should carry a non-empty reason`);
+      }
+    }
+
+    // The participant directory must NOT show the expired cohort (it is genuinely gone
+    // from the open set; expired is operator-only).
+    const dirAfterExpiry = (await (await fetch(`${baseUrl}/v1/directory`)).json()) as DirectoryCohortDTO[];
+    if (dirAfterExpiry.some((d) => d.cohortId === expiredId)) {
+      fail(`[expiry] expired cohort ${expiredId} must NOT appear in the public /v1/directory`);
+    }
+    log('[assert] expiry: cohort absent from /v1/directory but surfaced to the operator as expired with a reason');
+
+    // Re-advertise the expired cohort: a fresh advertised DTO, back in the directory.
+    const readvertiseRes = await fetch(`${baseUrl}/v1/operator/cohorts/${expiredId}/readvertise`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+    if (readvertiseRes.status !== 200) {
+      fail(`[expiry] re-advertise should be 200, got ${readvertiseRes.status}`);
+      return problems;
+    }
+    const revived = (await readvertiseRes.json()) as OperatorCohortDTO;
+    if (revived.state !== 'advertised') {
+      fail(`[expiry] re-advertised cohort should be state 'advertised', got '${revived.state}'`);
+    }
+    const newCohortId = revived.draftId;
+    const dirAfterReadvertise = (await (await fetch(`${baseUrl}/v1/directory`)).json()) as DirectoryCohortDTO[];
+    if (!dirAfterReadvertise.some((d) => d.cohortId === newCohortId)) {
+      fail(`[expiry] re-advertised cohort ${newCohortId} should be back in the public /v1/directory`);
+    }
+    if (problems.length === 0) {
+      log(`[ok] expiry: cohort surfaced as expired, then re-advertised as ${newCohortId} back into the directory`);
+    }
+
+    return problems;
+  } finally {
+    await service.stop();
+  }
+}
+
 async function main(): Promise<number> {
   const quiet = process.argv.includes('--quiet');
-  const problems = await runOperatorCohort({ quiet });
+  const problems = [...(await runOperatorCohort({ quiet })), ...(await runExpiryLeg({ quiet }))];
   if (problems.length > 0) {
     console.error('\nE2E FAILED:');
     for (const problem of problems) {
@@ -339,7 +488,9 @@ async function main(): Promise<number> {
     '\nE2E PASSED: operator login -> create -> advertise -> real participants discovered the ' +
       'directory entry, joined, and co-signed a 64-byte aggregated Taproot signature over real ' +
       'HTTP - with the auth boundary (wrong-password + no-cookie negatives) and the on-demand-only ' +
-      'driver (no cohorts at boot) both proven in the same hermetic run.',
+      'driver (no cohorts at boot) both proven in the same hermetic run; PLUS the F2 expiry leg ' +
+      '(an idle advertised cohort expires out of the participant directory but is surfaced to the ' +
+      'operator as expired with a reason, and is then re-advertised back into the directory).',
   );
   return 0;
 }

@@ -3,6 +3,7 @@ import {
   login as apiLogin,
   logout as apiLogout,
   advertise as apiAdvertise,
+  readvertise as apiReadvertise,
   createDraft as apiCreateDraft,
   discardDraft as apiDiscardDraft,
   listCohorts as apiListCohorts,
@@ -32,6 +33,9 @@ export type AdvertiseStatus = 'idle' | 'advertising' | 'error';
 
 /** Transient advertise success copy (spaced hyphen per house style; UI-SPEC intent). */
 const ADVERTISED_OK = 'Advertised - now joinable in the directory.';
+
+/** Transient re-advertise success copy (an expired cohort brought back to the directory). */
+const READVERTISED_OK = 'Re-advertised - back in the directory as a fresh cohort.';
 
 /** Exact invalid-password copy (UI-SPEC); never reveals whether a session/account exists. */
 const INVALID_PASSWORD =
@@ -66,6 +70,8 @@ interface OperatorState {
   submitDraft: (baseUrl: string, input: DraftInput) => Promise<void>;
   /** Advertise a draft; on success show the transient confirmation and refresh the list. */
   advertise: (baseUrl: string, id: string) => Promise<void>;
+  /** Re-advertise an expired cohort; on success show the confirmation and refresh the list. */
+  readvertise: (baseUrl: string, id: string) => Promise<void>;
   /** Discard an un-advertised draft, then refresh the list. */
   discard: (baseUrl: string, id: string) => Promise<void>;
 }
@@ -172,6 +178,28 @@ export const useOperator = create<OperatorState>((set, get) => ({
         }, 4000);
       } else {
         set({ advertiseStatus: 'error', advertisingId: undefined, formError: 'Could not advertise the draft. Try again.' });
+      }
+    } catch {
+      set({ advertiseStatus: 'error', advertisingId: undefined, formError: UNREACHABLE });
+    }
+  },
+
+  async readvertise(baseUrl, id) {
+    set({ advertiseStatus: 'advertising', advertisingId: id, advertiseMessage: undefined, formError: undefined });
+    try {
+      const ok = await apiReadvertise(baseUrl, id);
+      if (ok) {
+        set({ advertiseStatus: 'idle', advertisingId: undefined, advertiseMessage: READVERTISED_OK });
+        await get().refreshCohorts(baseUrl);
+        // Clear the transient confirmation after a few seconds, but only if it is still
+        // the same message (a later action may have replaced it).
+        setTimeout(() => {
+          if (get().advertiseMessage === READVERTISED_OK) {
+            set({ advertiseMessage: undefined });
+          }
+        }, 4000);
+      } else {
+        set({ advertiseStatus: 'error', advertisingId: undefined, formError: 'Could not re-advertise the cohort. Try again.' });
       }
     } catch {
       set({ advertiseStatus: 'error', advertisingId: undefined, formError: UNREACHABLE });
