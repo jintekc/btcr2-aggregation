@@ -67,12 +67,12 @@ Plans:
   2. The participant selects a specific open cohort from the directory and joins it by choice, rather than auto-joining whatever advert arrives.
   3. A joined participant is seated in the chosen cohort (counts against its capacity), and a full or closed cohort cannot be joined.
 
-**Plans**: 6/7 plans executed
+**Plans**: 7/7 plans executed
 Plans:
 
-- [x] 02-05-PLAN.md
-- [x] 02-06-PLAN.md
-- [ ] 02-07-PLAN.md
+- [x] 02-05-PLAN.md - Single Cohort size (n-of-n): collapse threshold + capacity to one n, min == max == n on browser and server (F1a/F1b gap closure)
+- [x] 02-06-PLAN.md - Cohort discovery-window lifetime + surfaced expiry (state:'expired' + reason) + gated operator re-advertise route (F2 gap closure)
+- [x] 02-07-PLAN.md - Activate the ADR-042 k-of-n script-path fallback for signing-stall liveness (n-of-n stays primary; configurable fallbackThreshold) (F1c gap closure)
 
 **Wave 1**
 
