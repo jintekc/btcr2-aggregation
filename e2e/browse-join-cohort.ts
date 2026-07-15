@@ -195,7 +195,7 @@ export async function runBrowseJoinCohort(options: BrowseJoinCohortOptions = {})
       const createRes = await fetch(`${baseUrl}/v1/operator/cohorts`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', cookie },
-        body: JSON.stringify({ beaconType: 'CASBeacon', threshold: THRESHOLD, capacity: THRESHOLD }),
+        body: JSON.stringify({ beaconType: 'CASBeacon', size: THRESHOLD }),
       });
       if (createRes.status !== 201) {
         fail(`create draft ${label} should be 201, got ${createRes.status}`);

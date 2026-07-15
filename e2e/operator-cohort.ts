@@ -45,7 +45,7 @@ import { buildCohortConfig, createIdentity } from '@btcr2-aggregation/shared';
 const OPERATOR_PASSWORD = 'operator-e2e-correct-horse-battery-staple';
 /** A deliberately-wrong password for the negative-auth assertion. */
 const WRONG_PASSWORD = 'this-is-not-the-operator-password';
-/** n-of-n co-sign threshold AND seat capacity for the advertised cohort. */
+/** The single cohort size n: both the seat count and the n in n-of-n for the advertised cohort. */
 const THRESHOLD = 2;
 
 /** The operator-cohort DTO shape returned by create + advertise (subset asserted). */
@@ -217,7 +217,7 @@ export async function runOperatorCohort(options: OperatorCohortOptions = {}): Pr
     const createRes = await fetch(`${baseUrl}/v1/operator/cohorts`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', cookie },
-      body: JSON.stringify({ beaconType: 'CASBeacon', threshold: THRESHOLD, capacity: THRESHOLD }),
+      body: JSON.stringify({ beaconType: 'CASBeacon', size: THRESHOLD }),
     });
     if (createRes.status !== 201) {
       fail(`create draft should be 201, got ${createRes.status}`);
