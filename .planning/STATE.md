@@ -4,11 +4,11 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 02
 current_phase_name: participant-discovery-browse-and-pick-join
-status: verifying
-stopped_at: Phase 2 executed (4 plans) + code-review fix (CR-01) + verification = human_needed; awaiting 2 visual-fidelity UAT checks
-last_updated: "2026-07-14T21:35:00.000Z"
-last_activity: 2026-07-14
-last_activity_desc: Phase 02 executed end-to-end (4 plans, 3 waves), CR-01 blocker fixed, verification human_needed (2 UAT items)
+status: gap_closure
+stopped_at: Phase 2 UAT found 2 gaps (F1 cohort-size/label, F2 cohort expiry) + k-of-n fallback; 3 gap plans (02-05/06/07) planned + plan-check PASSED; ready for /gsd-execute-phase 2 --gaps-only
+last_updated: "2026-07-15T00:30:00.000Z"
+last_activity: 2026-07-15
+last_activity_desc: Phase 02 UAT diagnosed F1/F2 + wired k-of-n direction; 3 gap-closure plans created and verified
 progress:
   total_phases: 6
   completed_phases: 2
@@ -28,10 +28,10 @@ See: .planning/PROJECT.md (updated 2026-07-08)
 
 ## Current Position
 
-Phase: 02 (participant-discovery-browse-and-pick-join) - AWAITING HUMAN VERIFICATION
-Plan: 4 of 4 executed (all SUMMARYs written); code review done (CR-01 blocker fixed); verifier = human_needed
-Status: 2 deferred visual-fidelity UAT checks pending. Run /gsd-verify-work 2 to complete the phase.
-Last activity: 2026-07-14 - Phase 02 executed + CR-01 fix + verification (human_needed)
+Phase: 02 (participant-discovery-browse-and-pick-join) - GAP CLOSURE PENDING
+Plan: 4 of 4 executed + verified (human_needed); UAT Test 1 found F1 (cohort-size/label) + F2 (cohort expiry); 3 gap plans 02-05/06/07 created + plan-check PASSED; UAT Test 2 deferred to post-gap re-verify
+Status: Run /gsd-execute-phase 2 --gaps-only to build the fixes (F1a/F1b single cohort-size, F2 lifetime+expiry, F1c k-of-n script-path fallback), then re-verify Test 2.
+Last activity: 2026-07-15 - Phase 02 gap-closure planned (F1/F2 + k-of-n fallback), plan-check passed
 
 Progress: [██░░░░░░░░] 17% (Phase 1 of 6 complete)
 
@@ -107,7 +107,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-14T21:35:00.000Z
-Stopped at: Phase 2 executed + verified (human_needed); awaiting 2 UAT visual-fidelity checks
-Resume file: .planning/phases/02-participant-discovery-browse-and-pick-join/02-UAT.md
-Next command: /gsd-verify-work 2
+Last session: 2026-07-15T00:30:00.000Z
+Stopped at: Phase 2 UAT diagnosed F1/F2; 3 gap-closure plans (02-05/06/07) created + plan-check PASSED
+Resume file: .planning/phases/02-participant-discovery-browse-and-pick-join/02-05-PLAN.md
+Next command: /gsd-execute-phase 2 --gaps-only
