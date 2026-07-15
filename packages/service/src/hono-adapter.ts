@@ -318,7 +318,7 @@ export function createHonoApp(
     if (operatorCohorts) {
       app.post(
         '/v1/operator/cohorts',
-        // A create body is a tiny `{ beaconType, threshold, capacity }`; 4 KiB bounds
+        // A create body is a tiny `{ beaconType, size }`; 4 KiB bounds
         // it during streaming before c.req.json() buffers it (T-02-02). Mirrors the
         // login / ipfs-pin body limits.
         bodyLimit({ maxSize: 4 * 1024, onError: (c) => c.json({ error: 'request too large' }, 413) }),
@@ -327,7 +327,7 @@ export function createHonoApp(
           try {
             body = await c.req.json();
           } catch {
-            return c.json({ error: 'expected a JSON body { beaconType, threshold, capacity }' }, 400);
+            return c.json({ error: 'expected a JSON body { beaconType, size }' }, 400);
           }
           try {
             // validateDraft throws a user-facing message on invalid input; surface it

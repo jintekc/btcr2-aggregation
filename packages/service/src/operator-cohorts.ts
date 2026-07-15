@@ -3,7 +3,7 @@
  * (SVC-01/SVC-02, D-09/D-10/D-12/D-13/D-14/D-15/D-17).
  *
  * This is the full two-step cohort flow. First an authenticated operator shapes a
- * cohort by hand (beacon type, n-of-n co-sign threshold, capacity) and it is stored as
+ * cohort by hand (beacon type + a single cohort size n) and it is stored as
  * an un-advertised DRAFT - app-level config that is NOT yet handed to the
  * {@link AggregationServiceRunner}, so a draft has zero protocol side effects (D-12).
  * Then the operator ADVERTISES a draft: {@link OperatorCohorts.advertiseDraft} is the
@@ -25,9 +25,11 @@
  *   and passed in as {@link OperatorCohortsOptions.activeNetwork}; it is NEVER read
  *   from the create-form body (D-10). A form that could pick a network would let the
  *   browser derive addresses/DIDs for a chain the coordinator does not run.
- * - `capacity` is applied app-side as `maxParticipants` on top of
- *   {@link buildCohortConfig} (whose `minParticipants` is the n-of-n threshold), so
- *   the operator sets an explicit seat ceiling rather than an open cohort (D-11/D-19).
+ * - A cohort has ONE size n, applied app-side as `minParticipants === maxParticipants === n`
+ *   on top of {@link buildCohortConfig} (whose `minParticipants` is the n-of-n threshold), so
+ *   n is both the seat count and the n in n-of-n. A capacity above the co-sign threshold is
+ *   deliberately unrepresentable, so the directory can never advertise a seat that never
+ *   fills once the cohort locks at the threshold (F1a/F1b, refines D-11/D-19).
  *
  * State is a per-{@link createOperatorCohorts} `Map` pair (mirrors the
  * `seatedRosterKeys` / `genesisStaging` closure scoping in index.ts), NOT a module
@@ -52,11 +54,20 @@ const KNOWN_BEACON_TYPES = new Set<string>(['CASBeacon', 'SMTBeacon']);
  */
 const OPEN_PHASES = new Set<string>(['Advertised', 'CohortSet', 'CollectingUpdates']);
 
-/** Untrusted create-form body: beacon type + the two cohort-size bounds. */
+/**
+ * The exact UI-SPEC validation string for the single cohort-size floor; the browser
+ * mirrors this copy so the operator sees the same message client-side and server-side.
+ */
+const SIZE_ERROR = 'Cohort size must be at least 1 signer.';
+
+/**
+ * Untrusted create-form body: beacon type + a single cohort size n. A cohort has ONE
+ * size that is both the seat count and the n in n-of-n; a capacity above the co-sign
+ * threshold is deliberately unrepresentable (F1b), so there is no separate capacity field.
+ */
 export interface DraftInput {
   beaconType: string;
-  threshold: number;
-  capacity: number;
+  size: number;
 }
 
 /**
@@ -142,24 +153,22 @@ export interface OperatorCohorts {
 }
 
 /**
- * Validate a create-form body into a `{ beaconType, threshold, capacity }` triple.
+ * Validate a create-form body into a `{ beaconType, size }` pair.
  * Guard-clause style (index.ts / shared house style): throws on the first problem with
- * a user-facing message the route surfaces verbatim as the 400 body. The two numeric
- * messages are the exact UI-SPEC validation strings so the server and the browser agree
- * on the copy the operator sees.
+ * a user-facing message the route surfaces verbatim as the 400 body. There is a single
+ * cohort size n (no separate capacity), so a cohort where capacity exceeds the co-sign
+ * threshold is unrepresentable (F1b). The size message is the exact UI-SPEC validation
+ * string so the server and the browser agree on the copy the operator sees.
  */
-function validateDraft(input: DraftInput): { beaconType: BeaconType; threshold: number; capacity: number } {
-  const { beaconType, threshold, capacity } = input;
+function validateDraft(input: DraftInput): { beaconType: BeaconType; size: number } {
+  const { beaconType, size } = input;
   if (typeof beaconType !== 'string' || !KNOWN_BEACON_TYPES.has(beaconType)) {
     throw new Error(`operator: unknown beacon type "${String(beaconType)}" (expected CASBeacon or SMTBeacon)`);
   }
-  if (!Number.isInteger(threshold) || threshold < 1) {
-    throw new Error('Threshold must be at least 1 signer.');
+  if (!Number.isInteger(size) || size < 1) {
+    throw new Error(SIZE_ERROR);
   }
-  if (!Number.isInteger(capacity) || capacity < threshold) {
-    throw new Error('Capacity must be at least the co-sign threshold.');
-  }
-  return { beaconType: beaconType as BeaconType, threshold, capacity };
+  return { beaconType: beaconType as BeaconType, size };
 }
 
 /**
@@ -211,24 +220,26 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
 
   return {
     createDraft(input: DraftInput): OperatorCohortDTO {
-      const { beaconType, threshold, capacity } = validateDraft(input);
+      const { beaconType, size } = validateDraft(input);
       // Build on the SERVICE active network (D-10). `minParticipants` is the n-of-n
-      // threshold; set `maxParticipants` = capacity so the cohort has an explicit seat
-      // ceiling app-side rather than being open (D-11/D-19).
-      const config = buildCohortConfig(threshold, beaconType, activeNetwork, recoveryKey);
-      config.maxParticipants = capacity;
+      // threshold; pin `maxParticipants` = the SAME size so min === max === n. This is an
+      // exact n-of-n cohort with no unfillable seat: the cohort locks the instant it
+      // reaches n, and n seats is exactly what the directory advertises (F1a/F1b, refines
+      // D-11/D-19).
+      const config = buildCohortConfig(size, beaconType, activeNetwork, recoveryKey);
+      config.maxParticipants = size;
       const draftId = randomUUID();
       const dto: OperatorCohortDTO = {
         draftId,
         beaconType,
         network: activeNetwork,
-        threshold,
-        capacity,
+        threshold: size,
+        capacity: size,
         joined: 0,
         state: 'draft',
       };
       drafts.set(draftId, { config, dto });
-      console.log(`[operator] created draft ${draftId} (${beaconType} ${threshold}-of-${threshold}, cap ${capacity})`);
+      console.log(`[operator] created draft ${draftId} (${beaconType} ${size}-of-${size})`);
       return dto;
     },
 
