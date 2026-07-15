@@ -302,6 +302,106 @@ describe('POST /v1/operator/cohorts/:id/advertise (advertise a draft)', () => {
   });
 });
 
+/** POST the re-advertise action for an expired cohort id with the session cookie attached. */
+async function readvertise(
+  app: ReturnType<typeof operatorCohortApp>['app'],
+  cookie: string,
+  cohortId: string,
+): Promise<Response> {
+  return app.request(`/v1/operator/cohorts/${cohortId}/readvertise`, {
+    method: 'POST',
+    headers: { cookie },
+  });
+}
+
+describe('cohort expiry is surfaced to the operator (never silently deleted)', () => {
+  it('keeps an expired cohort out of /v1/directory but lists it to the operator as state: "expired" with a reason', async () => {
+    const { app, runner } = operatorCohortApp();
+    const cookie = await login(app);
+    const created = await createDraft(app, cookie, { beaconType: 'CASBeacon', size: 2 });
+    const draft = (await created.json()) as OperatorCohortDTO;
+    const advDto = (await (await advertise(app, cookie, draft.draftId)).json()) as OperatorCohortDTO;
+    const cohortId = advDto.draftId;
+
+    // Force the completion to reject (stall / stop / TTL all reject the completion the
+    // same way); await the microtask turn so the settlement runs.
+    runner.stopCohort(cohortId);
+    await new Promise((r) => setTimeout(r, 20));
+
+    // The participant surface is genuinely empty (the expired cohort is gone from the
+    // live open set), exactly as before.
+    const directory = (await (await app.request('/v1/directory')).json()) as DirectoryCohortDTO[];
+    expect(directory).toHaveLength(0);
+    const status = (await (await app.request('/v1/status')).json()) as ServiceStatusDTO;
+    expect(status.openCohorts).toBe(0);
+
+    // But the operator list now surfaces it as an expired terminal record with a reason.
+    const listed = await app.request('/v1/operator/cohorts', { headers: { cookie } });
+    const { cohorts } = (await listed.json()) as { cohorts: OperatorCohortDTO[] };
+    expect(cohorts).toHaveLength(1);
+    expect(cohorts[0].draftId).toBe(cohortId);
+    expect(cohorts[0].state).toBe('expired');
+    expect(typeof cohorts[0].reason).toBe('string');
+    expect(cohorts[0].reason).toBeTruthy();
+    // The retained config's shape is preserved (n-of-n size 2).
+    expect(cohorts[0].threshold).toBe(2);
+    expect(cohorts[0].capacity).toBe(2);
+    expect(cohorts[0].joined).toBe(0);
+
+    runner.stop();
+  });
+
+  it('re-advertises an expired cohort: a fresh advertised DTO, back in the directory, and the expired record gone', async () => {
+    const { app, runner } = operatorCohortApp();
+    const cookie = await login(app);
+    const created = await createDraft(app, cookie, { beaconType: 'CASBeacon', size: 2 });
+    const draft = (await created.json()) as OperatorCohortDTO;
+    const advDto = (await (await advertise(app, cookie, draft.draftId)).json()) as OperatorCohortDTO;
+    const expiredId = advDto.draftId;
+
+    runner.stopCohort(expiredId);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const spy = vi.spyOn(runner, 'advertiseCohort');
+    const res = await readvertise(app, cookie, expiredId);
+    expect(res.status).toBe(200);
+    const revived = (await res.json()) as OperatorCohortDTO;
+    expect(revived.state).toBe('advertised');
+    // A fresh live cohort id (a re-advertise is a SECOND operator-driven advertiseCohort).
+    expect(spy).toHaveBeenCalledTimes(1);
+    const newCohortId = revived.draftId;
+
+    // The expired terminal record is gone; the operator list now shows the live one.
+    const listed = await app.request('/v1/operator/cohorts', { headers: { cookie } });
+    const { cohorts } = (await listed.json()) as { cohorts: OperatorCohortDTO[] };
+    expect(cohorts).toHaveLength(1);
+    expect(cohorts[0].state).toBe('advertised');
+    expect(cohorts[0].draftId).toBe(newCohortId);
+
+    // The revived cohort is an open participant-directory entry again.
+    const directory = (await (await app.request('/v1/directory')).json()) as DirectoryCohortDTO[];
+    expect(directory).toHaveLength(1);
+    expect(directory[0].cohortId).toBe(newCohortId);
+
+    runner.stop();
+  });
+
+  it('401s the re-advertise POST with no session cookie', async () => {
+    const { app, runner } = operatorCohortApp();
+    const res = await app.request('/v1/operator/cohorts/whatever/readvertise', { method: 'POST' });
+    expect(res.status).toBe(401);
+    runner.stop();
+  });
+
+  it('404s re-advertising an unknown (or non-expired) cohort id', async () => {
+    const { app, runner } = operatorCohortApp();
+    const cookie = await login(app);
+    const res = await readvertise(app, cookie, 'does-not-exist');
+    expect(res.status).toBe(404);
+    runner.stop();
+  });
+});
+
 describe('public /v1/directory + /v1/status (no session required)', () => {
   it('both 200 with an empty directory / zero open count before anything is advertised', async () => {
     const { app, runner } = operatorCohortApp();
