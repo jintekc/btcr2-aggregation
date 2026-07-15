@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Badge, Button, Card, CopyField, SectionTitle } from '../../ui/primitives';
+import { cosignCaption, cosignValue } from '../../lib/directory';
 import { useOperator } from '../../stores/operator';
 import type { OperatorCohortDTO } from '../../lib/operator';
 
@@ -52,6 +53,10 @@ function CohortRow({ baseUrl, cohort }: { baseUrl: string; cohort: OperatorCohor
           <span className="text-sm text-muted">
             {cohort.joined}/{cohort.capacity} seats
           </span>
+          <span className="text-sm text-muted">Co-sign: {cosignValue(cohort)}</span>
+          {cohort.threshold < cohort.capacity ? (
+            <span className="text-xs text-faint">{cosignCaption(cohort)}</span>
+          ) : null}
         </div>
         {isDraft && !confirming ? (
           <div className="flex flex-wrap gap-2">

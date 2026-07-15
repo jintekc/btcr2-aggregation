@@ -87,3 +87,26 @@ export function statusTone(row: DirectoryCohortDTO): StatusTone {
 export function beaconGloss(beaconType: OperatorBeaconType): string {
   return beaconType === 'CASBeacon' ? 'CAS · content-addressed' : 'SMT · sparse Merkle tree';
 }
+
+/**
+ * The two honest numbers a cohort now carries (G-02-1): the co-sign figure is `k-of-n`,
+ * where `threshold` = k (the ADR-042 signing floor) and `capacity` = n (the seat count).
+ * A row where k == n is the honest unanimous default; k < n names the stall-fallback
+ * condition. Pure helpers so the same strings the components render are the strings the
+ * spec asserts (no DOM, T-KOFN-01/T-KOFN-07).
+ */
+export function cosignValue(row: { threshold: number; capacity: number }): string {
+  return `${row.threshold}-of-${row.capacity}`;
+}
+
+/**
+ * The caption beneath the co-sign figure. k == n degrades to `all signers required`
+ * (unanimous n-of-n); k < n states the unanimous norm AND the stall fallback floor, so
+ * the caption never implies only k routinely sign.
+ */
+export function cosignCaption(row: { threshold: number; capacity: number }): string {
+  if (row.threshold === row.capacity) {
+    return 'all signers required';
+  }
+  return `all co-sign; anchors if at least ${row.threshold} of ${row.capacity} sign`;
+}

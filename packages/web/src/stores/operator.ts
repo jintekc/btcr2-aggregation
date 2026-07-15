@@ -66,7 +66,11 @@ interface OperatorState {
   signOut: (baseUrl: string) => Promise<void>;
   /** Reload the operator cohort list. */
   refreshCohorts: (baseUrl: string) => Promise<void>;
-  /** Create a draft; on a 400 set `formError`, on success clear it and refresh the list. */
+  /**
+   * Create a draft; on a 400 set `formError`, on success clear it and refresh the list.
+   * Forwards the whole two-field {@link DraftInput} (`{ beaconType, size, threshold }`)
+   * unchanged - size = n seats, threshold = k the signing floor (G-02-1).
+   */
   submitDraft: (baseUrl: string, input: DraftInput) => Promise<void>;
   /** Advertise a draft; on success show the transient confirmation and refresh the list. */
   advertise: (baseUrl: string, id: string) => Promise<void>;

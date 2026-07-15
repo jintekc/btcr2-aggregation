@@ -150,7 +150,7 @@ Full string set for this phase:
 - Per-row fields: beacon-type chip with gloss, active-network chip, seats, co-sign threshold, status badge, cohort id (`CopyField`), `Join` button. Newest-advertised first; no sort/filter controls (D-10).
 - Beacon-type chip + gloss (D-08): `CAS · content-addressed` / `SMT · sparse Merkle tree`.
 - Seats (D-08): `{joined}/{capacity} seats` with caption `{capacity - joined} open` (when full: `Full`).
-- Co-sign threshold (D-08): `Co-sign: {threshold}-of-{threshold}` with an optional caption `all signers required` (n-of-n).
+- Co-sign figure (D-08, G-02-1): `{threshold}-of-{capacity}` = `k-of-n`, where the second number is the signing floor k (NOT the removed `maxParticipants` ceiling) and n is the seat count. Caption is conditional: `all signers required` when k == n (unanimous), else `all co-sign; anchors if at least {k} of {n} sign` when k < n (the stall-fallback floor).
 - Status labels (D-09): `Open` / `Filling` / `Collecting updates` / `Full`. The raw protocol phase may appear on hover (`title=`) or as a small `Mono` if useful, never as the primary label.
 - Cohort id (`CopyField` label): `Cohort ID`.
 - Row join action: `Join`. Disabled on rows shown `Full` or past the open phases (belt-and-suspenders; the server is authoritative, D-06).

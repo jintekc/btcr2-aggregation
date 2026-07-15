@@ -103,13 +103,15 @@ export interface ServiceStatus {
 }
 
 /**
- * The create-draft body posted to `POST /v1/operator/cohorts`. A cohort has ONE size n
- * that is both the seat count and the n in n-of-n; a capacity above the co-sign threshold
- * is unrepresentable (F1b), so the request body carries only beaconType + size.
+ * The create-draft body posted to `POST /v1/operator/cohorts` (G-02-1). Two honest
+ * numbers: `size` = n = seats (the n in n-of-n; the cohort finalizes only when all n join)
+ * and `threshold` = k = the signing floor (the ADR-042 fallback threshold, `1 <= k <= n`).
+ * The DTOs returned by the routes keep their shape (their `threshold` now MEANS k).
  */
 export interface DraftInput {
   beaconType: OperatorBeaconType;
   size: number;
+  threshold: number;
 }
 
 /** Discriminated create result so the store can surface a 400's specific message. */

@@ -1,6 +1,14 @@
 import { resolveNetwork } from '@btcr2-aggregation/shared';
 import { Badge, Button, Card, CopyField } from '../../ui/primitives';
-import { beaconGloss, isJoinable, statusLabel, statusTone, type DirectoryCohortDTO } from '../../lib/directory';
+import {
+  beaconGloss,
+  cosignCaption,
+  cosignValue,
+  isJoinable,
+  statusLabel,
+  statusTone,
+  type DirectoryCohortDTO,
+} from '../../lib/directory';
 
 /** A dense uppercase micro-label (600 weight, no 500) for the per-row metric captions. */
 function MetricLabel({ children }: { children: string }) {
@@ -11,8 +19,8 @@ function MetricLabel({ children }: { children: string }) {
  * One presentational directory row (PART-01, D-08/D-09). Built entirely from the locked
  * primitives and the pure helpers in {@link file://../../lib/directory.ts}: a plain-language
  * status Badge (accent only when Open), a beacon-type gloss chip, the active-network chip
- * (reusing PublicStatus's mainnet `· REAL FUNDS` variant), seats, the n-of-n co-sign
- * threshold, and a copyable Cohort ID.
+ * (reusing PublicStatus's mainnet `· REAL FUNDS` variant), seats, the k-of-n co-sign
+ * figure (threshold k of n seats), and a copyable Cohort ID.
  *
  * The `Join` button is a real function of joinability, not a stub: it is enabled only when
  * the row is joinable AND an `onPick` handler is supplied. Absent `onPick`, Join is
@@ -62,10 +70,8 @@ export function CohortRow({ row, onPick }: { row: DirectoryCohortDTO; onPick?: (
         </div>
         <div className="space-y-0.5">
           <MetricLabel>Co-sign</MetricLabel>
-          <div className="text-sm text-ink tabular-nums">
-            Co-sign: {row.threshold}-of-{row.threshold}
-          </div>
-          <div className="text-xs text-faint">all signers required</div>
+          <div className="text-sm text-ink tabular-nums">{cosignValue(row)}</div>
+          <div className="text-xs text-faint">{cosignCaption(row)}</div>
         </div>
       </div>
 

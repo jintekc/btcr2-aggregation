@@ -6,6 +6,8 @@ import type { OperatorBeaconType } from '../../lib/operator';
 
 /** Exact UI-SPEC validation string; the server returns the same copy on its 400. */
 const SIZE_ERROR = 'Cohort size must be at least 1 signer.';
+/** Exact signing-threshold validation string (byte-identical to the server, Decision 3). */
+const THRESHOLD_ERROR = 'Signing threshold must be a whole number between 1 and the cohort size.';
 
 const BEACON_OPTIONS: { value: OperatorBeaconType; label: string }[] = [
   { value: 'CASBeacon', label: 'CAS' },
@@ -13,14 +15,14 @@ const BEACON_OPTIONS: { value: OperatorBeaconType; label: string }[] = [
 ];
 
 /**
- * Create-a-cohort form (SVC-01, UI-SPEC). An authenticated operator picks a beacon type
- * (CAS/SMT) and a single cohort size n; the service's single active network is shown
- * read-only as a Badge, NEVER an editable control (D-10). One number n is both the seat
- * count and the n in n-of-n, so a capacity above the co-sign threshold cannot be entered
- * (F1b): the directory can never advertise a seat that never fills. Client validation
- * surfaces the exact UI-SPEC string before the round-trip; the server's 400 message
- * (identical copy) is rendered as the `formError` banner as a backstop. The Create button
- * is a non-destructive ghost - accent stays reserved for Advertise (plan 03).
+ * Create-a-cohort form (SVC-01, UI-SPEC, G-02-1). An authenticated operator picks a beacon
+ * type (CAS/SMT) and TWO honest numbers: a cohort size n (seats; the n in n-of-n, the cohort
+ * starts only once every seat fills) and a signing threshold k of n (the ADR-042 fallback
+ * floor). The service's single active network is shown read-only as a Badge, NEVER an
+ * editable control (D-10). The threshold defaults to the size (k = n, unanimous). Client
+ * validation surfaces the exact UI-SPEC strings before the round-trip; the server's 400
+ * message (identical copy) is rendered as the `formError` banner as a backstop. The Create
+ * button is a non-destructive ghost - accent stays reserved for Advertise.
  */
 export function CreateCohortForm({ baseUrl }: { baseUrl: string }) {
   const activeNetwork = useParticipant((s) => s.network);
@@ -30,19 +32,27 @@ export function CreateCohortForm({ baseUrl }: { baseUrl: string }) {
 
   const [beaconType, setBeaconType] = useState<OperatorBeaconType>('CASBeacon');
   const [sizeText, setSizeText] = useState('2');
+  // The signing threshold k defaults to the size (k = n, unanimous) until the operator lowers it.
+  const [thresholdText, setThresholdText] = useState('2');
   const [clientError, setClientError] = useState<string | undefined>(undefined);
 
   const creating = createStatus === 'creating';
 
   function submit() {
     const size = Number(sizeText);
-    // One size n: min === max === n on the server, so the client only guards the floor.
+    // n = seats = min === max === n on the server, so the client only guards the floor.
     if (!Number.isInteger(size) || size < 1) {
       setClientError(SIZE_ERROR);
       return;
     }
+    // k = the signing threshold, a whole number in [1, size]; mirror the server guard exactly.
+    const threshold = Number(thresholdText);
+    if (!Number.isInteger(threshold) || threshold < 1 || threshold > size) {
+      setClientError(THRESHOLD_ERROR);
+      return;
+    }
     setClientError(undefined);
-    void submitDraft(baseUrl, { beaconType, size });
+    void submitDraft(baseUrl, { beaconType, size, threshold });
   }
 
   // Show the client validation message if present, else the server's 400 message.
@@ -72,7 +82,7 @@ export function CreateCohortForm({ baseUrl }: { baseUrl: string }) {
           />
         </Field>
 
-        <Field label="Cohort size (n-of-n)" htmlFor="cohort-size">
+        <Field label="Cohort size (seats)" htmlFor="cohort-size">
           <Input
             id="cohort-size"
             type="number"
@@ -81,7 +91,22 @@ export function CreateCohortForm({ baseUrl }: { baseUrl: string }) {
             disabled={creating}
           />
           <p className="mt-1 text-xs text-faint">
-            Everyone in the cohort co-signs, so this one number is both the number of seats and the n in n-of-n.
+            Everyone in the cohort co-signs together, so this is the number of seats and the n in n-of-n. The
+            cohort starts only once every seat is filled.
+          </p>
+        </Field>
+
+        <Field label="Signing threshold (k of n)" htmlFor="cohort-threshold">
+          <Input
+            id="cohort-threshold"
+            type="number"
+            value={thresholdText}
+            onChange={setThresholdText}
+            disabled={creating}
+          />
+          <p className="mt-1 text-xs text-faint">
+            Everyone co-signs first. If a signer stalls, the cohort can still anchor as long as at least this
+            many of the n seats sign. Set it equal to the size to require everyone.
           </p>
         </Field>
 
