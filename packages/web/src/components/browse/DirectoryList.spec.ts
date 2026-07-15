@@ -12,7 +12,7 @@ vi.mock('../../lib/directory', async () => {
   return { ...actual, fetchDirectory: vi.fn() };
 });
 
-import { fetchDirectory } from '../../lib/directory';
+import { cosignCaption, cosignValue, fetchDirectory } from '../../lib/directory';
 import { directoryView, fetchDirectoryState } from './DirectoryList';
 
 const mockFetchDirectory = vi.mocked(fetchDirectory);
@@ -52,6 +52,24 @@ describe('DirectoryList - directoryView selector (D-12 states not conflated)', (
     // A blip flips reachable to false while stale rows are still held; the banner wins.
     expect(directoryView(false, [row()])).toBe('unreachable');
     expect(directoryView(false, [row()])).not.toBe('empty');
+  });
+});
+
+describe('k-of-n co-sign helpers (honest two-number display, G-02-1)', () => {
+  it('cosignValue renders {threshold}-of-{capacity} = k-of-n', () => {
+    expect(cosignValue(row({ threshold: 2, capacity: 3 }))).toBe('2-of-3');
+    expect(cosignValue(row({ threshold: 2, capacity: 4 }))).toBe('2-of-4');
+    expect(cosignValue(row({ threshold: 2, capacity: 2 }))).toBe('2-of-2');
+  });
+
+  it('cosignCaption names the stall fallback condition when k < n', () => {
+    expect(cosignCaption(row({ threshold: 2, capacity: 3 }))).toBe(
+      'all co-sign; anchors if at least 2 of 3 sign',
+    );
+  });
+
+  it('cosignCaption degrades to the unanimous norm when k == n', () => {
+    expect(cosignCaption(row({ threshold: 2, capacity: 2 }))).toBe('all signers required');
   });
 });
 
