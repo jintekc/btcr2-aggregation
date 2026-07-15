@@ -45,7 +45,10 @@ import { buildCohortConfig, createIdentity } from '@btcr2-aggregation/shared';
 const OPERATOR_PASSWORD = 'operator-e2e-correct-horse-battery-staple';
 /** A deliberately-wrong password for the negative-auth assertion. */
 const WRONG_PASSWORD = 'this-is-not-the-operator-password';
-/** The single cohort size n: both the seat count and the n in n-of-n for the advertised cohort. */
+/**
+ * The advertised cohort's number, used for BOTH the seat count n and the signing floor k
+ * in this pure n-of-n leg (k == n == 2), so the two-field create body stays fully green.
+ */
 const THRESHOLD = 2;
 
 /** The operator-cohort DTO shape returned by create + advertise (subset asserted). */
@@ -219,7 +222,7 @@ export async function runOperatorCohort(options: OperatorCohortOptions = {}): Pr
     const createRes = await fetch(`${baseUrl}/v1/operator/cohorts`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', cookie },
-      body: JSON.stringify({ beaconType: 'CASBeacon', size: THRESHOLD }),
+      body: JSON.stringify({ beaconType: 'CASBeacon', size: THRESHOLD, threshold: THRESHOLD }),
     });
     if (createRes.status !== 201) {
       fail(`create draft should be 201, got ${createRes.status}`);
@@ -229,7 +232,11 @@ export async function runOperatorCohort(options: OperatorCohortOptions = {}): Pr
     if (draft.state !== 'draft') {
       fail(`created cohort should be state 'draft', got '${draft.state}'`);
     }
-    log(`[ok] create: draft ${draft.draftId} (${draft.beaconType} ${draft.threshold}-of-${draft.threshold})`);
+    // The two numbers are surfaced independently (k == n here): capacity === n.
+    if (draft.capacity !== THRESHOLD) {
+      fail(`created draft capacity should be ${THRESHOLD} (n seats), got ${draft.capacity}`);
+    }
+    log(`[ok] create: draft ${draft.draftId} (${draft.beaconType} ${draft.threshold}-of-${draft.capacity})`);
 
     /* ---- 5. Advertise the draft (authed). ---- */
     const advertiseRes = await fetch(`${baseUrl}/v1/operator/cohorts/${draft.draftId}/advertise`, {
@@ -261,10 +268,10 @@ export async function runOperatorCohort(options: OperatorCohortOptions = {}): Pr
         `advertised cohort ${cohortId} not found in the public directory ` +
           `(entries: [${directory.map((d) => d.cohortId).join(', ')}])`,
       );
-    } else if (entry.beaconType !== 'CASBeacon' || entry.threshold !== THRESHOLD) {
+    } else if (entry.beaconType !== 'CASBeacon' || entry.threshold !== THRESHOLD || entry.capacity !== THRESHOLD) {
       fail(
-        `directory entry mismatch: beaconType=${entry.beaconType} threshold=${entry.threshold}, ` +
-          `expected CASBeacon / ${THRESHOLD}`,
+        `directory entry mismatch: beaconType=${entry.beaconType} threshold=${entry.threshold} ` +
+          `capacity=${entry.capacity}, expected CASBeacon / ${THRESHOLD} / ${THRESHOLD}`,
       );
     }
     const statusRes = await fetch(`${baseUrl}/v1/status`);

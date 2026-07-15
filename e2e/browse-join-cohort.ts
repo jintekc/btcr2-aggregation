@@ -71,7 +71,10 @@ import { buildCohortConfig, createIdentity } from '@btcr2-aggregation/shared';
 
 /** The operator console password this hermetic run boots the service with. */
 const OPERATOR_PASSWORD = 'operator-browse-correct-horse-battery-staple';
-/** n-of-n co-sign threshold AND seat capacity for each advertised cohort. */
+/**
+ * Each advertised cohort's number, used for BOTH the seat count n and the signing floor k
+ * (k == n == 2), so the two-field create body stays a pure n-of-n green leg.
+ */
 const THRESHOLD = 2;
 
 /** The operator-cohort DTO shape returned by create + advertise (subset asserted). */
@@ -195,7 +198,7 @@ export async function runBrowseJoinCohort(options: BrowseJoinCohortOptions = {})
       const createRes = await fetch(`${baseUrl}/v1/operator/cohorts`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', cookie },
-        body: JSON.stringify({ beaconType: 'CASBeacon', size: THRESHOLD }),
+        body: JSON.stringify({ beaconType: 'CASBeacon', size: THRESHOLD, threshold: THRESHOLD }),
       });
       if (createRes.status !== 201) {
         fail(`create draft ${label} should be 201, got ${createRes.status}`);
