@@ -32,11 +32,20 @@
  *   and passed in as {@link OperatorCohortsOptions.activeNetwork}; it is NEVER read
  *   from the create-form body (D-10). A form that could pick a network would let the
  *   browser derive addresses/DIDs for a chain the coordinator does not run.
- * - A cohort has ONE size n, applied app-side as `minParticipants === maxParticipants === n`
- *   on top of {@link buildCohortConfig} (whose `minParticipants` is the n-of-n threshold), so
- *   n is both the seat count and the n in n-of-n. A capacity above the co-sign threshold is
- *   deliberately unrepresentable, so the directory can never advertise a seat that never
- *   fills once the cohort locks at the threshold (F1a/F1b, refines D-11/D-19).
+ * - A cohort carries TWO honest numbers (G-02-1, restoring the operator's signing control
+ *   02-05 over-corrected away):
+ *   1. Cohort size n (seats): applied app-side as `minParticipants === maxParticipants === n`
+ *      on top of {@link buildCohortConfig}, so n is both the seat count and the n in n-of-n.
+ *      The cohort does not finalize until all n join; a capacity above n is deliberately
+ *      unrepresentable so the directory never advertises a seat that never fills (F1a/F1b,
+ *      refines D-11/D-19, kept VERBATIM from 02-05).
+ *   2. Signing threshold k, `1 <= k <= n`: carried as `fallbackThreshold = k` on the
+ *      {@link CohortConfig}. The optimistic PRIMARY spend stays n-of-n MuSig2 (all n co-sign
+ *      the cheap Taproot key path); if that round stalls mid-signing, the ADR-042 k-of-n
+ *      script-path fallback completes as long as at least k of the n sign (activated per
+ *      service by `autoFallbackOnStall`). There is NO genuine k-of-n PRIMARY in
+ *      @did-btcr2/aggregation@0.4.0; k is the fallback floor. The directory shows both:
+ *      `joined/n seats` + a `k-of-n` co-sign figure (DTO `capacity = n`, `threshold = k`).
  *
  * State is a per-{@link createOperatorCohorts} `Map` pair (mirrors the
  * `seatedRosterKeys` / `genesisStaging` closure scoping in index.ts), NOT a module
@@ -68,13 +77,31 @@ const OPEN_PHASES = new Set<string>(['Advertised', 'CohortSet', 'CollectingUpdat
 const SIZE_ERROR = 'Cohort size must be at least 1 signer.';
 
 /**
- * Untrusted create-form body: beacon type + a single cohort size n. A cohort has ONE
- * size that is both the seat count and the n in n-of-n; a capacity above the co-sign
- * threshold is deliberately unrepresentable (F1b), so there is no separate capacity field.
+ * The exact validation string for the signing-threshold guard (Decision 3); the browser
+ * mirrors this byte-identical copy so the operator sees the same message client- and
+ * server-side. k must be a whole number in `[1, size]` (n-of-n when k == n).
+ */
+const THRESHOLD_ERROR = 'Signing threshold must be a whole number between 1 and the cohort size.';
+
+/**
+ * The exact 400 for a k < n over-promise on a service that booted with the stall fallback
+ * OFF (Decision 4, T-KOFN-02). Without the fallback, "anchors with at least k of n" is a
+ * promise the service cannot keep, so a k below the size is refused rather than advertised.
+ */
+const FALLBACK_OFF_ERROR =
+  'A signing threshold below the cohort size needs the stall fallback, which this service disabled (AUTO_FALLBACK=0).';
+
+/**
+ * Untrusted create-form body: beacon type + cohort size n + an OPTIONAL signing threshold k.
+ * `size` = n = the seat count and the n in n-of-n (the cohort finalizes only when all n join).
+ * `threshold` = k = the signing floor (the ADR-042 fallback threshold); optional and, when
+ * omitted (or null), defaults to `size` so a legacy `{ beaconType, size }` caller yields k = n
+ * (Decision 1). Capacity is never a separate field: it always equals n.
  */
 export interface DraftInput {
   beaconType: string;
   size: number;
+  threshold?: number;
 }
 
 /**
@@ -149,6 +176,15 @@ export interface OperatorCohortsOptions {
    * absent {@link buildCohortConfig} derives a throwaway (fine off-chain / on test nets).
    */
   recoveryKey?: string;
+  /**
+   * Whether this service booted with the ADR-042 stall fallback ON (threaded from
+   * `createService`, which receives it as `autoFallbackOnStall`). It gates the Decision-4
+   * over-promise guard: when OFF (the default when undefined), {@link validateDraft} refuses
+   * a k < size draft, because the service cannot deliver "anchors with at least k of n"
+   * without the fallback. When ON, a k < size draft is permitted. k == n is allowed either
+   * way (nothing to over-promise). Undefined is treated as OFF (library-parity default).
+   */
+  autoFallbackOnStall?: boolean;
 }
 
 /** The create/advertise/discard/list + public directory/status surface. */
@@ -184,22 +220,38 @@ export interface OperatorCohorts {
 }
 
 /**
- * Validate a create-form body into a `{ beaconType, size }` pair.
- * Guard-clause style (index.ts / shared house style): throws on the first problem with
- * a user-facing message the route surfaces verbatim as the 400 body. There is a single
- * cohort size n (no separate capacity), so a cohort where capacity exceeds the co-sign
- * threshold is unrepresentable (F1b). The size message is the exact UI-SPEC validation
- * string so the server and the browser agree on the copy the operator sees.
+ * Validate a create-form body into a `{ beaconType, size, threshold: k }` triple.
+ * Guard-clause style (index.ts / shared house style): throws on the first problem with a
+ * user-facing message the route surfaces verbatim as the 400 body. `size` = n (seats, the
+ * n in n-of-n); `threshold` normalizes to `k = threshold ?? size` so an omitted OR null
+ * threshold defaults to k = n (Decision 1). k is guarded to a whole number in `[1, size]`
+ * with the exact {@link THRESHOLD_ERROR} BEFORE {@link buildCohortConfig} so a raw library
+ * throw can never be the 400 body (T-KOFN-03). When the service booted with the stall
+ * fallback OFF, a k < size draft is refused ({@link FALLBACK_OFF_ERROR}, Decision 4) so an
+ * "anchors with at least k of n" promise the service cannot keep is never advertised; k == n
+ * is allowed either way. The two numeric messages are the exact UI-SPEC copy.
  */
-function validateDraft(input: DraftInput): { beaconType: BeaconType; size: number } {
-  const { beaconType, size } = input;
+function validateDraft(
+  input: DraftInput,
+  autoFallbackOnStall: boolean,
+): { beaconType: BeaconType; size: number; threshold: number } {
+  const { beaconType, size, threshold } = input;
   if (typeof beaconType !== 'string' || !KNOWN_BEACON_TYPES.has(beaconType)) {
     throw new Error(`operator: unknown beacon type "${String(beaconType)}" (expected CASBeacon or SMTBeacon)`);
   }
   if (!Number.isInteger(size) || size < 1) {
     throw new Error(SIZE_ERROR);
   }
-  return { beaconType: beaconType as BeaconType, size };
+  // k defaults to n: an omitted OR explicit-null threshold means the honest n-of-n default.
+  const k = threshold ?? size;
+  if (!Number.isInteger(k) || k < 1 || k > size) {
+    throw new Error(THRESHOLD_ERROR);
+  }
+  // Decision 4: a k below the size over-promises unless the stall fallback can deliver it.
+  if (k < size && !autoFallbackOnStall) {
+    throw new Error(FALLBACK_OFF_ERROR);
+  }
+  return { beaconType: beaconType as BeaconType, size, threshold: k };
 }
 
 /**
@@ -217,6 +269,9 @@ const MAX_TERMINAL = 24;
 
 export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCohorts {
   const { runner, activeNetwork, recoveryKey } = opts;
+  // Undefined is treated as OFF (library-parity default): a plain createService without an
+  // explicit autoFallbackOnStall refuses a k < size over-promise (Decision 4).
+  const autoFallbackOnStall = opts.autoFallbackOnStall ?? false;
   const drafts = new Map<string, { config: CohortConfig; dto: OperatorCohortDTO }>();
   // Enrichment ONLY (D-15): keyed by the LIVE cohort id, holds the config each cohort
   // was advertised with so `directory()` can surface threshold/capacity/beaconType
@@ -299,7 +354,10 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
         cohortId: cohort.id,
         beaconType: config.beaconType as BeaconType,
         network: activeNetwork,
-        threshold: config.minParticipants,
+        // threshold = k (the signing floor): the committed fallbackThreshold, defensively
+        // coalescing to minParticipants for a legacy config with no k so it emits n-of-n
+        // rather than undefined-of-n (T-KOFN-06). capacity = n stays the seat count.
+        threshold: config.fallbackThreshold ?? config.minParticipants,
         capacity: config.maxParticipants ?? config.minParticipants,
         joined: cohort.participants.length,
         phase,
@@ -310,26 +368,31 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
 
   return {
     createDraft(input: DraftInput): OperatorCohortDTO {
-      const { beaconType, size } = validateDraft(input);
-      // Build on the SERVICE active network (D-10). `minParticipants` is the n-of-n
-      // threshold; pin `maxParticipants` = the SAME size so min === max === n. This is an
-      // exact n-of-n cohort with no unfillable seat: the cohort locks the instant it
-      // reaches n, and n seats is exactly what the directory advertises (F1a/F1b, refines
-      // D-11/D-19).
-      const config = buildCohortConfig(size, beaconType, activeNetwork, recoveryKey);
+      const { beaconType, size, threshold: k } = validateDraft(input, autoFallbackOnStall);
+      // Build on the SERVICE active network (D-10). `minParticipants` is the n-of-n seat
+      // count; pin `maxParticipants` = the SAME size so min === max === n VERBATIM (T-KOFN-04,
+      // no unfillable seat, the cohort locks at n). Pass k as the 5th `buildCohortConfig` arg
+      // so `fallbackThreshold = k` is set EXPLICITLY, including k == n (Decision 2). Honesty
+      // note (do NOT claim byte-identical): today's 4-arg call left the fallback leaf at the
+      // library's implicit n-1, so a DEFAULT (k == n) cohort's committed beacon address now
+      // CHANGES (n-1 leaf -> n leaf). That is deliberate - it closes a pre-existing gap where
+      // the UI said "all signers required" while the committed script tree let n-1 anchor -
+      // and safe: no address is persisted, the fixture recomputes from config on both sides,
+      // LIVE derives fresh addresses, and no e2e asserts a specific address.
+      const config = buildCohortConfig(size, beaconType, activeNetwork, recoveryKey, k);
       config.maxParticipants = size;
       const draftId = randomUUID();
       const dto: OperatorCohortDTO = {
         draftId,
         beaconType,
         network: activeNetwork,
-        threshold: size,
+        threshold: k,
         capacity: size,
         joined: 0,
         state: 'draft',
       };
       drafts.set(draftId, { config, dto });
-      console.log(`[operator] created draft ${draftId} (${beaconType} ${size}-of-${size})`);
+      console.log(`[operator] created draft ${draftId} (${beaconType} ${k}-of-${size})`);
       return dto;
     },
 
@@ -387,7 +450,8 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
         draftId: newCohortId,
         beaconType: record.config.beaconType as BeaconType,
         network: activeNetwork,
-        threshold: record.config.minParticipants,
+        // threshold = k coalescing to n for a legacy config (T-KOFN-06); capacity = n.
+        threshold: record.config.fallbackThreshold ?? record.config.minParticipants,
         capacity: record.config.maxParticipants ?? record.config.minParticipants,
         joined: 0,
         state: 'advertised',
@@ -412,7 +476,8 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
         draftId: cohortId,
         beaconType: record.config.beaconType as BeaconType,
         network: activeNetwork,
-        threshold: record.config.minParticipants,
+        // threshold = k coalescing to n for a legacy config (T-KOFN-06); capacity = n.
+        threshold: record.config.fallbackThreshold ?? record.config.minParticipants,
         capacity: record.config.maxParticipants ?? record.config.minParticipants,
         joined: 0,
         state: 'expired',

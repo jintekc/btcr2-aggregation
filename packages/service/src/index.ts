@@ -544,6 +544,9 @@ export function createService(opts: CreateServiceOptions): Service {
         runner,
         activeNetwork: resolveNetwork(opts.config.network).name,
         recoveryKey: opts.config.recoveryKey,
+        // Thread the service's stall-fallback setting so validateDraft can gate the
+        // Decision-4 over-promise guard (a k < size draft needs the fallback, G-02-1).
+        autoFallbackOnStall: opts.autoFallbackOnStall,
       })
     : undefined;
 
