@@ -1,4 +1,4 @@
-import { AggregationServiceRunner, HttpServerTransport } from '@did-btcr2/aggregation/service';
+import { AggregationServiceRunner, HttpServerTransport, type CohortConfig } from '@did-btcr2/aggregation/service';
 import { resolveBtcr2SenderPk } from '@did-btcr2/method';
 import { createIdentity, resolveNetwork } from '@btcr2-aggregation/shared';
 import { describe, expect, it, vi } from 'vitest';
@@ -30,7 +30,7 @@ const ACTIVE_NETWORK = 'signet';
  * every test calls `runner.stop()` to clear that republish timer. `onProvideTxData` is
  * a stub because no cohort here reaches signing.
  */
-function operatorCohortApp() {
+function operatorCohortApp(autoFallbackOnStall = true) {
   const identity = createIdentity(resolveNetwork(ACTIVE_NETWORK));
   const transport = new HttpServerTransport({ resolveSenderPk: resolveBtcr2SenderPk, heartbeatIntervalMs: 0 });
   transport.registerActor(identity.did, identity.keys);
@@ -52,7 +52,9 @@ function operatorCohortApp() {
     cookieSecure: false,
     sessionTtlMs: 60_000,
   };
-  const operatorCohorts = createOperatorCohorts({ activeNetwork: ACTIVE_NETWORK, runner });
+  // Default the stall fallback ON so a k < n draft is representable (the demo server boots
+  // with AUTO_FALLBACK on). The fallback-off guard test passes `false` explicitly.
+  const operatorCohorts = createOperatorCohorts({ activeNetwork: ACTIVE_NETWORK, runner, autoFallbackOnStall });
   const app = createHonoApp(transport, { operatorAuth, operatorCohorts, runner, networkName: ACTIVE_NETWORK });
   return { app, runner };
 }
@@ -80,6 +82,12 @@ async function createDraft(
   });
 }
 
+// The exact THRESHOLD_ERROR literal (byte-identical server + client, Decision 3).
+const THRESHOLD_ERROR = 'Signing threshold must be a whole number between 1 and the cohort size.';
+// The exact FALLBACK_OFF_ERROR literal (Decision 4).
+const FALLBACK_OFF_ERROR =
+  'A signing threshold below the cohort size needs the stall fallback, which this service disabled (AUTO_FALLBACK=0).';
+
 describe('POST /v1/operator/cohorts (create draft)', () => {
   it('creates a validated CAS size-2 draft with threshold === capacity === n on the active network', async () => {
     const { app } = operatorCohortApp();
@@ -89,7 +97,7 @@ describe('POST /v1/operator/cohorts (create draft)', () => {
     const dto = (await res.json()) as OperatorCohortDTO;
     expect(dto.beaconType).toBe('CASBeacon');
     expect(dto.network).toBe(ACTIVE_NETWORK); // D-10: active network, never a form value
-    // F1b: one size n collapses to min === max === n, so both bounds equal the size.
+    // k == n default: an omitted threshold defaults to the size, so both numbers equal n.
     expect(dto.threshold).toBe(2);
     expect(dto.capacity).toBe(2);
     expect(dto.state).toBe('draft');
@@ -103,9 +111,58 @@ describe('POST /v1/operator/cohorts (create draft)', () => {
     expect(res.status).toBe(201);
     const dto = (await res.json()) as OperatorCohortDTO;
     expect(dto.beaconType).toBe('SMTBeacon');
-    // No unfillable seat: a size of 5 pins a 5-of-5 cohort with 5 seats.
+    // No threshold sent: k defaults to n, a 5-of-5 cohort with 5 seats.
     expect(dto.threshold).toBe(5);
     expect(dto.capacity).toBe(5);
+  });
+
+  it('accepts a two-field k < n draft with independent threshold (k) and capacity (n)', async () => {
+    const { app } = operatorCohortApp();
+    const cookie = await login(app);
+    const res = await createDraft(app, cookie, { beaconType: 'CASBeacon', size: 3, threshold: 2 });
+    expect(res.status).toBe(201);
+    const dto = (await res.json()) as OperatorCohortDTO;
+    // The two numbers are surfaced independently: k = 2 (signing floor), n = 3 (seats).
+    expect(dto.threshold).toBe(2);
+    expect(dto.capacity).toBe(3);
+    expect(dto.state).toBe('draft');
+  });
+
+  it('defaults k to n when threshold is null (k = n)', async () => {
+    const { app } = operatorCohortApp();
+    const cookie = await login(app);
+    const res = await createDraft(app, cookie, { beaconType: 'CASBeacon', size: 4, threshold: null });
+    expect(res.status).toBe(201);
+    const dto = (await res.json()) as OperatorCohortDTO;
+    expect(dto.threshold).toBe(4);
+    expect(dto.capacity).toBe(4);
+  });
+
+  it('rejects a threshold above the size with the exact THRESHOLD_ERROR 400', async () => {
+    const { app } = operatorCohortApp();
+    const cookie = await login(app);
+    const res = await createDraft(app, cookie, { beaconType: 'CASBeacon', size: 3, threshold: 4 });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe(THRESHOLD_ERROR);
+  });
+
+  it('rejects a threshold of 0 with the exact THRESHOLD_ERROR 400', async () => {
+    const { app } = operatorCohortApp();
+    const cookie = await login(app);
+    const res = await createDraft(app, cookie, { beaconType: 'CASBeacon', size: 3, threshold: 0 });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe(THRESHOLD_ERROR);
+  });
+
+  it('rejects a non-integer (string) threshold with the exact THRESHOLD_ERROR 400', async () => {
+    const { app } = operatorCohortApp();
+    const cookie = await login(app);
+    const res = await createDraft(app, cookie, { beaconType: 'CASBeacon', size: 3, threshold: '2' });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe(THRESHOLD_ERROR);
   });
 
   it('rejects a size below 1 with the specific 400 message', async () => {
@@ -131,6 +188,23 @@ describe('POST /v1/operator/cohorts (create draft)', () => {
     const cookie = await login(app);
     const res = await createDraft(app, cookie, { beaconType: 'CASBeacon', size: 1.5 });
     expect(res.status).toBe(400);
+  });
+
+  it('rejects a k < n over-promise when the stall fallback is disabled (Decision 4)', async () => {
+    // A service booted with AUTO_FALLBACK off cannot deliver "anchors with at least k of n",
+    // so a k < size draft is refused with the exact FALLBACK_OFF_ERROR 400.
+    const { app } = operatorCohortApp(false);
+    const cookie = await login(app);
+    const rejected = await createDraft(app, cookie, { beaconType: 'CASBeacon', size: 3, threshold: 2 });
+    expect(rejected.status).toBe(400);
+    const body = (await rejected.json()) as { error: string };
+    expect(body.error).toBe(FALLBACK_OFF_ERROR);
+    // k == n stays allowed either way (no over-promise to make).
+    const accepted = await createDraft(app, cookie, { beaconType: 'CASBeacon', size: 3, threshold: 3 });
+    expect(accepted.status).toBe(201);
+    const dto = (await accepted.json()) as OperatorCohortDTO;
+    expect(dto.threshold).toBe(3);
+    expect(dto.capacity).toBe(3);
   });
 
   it('rejects a malformed JSON body with a 400', async () => {
@@ -398,6 +472,76 @@ describe('cohort expiry is surfaced to the operator (never silently deleted)', (
     const cookie = await login(app);
     const res = await readvertise(app, cookie, 'does-not-exist');
     expect(res.status).toBe(404);
+    runner.stop();
+  });
+});
+
+describe('two-field k-of-n: config contract + honest DTO flip at every read path', () => {
+  it('sets fallbackThreshold = k while pinning maxParticipants === minParticipants === size', async () => {
+    const { app, runner } = operatorCohortApp();
+    const cookie = await login(app);
+    const created = await createDraft(app, cookie, { beaconType: 'CASBeacon', size: 3, threshold: 2 });
+    const draft = (await created.json()) as OperatorCohortDTO;
+
+    // Inspect the CohortConfig handed to the runner on advertise (the built config).
+    const spy = vi.spyOn(runner, 'advertiseCohort');
+    await advertise(app, cookie, draft.draftId);
+    const config = spy.mock.calls[0][0] as CohortConfig;
+    // T-KOFN-04: only fallbackThreshold carries k; the seat pin stays min == max == n.
+    expect(config.minParticipants).toBe(3);
+    expect(config.maxParticipants).toBe(3);
+    expect(config.fallbackThreshold).toBe(2);
+    expect(config.fallbackThreshold ?? 0).toBeLessThanOrEqual(config.maxParticipants ?? config.minParticipants);
+
+    runner.stop();
+  });
+
+  it('surfaces threshold = k / capacity = n at the directory + operator-list read paths (k < n)', async () => {
+    const { app, runner } = operatorCohortApp();
+    const cookie = await login(app);
+    const created = await createDraft(app, cookie, { beaconType: 'CASBeacon', size: 3, threshold: 2 });
+    const draft = (await created.json()) as OperatorCohortDTO;
+    const advDto = (await (await advertise(app, cookie, draft.draftId)).json()) as OperatorCohortDTO;
+    expect(advDto.threshold).toBe(2);
+    expect(advDto.capacity).toBe(3);
+
+    const directory = (await (await app.request('/v1/directory')).json()) as DirectoryCohortDTO[];
+    expect(directory).toHaveLength(1);
+    expect(directory[0].threshold).toBe(2);
+    expect(directory[0].capacity).toBe(3);
+
+    const listed = (await (await app.request('/v1/operator/cohorts', { headers: { cookie } })).json()) as {
+      cohorts: OperatorCohortDTO[];
+    };
+    expect(listed.cohorts[0].threshold).toBe(2);
+    expect(listed.cohorts[0].capacity).toBe(3);
+
+    runner.stop();
+  });
+
+  it('carries threshold = k / capacity = n onto an expired terminal record and its re-advertise', async () => {
+    const { app, runner } = operatorCohortApp();
+    const cookie = await login(app);
+    const created = await createDraft(app, cookie, { beaconType: 'CASBeacon', size: 3, threshold: 2 });
+    const draft = (await created.json()) as OperatorCohortDTO;
+    const advDto = (await (await advertise(app, cookie, draft.draftId)).json()) as OperatorCohortDTO;
+    const cohortId = advDto.draftId;
+
+    runner.stopCohort(cohortId);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const listed = (await (await app.request('/v1/operator/cohorts', { headers: { cookie } })).json()) as {
+      cohorts: OperatorCohortDTO[];
+    };
+    const expiredRow = listed.cohorts.find((c) => c.draftId === cohortId);
+    expect(expiredRow?.state).toBe('expired'); // the F2 expired terminal record
+    expect(expiredRow?.threshold).toBe(2);
+    expect(expiredRow?.capacity).toBe(3);
+
+    const revived = (await (await readvertise(app, cookie, cohortId)).json()) as OperatorCohortDTO;
+    expect(revived.threshold).toBe(2);
+    expect(revived.capacity).toBe(3);
+
     runner.stop();
   });
 });
