@@ -1,269 +1,173 @@
 ---
 phase: 02-participant-discovery-browse-and-pick-join
-reviewed: 2026-07-14T20:54:41Z
+reviewed: 2026-07-15T18:38:13Z
 depth: deep
-files_reviewed: 15
+files_reviewed: 17
 files_reviewed_list:
   - e2e/browse-join-cohort.ts
-  - packages/participant/src/index.spec.ts
-  - packages/participant/src/index.ts
-  - packages/web/src/App.tsx
-  - packages/web/src/components/browse/BrowseView.tsx
-  - packages/web/src/components/browse/CohortRow.tsx
-  - packages/web/src/components/browse/DirectoryList.spec.ts
-  - packages/web/src/components/browse/DirectoryList.tsx
-  - packages/web/src/components/browse/JoinIdentityStep.tsx
-  - packages/web/src/components/browse/ServiceIdentityHeader.tsx
-  - packages/web/src/components/participant/KeyGenPanel.tsx
-  - packages/web/src/lib/directory.spec.ts
-  - packages/web/src/lib/directory.ts
-  - packages/web/src/stores/participant.spec.ts
-  - packages/web/src/stores/participant.ts
+  - e2e/fallback-cohort.ts
+  - e2e/operator-cohort.ts
+  - package.json
+  - packages/service/src/demo-server.ts
+  - packages/service/src/hono-adapter.ts
+  - packages/service/src/index.ts
+  - packages/service/src/live-tx.spec.ts
+  - packages/service/src/operator-cohorts.spec.ts
+  - packages/service/src/operator-cohorts.ts
+  - packages/service/src/tx.ts
+  - packages/shared/src/cohort-config.spec.ts
+  - packages/shared/src/index.ts
+  - packages/web/src/components/operator/CreateCohortForm.tsx
+  - packages/web/src/components/operator/OperatorCohortList.tsx
+  - packages/web/src/lib/operator.ts
+  - packages/web/src/stores/operator.ts
 findings:
-  critical: 1
-  warning: 2
-  info: 5
-  total: 8
-open:
   critical: 0
-  warning: 0
-  info: 5
-  total: 5
-resolved:
-  - CR-01
-  - WR-01
-  - WR-02
-resolved_in: 0a88e54
+  warning: 3
+  info: 3
+  total: 6
 status: issues_found
 ---
 
-# Phase 2: Code Review Report
+# Phase 2: Code Review Report (gap-closure F1a/F1b/F2/F1c)
 
-**Reviewed:** 2026-07-14T20:54:41Z
-**Depth:** deep
-**Files Reviewed:** 15
+**Reviewed:** 2026-07-15T18:38:13Z
+**Depth:** deep (cross-file: import graph + call chains)
+**Files Reviewed:** 17
 **Status:** issues_found
+
+> Supersedes the initial Phase 2 review (2026-07-14). This pass covers only the
+> gap-closure diff from base `d991d5c`.
 
 ## Summary
 
-Reviewed the participant discovery + browse-and-pick join slice: the participant Zustand
-store (`join`, the directory poll, the `pickedCohortClosed` predicate, `handleDirectorySnapshot`),
-the neutral `lib/directory` read/joinability helpers, the isomorphic participant runner filter
-(`matchesPickedCohort`), the browse React components, and the hermetic capstone e2e.
+This gap-closure diff collapses the operator cohort model to a single n-of-n size
+(F1a/F1b), adds a discovery-window lifetime plus surfaced-expiry + a gated re-advertise
+route (F2), and activates the ADR-042 k-of-n script-path fallback with a fixture-tx change
+so the hermetic prevout commits both spend paths (F1c).
 
-Security posture is sound: every browse read (`fetchDirectory`, `fetchStatus`) uses
-`credentials: 'omit'` (verified in `lib/operator.ts`, re-exported through `lib/directory.ts`),
-so the anonymous surface never sends the operator session cookie; no mutating or auth-bearing
-call was found on the participant/browse path. No em-dash (U+2014) occurrences in any reviewed
-file (copy uses `·` middle-dot and plain hyphen).
+The four security/correctness focus areas hold up under adversarial tracing:
 
-The dominant concern is a **race between the directory poll and the `cohort-ready` seat event**
-that can incorrectly fail a legitimately-seated participant mid-keygen and stall the entire
-n-of-n cohort - directly threatening the North Star's real-internet join loop. Secondary issues:
-BrowseView never surfaces the store's `failed` status (errors are swallowed from the browse UI),
-an orphaned-interval ordering hazard in `join`, and residual dead code (KeyGenPanel/ParticipantView).
+- **min == max == n is unbypassable.** `validateDraft` reads only `{ beaconType, size }`
+  from the untrusted body; `createDraft` builds the config from `size` alone and then forces
+  `config.maxParticipants = size` (operator-cohorts.ts:313-320). No request field can inject
+  `minParticipants`/`maxParticipants`; `buildCohortConfig` sets `minParticipants = size`.
+  Extra body fields are silently ignored.
+- **The re-advertise route inherits both guards.** `POST /v1/operator/cohorts/:id/readvertise`
+  is registered inside `if (operatorAuth) { ... if (operatorCohorts) { ... } }`, after
+  `app.use('/v1/operator/*', requireSameOrigin())` and `requireOperator()`
+  (hono-adapter.ts:299-365). The e2e pins the no-cookie 401 (operator-cohort.ts:389-394;
+  operator-cohorts.spec.ts:389-393). No unauthenticated mutating surface is added.
+- **The terminal record set is bounded.** `MAX_TERMINAL = 24` with oldest-first eviction
+  (operator-cohorts.ts:216, 241-250); Map insertion order gives a correct FIFO evict.
+- **fallbackThreshold bounds are [1, participants]** (shared/index.ts:352-361) and n-of-n
+  stays primary: `autoFallbackOnStall` defaults off in the library/createService and the
+  operator path never passes a `fallbackThreshold`, so the optimistic key path is the normal
+  outcome.
+- **The tx.ts fixture change does not weaken the LIVE path.** Only the `if (!live)` fixture
+  branch changed (tx.ts:67-78); the live branch still calls `buildAggregationBeaconTx`
+  unchanged (tx.ts:117-129). `buildFixtureTxData`'s `beaconOutput` is optional and legacy
+  callers keep the bare-key output (shared/index.ts:530-553).
 
-## Critical Issues
-
-### CR-01: Directory poll can fail a genuinely-seated participant and stall the whole cohort
-
-**Status:** RESOLVED (commit `0a88e54`). The store now tracks opt-in as an `optedIn`
-field (set at `cohort-joined`). `handleDirectorySnapshot` only fails when the cohort
-leaves Advertised while we are NOT opted in (we provably missed it); once opted in, a
-closed cohort is ambiguous and the poll no longer tears the member down. A bounded
-`JOIN_SEAT_GRACE_MS` backstop timer, armed at `cohort-joined` and cleared on
-seat/complete/fail/teardown/leave, owns the silent "opted in but never seated" outcome.
-Regression tests cover the member-protection case and the preserved not-opted-in path.
-
-**File:** `packages/web/src/stores/participant.ts:606-634` (poll setup + `handleDirectorySnapshot`)
-
-**Issue:** A cohort leaves the `Advertised` phase the instant it reaches its co-sign
-threshold (documented in `directory.ts` and in `pickedCohortClosed`), which is **before**
-keygen runs. The `cohort-ready` seat event fires only **after** keygen completes
-(`participant.ts:506-514`, "keygen complete; beacon ..."). Between those two moments the
-directory already reports the picked cohort as no-longer-Advertised while `seated` is still
-`false`.
-
-The `~5s` join-time poll (`participant.ts:606`) calls `handleDirectorySnapshot`, whose guard
-only bails when `seated || pickedCohortId === null || status not in {connecting,live}`
-(`participant.ts:626`). For a participant that already opted in (`cohort-joined` set
-`status: 'live'`) and IS a real member of the now-locked cohort, that guard does not fire:
-`pickedCohortClosed` returns `true` (the row left Advertised), and the store calls
-`fail(...)` -> `teardownLive()`. This:
-
-1. Incorrectly tells a seated participant "That cohort just filled or closed. Pick another."
-2. Tears down the live runner/transport mid-keygen, so the participant drops out of the
-   MuSig2 session. Because signing is n-of-n, the cohort can no longer complete - one unlucky
-   poll tick stalls the round for **every** member.
-
-A directory fetch (~tens of ms) will routinely resolve before `cohort-ready` (keygen +
-SSE delivery, plausibly seconds over the public internet), so the poll frequently wins the
-race. The window is `keygen duration + SSE latency`; over a 5s poll interval the hit
-probability is material, not theoretical. Note the store's poll/seat path is exercised by
-no test (both `participant.spec.ts` and `e2e/browse-join-cohort.ts` drive the predicate/runner
-directly, never the interval-vs-`cohort-ready` interleaving), so this is uncovered.
-
-**Fix:** Do not treat "left Advertised while unseated" as terminal the instant it is observed.
-Add a confirmation/grace gate so a genuine seat can arrive first, e.g. require the cohort to
-be observed closed on N consecutive polls (or for a bounded grace period) with no intervening
-`cohort-ready`, and/or stop the poll the moment `cohort-joined` transitions to a state where
-`cohort-ready` is still expected:
-
-```ts
-// Sketch: require a short grace before declaring closed, so a seat mid-keygen wins.
-handleDirectorySnapshot(rows) {
-  const { status, seated, pickedCohortId } = get();
-  if (seated || pickedCohortId === null || (status !== 'connecting' && status !== 'live')) {
-    return;
-  }
-  if (!pickedCohortClosed(rows, pickedCohortId)) {
-    closedObservations = 0;              // still open: reset
-    return;
-  }
-  // Closed this tick. Wait for a second confirming observation (>= one poll apart)
-  // so an in-flight cohort-ready seat has a chance to land first.
-  if (++closedObservations < 2) {
-    return;
-  }
-  set({ joinClosed: true });
-  fail('That cohort just filled or closed. Pick another from the directory.');
-}
-```
-
-Even a single-cycle grace closes the common race; pair it with clearing the counter on
-`cohort-joined`/`cohort-ready`.
+No blockers. Three warnings and three info items follow.
 
 ## Warnings
 
-### WR-01: BrowseView never surfaces the store's `failed` status - errors are swallowed from the UI
+### WR-01: Advertise / re-advertise failures surface in the wrong UI component
 
-**Status:** RESOLVED (commit `0a88e54`). BrowseView now subscribes to `status` and renders
-an explicit `status === 'failed' && !joinClosed` branch (a "Join failed" card surfacing
-`error` with a "Back to directory" action), placed before the seated and picked branches.
-A post-seat failure no longer shows a false seated card, and a pre-seat connect failure no
-longer silently re-enables Join with no feedback.
-
-**File:** `packages/web/src/components/browse/BrowseView.tsx:48-114`
-
-**Issue:** BrowseView branches only on `joinClosed`, `seated`, `pickedRow`, then default. The
-store's `error`/`status: 'failed'` is rendered **only** inside the `joinClosed` branch. Two
-real failure paths are therefore invisible:
-
-- **Post-seat failure.** `cohort-failed` or a mid-signing `error` calls `fail(...)`
-  (`participant.ts:359-364`), which sets `status: 'failed'` and `error` but leaves `seated`
-  true and `joinClosed` false. BrowseView keeps rendering the happy seated card ("You're
-  seated ... When this cohort fills, co-signing begins below") with no error and `hasResult`
-  false - the participant is stuck on a success-looking screen after a real failure.
-- **Pre-seat connect/runtime failure.** The `error` handler / `start()` catch call `fail(...)`
-  with `joinClosed` false and `seated` false while `pickedRow` is still set. BrowseView falls
-  to the "picked but not seated" branch -> `JoinIdentityStep`, whose `joining` is false when
-  `status === 'failed'`, so the Join button silently re-enables with no error message. The
-  failure reason is discarded from the user's view.
-
-**Fix:** Add an explicit `status === 'failed'` (non-`joinClosed`) branch in BrowseView that
-surfaces `error` and offers "Back to directory" (mirroring the `joinClosed` card), or thread
-the `error` into `JoinIdentityStep`/the seated card so a post-seat failure is visible.
-
-### WR-02: Join-time poll is created after `await participant.start()`, orphaning it if a seat/complete event lands during start
-
-**Status:** RESOLVED (commit `0a88e54`). After `await participant.start()`, `join` now
-re-checks the round (`live !== participant || seated || status in {complete, failed}`) and
-returns without arming the directory poll (or the grace timer) when a seat/terminal event
-already fired during `start()`, so no interval is orphaned against an already
-seated/terminal round.
-
-**File:** `packages/web/src/stores/participant.ts:594-613`
-
-**Issue:** `directoryPoll = setInterval(...)` is assigned only **after** `await
-participant.start()` resolves. The `cohort-ready` / `cohort-complete` handlers each call
-`clearDirectoryPoll()` (`participant.ts:512`, `575`). If either event is delivered during the
-`await` (fast in-process/hermetic paths open SSE and may replay the current advert
-immediately), that `clearDirectoryPoll()` is a no-op (the interval does not exist yet), and
-the interval is then created against an already-seated/complete round. It keeps ticking every
-5s until the next terminal transition (`leave`/next `join`). The `handleDirectorySnapshot`
-guard prevents a false `fail` here, so it is a leak rather than a correctness bug, but the
-prompt specifically called out timer leaks not cleared on seat.
-
-**Fix:** Re-check the round before installing the interval, or install it before `await
-participant.start()` and let the handlers own teardown, e.g.:
-
+**File:** `packages/web/src/stores/operator.ts:180-183, 202-205` (rendered by `packages/web/src/components/operator/CreateCohortForm.tsx:49,88`)
+**Issue:** On a failed `advertise`/`readvertise`, the store writes the error into `formError`
+("Could not advertise the draft. Try again." / `UNREACHABLE`). But `formError` is only
+rendered by `CreateCohortForm` (`shownError = clientError ?? formError`), not by
+`OperatorCohortList`/`CohortRow` where the failing action lives. A failed Advertise on a
+draft row therefore paints its error banner in the "Create a cohort" form, disconnected from
+the row the operator clicked, and the row's `advertiseStatus: 'error'` is never shown. This
+is an incorrect error surface: the operator gets no feedback next to the action that failed.
+**Fix:** Route advertise/re-advertise failures to an action-scoped field (e.g.
+`advertiseError?: string`) rendered inside `CohortRow`, and stop overloading `formError`
+(whose own JSDoc scopes it to "the create form"):
 ```ts
-await participant.start();
-// If a seat/terminal event already fired during start, do not (re)arm the poll.
-if (live !== participant || get().seated || get().status === 'complete' || get().status === 'failed') {
-  return;
-}
-directoryPoll = setInterval(/* ... */);
+// operator.ts advertise() failure branch
+set({ advertiseStatus: 'error', advertisingId: undefined,
+      advertiseError: 'Could not advertise the draft. Try again.' });
 ```
+then render `advertiseError` in `CohortRow`.
+
+### WR-02: A `null` / non-object create body yields a raw TypeError as the 400 message
+
+**File:** `packages/service/src/operator-cohorts.ts:194-203` (route `packages/service/src/hono-adapter.ts:325-340`)
+**Issue:** `validateDraft` starts with `const { beaconType, size } = input;`. The route only
+guards non-JSON (catch → clean 400); a syntactically valid body of `null` (or a JSON
+string/number) parses fine, then destructuring `null` throws `TypeError: Cannot destructure
+property 'beaconType' of 'null'`. The route `catch` returns `c.json({ error: err.message },
+400)`, so the caller receives an internal JS error string as the "validation" message. Still
+a 400, but it leaks internal error text and breaks the guard-clause / user-facing-message
+convention used by every other branch.
+**Fix:** Guard the shape first, guard-clause style:
+```ts
+function validateDraft(input: DraftInput) {
+  if (typeof input !== 'object' || input === null) {
+    throw new Error('operator: expected a JSON body { beaconType, size }');
+  }
+  const { beaconType, size } = input;
+  ...
+}
+```
+
+### WR-03: An advertised cohort is invisible in the operator list during the signing phases
+
+**File:** `packages/service/src/operator-cohorts.ts:397-407` (via `directory()` at 287-309; `OPEN_PHASES` at 62)
+**Issue:** `listCohorts` derives its advertised rows from `directory()`, which lists only
+cohorts whose phase is in `OPEN_PHASES` (`Advertised`, `CohortSet`, `CollectingUpdates`).
+Once a cohort transitions into signing (`SigningStarted` and later) it is no longer in
+`OPEN_PHASES`, and it is not yet pruned (success) or moved to `terminal` (reject), so it
+appears in neither `advertisedDtos` nor `expiredDtos`: the cohort disappears from the
+operator's own "Your cohorts" list for the whole signing window, then reappears only as gone
+(success) or `expired` (stall/TTL). On the LIVE path that window can be up to `phaseTimeoutMs`
+(defaulted to 30 min here), so an operator watching an in-flight cohort sees it vanish. This
+is adjacent to F2's "never silently vanish" intent. (Pre-existing from Phase 1's
+directory-derived list; the F2 work reinforces the invariant it violates without closing it.)
+**Fix:** List in-flight advertised cohorts from the `advertised` map keyed by live id (with
+the current phase) and reserve the `OPEN_PHASES` filter for the public `directory()` only.
+Deferring to Phase 4 (operator monitoring) is acceptable only if explicitly tracked.
 
 ## Info
 
-### IN-01: KeyGenPanel and ParticipantView are now dead code
+### IN-01: Stranded JSDoc block attached to `MAX_TERMINAL` instead of the function it describes
 
-**File:** `packages/web/src/components/participant/KeyGenPanel.tsx` (whole file)
+**File:** `packages/service/src/operator-cohorts.ts:205-216`
+**Issue:** Two `/**` blocks stack before `const MAX_TERMINAL`. The first (205-210, "Build the
+per-service operator cohort surface. `drafts` is closure state ...") documents
+`createOperatorCohorts`, but the F2 edit inserted `MAX_TERMINAL` between it and the function,
+so the doc is now attached to the constant and `createOperatorCohorts` (218) is undocumented.
+**Fix:** Move the 205-210 block down to immediately above `export function createOperatorCohorts`,
+leaving only the `MAX_TERMINAL` block (211-216) on the constant.
 
-**Issue:** `App.tsx` renders `BrowseView` (or `OperatorConsole`), never `ParticipantView`,
-which is the only importer of `KeyGenPanel`. `ParticipantView` is referenced only in a
-BrowseView doc comment. This phase edited KeyGenPanel to disable the standalone Join/Retry
-buttons (`KeyGenPanel.tsx:140`, `148`), but the whole panel now sits on an unreachable path.
-A disabled "Join the cohort" button plus a live "Regenerate"/"Reset" alongside it would
-mislead anyone who re-mounts the component.
+### IN-02: No upper bound on cohort `size`
 
-**Fix:** Delete `ParticipantView.tsx` + `KeyGenPanel.tsx` (the reusable identity-acquisition
-logic already lives in `JoinIdentityStep`), or add a comment/annotation making the
-dead-but-retained status explicit and unmistakable.
+**File:** `packages/service/src/operator-cohorts.ts:199-201`
+**Issue:** `validateDraft` accepts any integer `size >= 1`. An authenticated operator can
+create and advertise a cohort with an absurd `n` (e.g. millions); it becomes an `n`-of-`n`
+cohort that can never fill and expires on the stall timer, and the number flows into the
+public directory's `threshold`/`capacity`. Operator-gated, so low risk, but there is no sane
+ceiling.
+**Fix:** Add an upper guard (`size > MAX_COHORT_SIZE`) with a user-facing message in the same
+guard-clause block.
 
-### IN-02: `createParticipant` JSDoc contradicts the browse-and-pick filter it now implements
+### IN-03: Advertise / re-advertise routes have no handler-level try/catch
 
-**File:** `packages/participant/src/index.ts:94-107`
-
-**Issue:** The function header still states "It auto-joins every advertised cohort and
-contributes a signed did:btcr2 update ...". With `opts.cohortId` set (the Phase-2 default from
-the store/e2e), `shouldJoin` opts into exactly one cohort. The stale doc understates the
-selectivity guarantee on a security-relevant path.
-
-**Fix:** Update the header to describe the picked-cohort filter (`matchesPickedCohort`) as the
-primary behavior and note accept-all only survives for pre-Phase-2 callers.
-
-### IN-03: Seated confirmation reads stale seat counts from the frozen `pickedRow`
-
-**File:** `packages/web/src/components/browse/BrowseView.tsx:66-69`
-
-**Issue:** The seated card derives `seats`/`label` from `pickedRow`, the snapshot captured when
-Join was tapped. The CohortRow doc claims BrowseView reads "live seats/status," but `pickedRow`
-is never re-polled, so `2/3 seats · Open` can stay shown after the cohort has actually filled.
-
-**Fix:** Read live seat/status from the store or a fresh directory row keyed on the picked
-cohort id, or drop the "live" wording and label it the snapshot-at-pick.
-
-### IN-04: ServiceIdentityHeader blanks the whole header on a transient fetch error
-
-**File:** `packages/web/src/components/browse/ServiceIdentityHeader.tsx:32-36,46-48`
-
-**Issue:** On any `fetchStatus` rejection the effect does `setStatus(undefined)`, and the
-component then renders `null`, hiding the service origin/network/online header entirely. This
-is inconsistent with `DirectoryList`, which deliberately keeps stale rows and shows an
-"unreachable" banner (D-12) rather than blanking. A single blip makes the identity header
-flicker out.
-
-**Fix:** Keep the last-good status on error (only clear on first-load failure), matching the
-directory's keep-stale-on-blip behavior.
-
-### IN-05: Join-time poll and live runner are not tied to BrowseView's lifecycle
-
-**File:** `packages/web/src/stores/participant.ts:253-286` (module-scoped `directoryPoll`/`live`)
-
-**Issue:** `directoryPoll` and `live` are module singletons cleared only on
-seat/complete/fail/leave. BrowseView has no unmount effect that calls `leave()`, so unmounting
-mid-join (e.g. a client-side route change to `/operator`) would leave the poll and the live
-runner running. This is latent (the `/operator` route appears to be a full page load today,
-which resets module state), but the browse/join lifecycle has no component-level safety net.
-
-**Fix:** Add a BrowseView unmount effect that calls `leave()` when a join is in flight and not
-seated, or document why the module-scoped handles intentionally outlive the component.
+**File:** `packages/service/src/hono-adapter.ts:353-365`
+**Issue:** `advertiseDraft`/`readvertiseExpired` call `runner.advertiseCohort(...)`
+synchronously; the create route wraps its call in try/catch, but advertise and re-advertise
+do not. If `advertiseCohort` throws, the operator gets an opaque Hono 500 instead of a clean
+error, and on advertise the draft is left un-deleted. Not reachable with the current
+single-size config, but inconsistent with the create route and brittle if the runner's
+validation tightens.
+**Fix:** Wrap both handlers in the same try/catch → `c.json({ error }, ...)` pattern the
+create route uses.
 
 ---
 
-_Reviewed: 2026-07-14T20:54:41Z_
+_Reviewed: 2026-07-15T18:38:13Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: deep_
