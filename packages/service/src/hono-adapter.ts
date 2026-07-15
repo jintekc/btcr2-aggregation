@@ -354,6 +354,15 @@ export function createHonoApp(
         const dto = operatorCohorts.advertiseDraft(c.req.param('id'));
         return dto ? c.json(dto) : c.json({ error: 'unknown draft' }, 404);
       });
+      // Re-advertise an expired cohort (SVC-02, F2). Inherits the same requireSameOrigin
+      // + requireOperator prefix guards, so it is a session-gated, CSRF-checked mutating
+      // action exactly like advertise (T-06-01). `readvertiseExpired` is the SECOND (and
+      // only other) operator-driven `runner.advertiseCohort` caller (D-17); an unknown or
+      // non-expired cohort id -> 404.
+      app.post('/v1/operator/cohorts/:id/readvertise', (c) => {
+        const dto = operatorCohorts.readvertiseExpired(c.req.param('id'));
+        return dto ? c.json(dto) : c.json({ error: 'unknown expired cohort' }, 404);
+      });
     }
   }
 
