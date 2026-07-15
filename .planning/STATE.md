@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 02
 current_phase_name: participant-discovery-browse-and-pick-join
 status: gap_closure
-stopped_at: Completed 02-06-PLAN.md (F2 discovery-window lifetime + surfaced expiry)
-last_updated: "2026-07-15T14:05:00.000Z"
+stopped_at: Completed 02-07-PLAN.md (F1c k-of-n script-path fallback activation)
+last_updated: "2026-07-15T18:27:25.308Z"
 last_activity: 2026-07-15
-last_activity_desc: Executed 02-06 (F2 30-min discovery-window defaults + surfaced expiry + gated re-advertise)
+last_activity_desc: Executed 02-07 (F1c activate ADR 042 k-of-n script-path fallback; n-of-n stays primary)
 progress:
   total_phases: 2
   completed_phases: 1
   total_plans: 11
-  completed_plans: 10
+  completed_plans: 11
 ---
 
 # Project State
@@ -27,10 +27,10 @@ See: .planning/PROJECT.md (updated 2026-07-08)
 
 ## Current Position
 
-Phase: 02 (participant-discovery-browse-and-pick-join) - GAP CLOSURE IN PROGRESS
-Plan: gap plans 02-05 (F1a/F1b) + 02-06 (F2) executed; 02-07 (F1c k-of-n script-path fallback) remaining; UAT Test 2 deferred to post-gap re-verify
-Status: Run /gsd-execute-phase 2 --gaps-only to build 02-07 (F1c k-of-n script-path fallback), then re-verify Test 2.
-Last activity: 2026-07-15 - Executed 02-06 (F2 30-min discovery-window defaults + surfaced expiry + gated re-advertise)
+Phase: 02 (participant-discovery-browse-and-pick-join) - GAP CLOSURE (all F1/F2 gap plans built)
+Plan: gap plans 02-05 (F1a/F1b) + 02-06 (F2) + 02-07 (F1c k-of-n script-path fallback) all executed; UAT Test 2 deferred to post-gap re-verify
+Status: Run /gsd-verify-work 2 to re-verify Test 2 (browse -> pick -> join -> co-sign -> resolve) now that all three gap plans (F1a/F1b, F2, F1c) have landed.
+Last activity: 2026-07-15 - Executed 02-07 (F1c activate ADR 042 k-of-n script-path fallback; n-of-n stays primary)
 
 Progress: [██░░░░░░░░] 17% (Phase 1 of 6 complete)
 
@@ -68,6 +68,7 @@ Progress: [██░░░░░░░░] 17% (Phase 1 of 6 complete)
 |------|----------|-------|-------|
 | Phase 02 P05 | 6min | 3 tasks | 7 files |
 | Phase 02 P06 | 18min | 3 tasks | 9 files |
+| Phase 02 P07 | 10min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -87,6 +88,7 @@ Recent decisions affecting current work:
 - [Phase ?]: e2e:operator registered but intentionally NOT wired into CI (deferred to a Phase-6 / CI concern)
 - [Phase ?]: 02-05 (F1a/F1b): collapse operator cohort size to one n (min == max == n); capacity > threshold unrepresentable server-side; directory rows honest with zero display change
 - [Phase 02]: 02-06 (F2): raise the single stall/TTL timer defaults to a 30-min discovery window (env-tunable); retain a bounded operator-only 'expired' terminal record on completion rejection (surfaced via listCohorts, never directory/status); readvertiseExpired is a second operator-driven advertiseCohort caller (D-17 preserved) behind the gated POST /v1/operator/cohorts/:id/readvertise
+- [Phase ?]: 02-07 (F1c): n-of-n MuSig2 stays the primary spend; the ADR 042 k-of-n script-path fallback is ACTIVATED for signing liveness (createService.autoFallbackOnStall threaded to the runner; demo-server default ON via AUTO_FALLBACK). buildCohortConfig gains an optional fallbackThreshold (default n-1). The fixture beacon tx now spends the real beacon-address output so the script-path fallback validates hermetically (fixed 'Reconstructed beacon output script' rejection).
 
 ### Pending Todos
 
@@ -114,7 +116,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-15T14:05:00.000Z
-Stopped at: Completed 02-06-PLAN.md (F2 discovery-window lifetime + surfaced expiry)
-Resume file: .planning/phases/02-participant-discovery-browse-and-pick-join/02-07-PLAN.md
-Next command: /gsd-execute-phase 2 --gaps-only
+Last session: 2026-07-15T18:27:25.308Z
+Stopped at: Completed 02-07-PLAN.md (F1c k-of-n script-path fallback activation)
+Resume file: None
+Next command: /gsd-verify-work 2

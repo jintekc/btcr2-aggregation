@@ -67,7 +67,7 @@ Plans:
   2. The participant selects a specific open cohort from the directory and joins it by choice, rather than auto-joining whatever advert arrives.
   3. A joined participant is seated in the chosen cohort (counts against its capacity), and a full or closed cohort cannot be joined.
 
-**Plans**: 5/7 plans executed
+**Plans**: 6/7 plans executed
 Plans:
 
 - [x] 02-05-PLAN.md
