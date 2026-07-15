@@ -89,11 +89,19 @@ describe('makeProvideTxData - fixture path (default)', () => {
     SchnorrKeyPair.generate().publicKey.compressed,
   ];
 
-  it('returns the fixture beacon tx when no live config is given', async () => {
-    const provide = makeProvideTxData(() => fakeRunner({ cohortKeys }));
-    const data = await provide({ cohortId: 'c1', beaconAddress: 'unused', signalBytes: SIGNAL, feeEstimator });
+  it('returns the fixture beacon tx spending the beacon address output when no live config is given', async () => {
+    // The fixture prevout must be the cohort's real beacon-address scriptPubKey (which
+    // commits both the key path and the ADR 042 recovery/fallback script tree), not a
+    // bare aggregate-key output - else the k-of-n script-path fallback (F1c) is rejected
+    // by the library's beacon-output reconstruction. The cohort carries its network name.
+    const { beaconAddress } = makeBeacon();
+    const provide = makeProvideTxData(() => fakeRunner({ cohortKeys, network: 'regtest' }));
+    const data = await provide({ cohortId: 'c1', beaconAddress, signalBytes: SIGNAL, feeEstimator });
     expect(data.prevOutScripts).toHaveLength(1);
     expect(data.prevOutValues).toHaveLength(1);
+    // The prevout script is exactly the beacon address's own scriptPubKey.
+    const expectedScript = OutScript.encode(Address(NETWORK).decode(beaconAddress));
+    expect(bytesToHex(data.prevOutScripts[0])).toBe(bytesToHex(expectedScript));
     // Last output is the OP_RETURN commitment to the signal (6a20 = RETURN PUSH32).
     expect(lastOutputScriptHex(data.tx)).toBe(`6a20${bytesToHex(SIGNAL)}`);
   });

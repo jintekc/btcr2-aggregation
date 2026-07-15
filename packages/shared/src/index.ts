@@ -9,7 +9,7 @@ import {
   type GenesisDocumentLike,
 } from '@did-btcr2/method';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
-import { Script, Transaction, p2tr } from '@scure/btc-signer';
+import { Address, OutScript, Script, Transaction, p2tr } from '@scure/btc-signer';
 import * as musig2 from '@scure/btc-signer/musig2';
 import type { CohortConfig, SigningTxData } from '@did-btcr2/aggregation/service';
 import { DEFAULT_NETWORK, resolveNetwork, type NetworkConfig, type NetworkName } from './networks.js';
@@ -508,17 +508,35 @@ export function buildSignedUpdate(
 }
 
 /**
- * Build the fixture Bitcoin transaction the service signs in M1: a Taproot
- * key-path spend of a dummy prevout locked to the cohort's MuSig2 aggregate key,
- * carrying the committed signal in an OP_RETURN. No Bitcoin node and no broadcast:
- * the prevout is a fixture, so only the internal consistency of the MuSig2 partial
- * signatures matters (the message every signer signs is the taproot sighash
- * derived from this tx and its prevout). The OP_RETURN binds the signing approval
- * to the validated cohort signal.
+ * Build the fixture Bitcoin transaction the service signs: a Taproot spend of a
+ * dummy prevout locked to the cohort's beacon output, carrying the committed signal
+ * in an OP_RETURN. No Bitcoin node and no broadcast: the prevout is a fixture, so
+ * only the internal consistency of the MuSig2 partial signatures matters (the message
+ * every signer signs is the taproot sighash derived from this tx and its prevout).
+ * The OP_RETURN binds the signing approval to the validated cohort signal.
+ *
+ * The prevout script MUST equal the cohort's real beacon-address output. Pass
+ * `beaconOutput` (the runner's `beaconAddress` + the cohort's resolved network) so the
+ * fixture spends the SAME Taproot output the live beacon address commits: internal key
+ * = the n-of-n MuSig2 aggregate (the optimistic key path), script tree = the ADR 042
+ * recovery + k-of-n fallback leaves. This matters for the k-of-n script-path fallback
+ * (F1c): the library reconstructs the beacon output and REJECTS a fallback spend whose
+ * prevout does not commit the fallback tapleaf ("Reconstructed beacon output script
+ * does not match the spent prevout script"), so a bare key-path prevout could co-sign
+ * the optimistic path but never the fallback. Omitting `beaconOutput` falls back to the
+ * legacy bare aggregate-key output (key path only) for any direct caller that does not
+ * have the beacon address to hand.
  */
-export function buildFixtureTxData(cohortKeys: Uint8Array[], signalBytes: Uint8Array): SigningTxData {
-  const aggregateKey = musig2.keyAggExport(musig2.keyAggregate(cohortKeys));
-  const payment = p2tr(aggregateKey);
+export function buildFixtureTxData(
+  cohortKeys: Uint8Array[],
+  signalBytes: Uint8Array,
+  beaconOutput?: { beaconAddress: string; network: NetworkConfig },
+): SigningTxData {
+  // The beacon output committing BOTH spend paths (key path + recovery/fallback script
+  // tree) when the address is known; otherwise the legacy bare aggregate-key output.
+  const paymentScript = beaconOutput
+    ? OutScript.encode(Address(beaconOutput.network.scureNetwork).decode(beaconOutput.beaconAddress))
+    : p2tr(musig2.keyAggExport(musig2.keyAggregate(cohortKeys))).script;
   const prevOutValue = 100000n;
   const fee = 500n;
 
@@ -526,12 +544,12 @@ export function buildFixtureTxData(cohortKeys: Uint8Array[], signalBytes: Uint8A
   tx.addInput({
     txid: '00'.repeat(32),
     index: 0,
-    witnessUtxo: { amount: prevOutValue, script: payment.script },
+    witnessUtxo: { amount: prevOutValue, script: paymentScript },
   });
-  tx.addOutput({ script: payment.script, amount: prevOutValue - fee });
+  tx.addOutput({ script: paymentScript, amount: prevOutValue - fee });
   tx.addOutput({ script: Script.encode(['RETURN', signalBytes]), amount: 0n });
 
-  return { tx, prevOutScripts: [payment.script], prevOutValues: [prevOutValue] };
+  return { tx, prevOutScripts: [paymentScript], prevOutValues: [prevOutValue] };
 }
 
 /**

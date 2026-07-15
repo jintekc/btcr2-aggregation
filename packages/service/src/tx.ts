@@ -1,4 +1,4 @@
-import { buildFixtureTxData } from '@btcr2-aggregation/shared';
+import { buildFixtureTxData, resolveNetwork } from '@btcr2-aggregation/shared';
 import { buildAggregationBeaconTx, selectSpendableUtxo } from '@did-btcr2/method';
 import type { AggregationServiceRunner, OnProvideTxData } from '@did-btcr2/aggregation/service';
 import type { BitcoinConnection, BTCNetwork } from '@did-btcr2/bitcoin';
@@ -65,7 +65,16 @@ export function makeProvideTxData(
     }
 
     if (!live) {
-      return buildFixtureTxData(cohort.cohortKeys, signalBytes);
+      // Spend the SAME Taproot output the real beacon address commits (internal key +
+      // recovery/fallback script tree), not a bare aggregate-key output. Without this the
+      // optimistic key path still co-signs, but the ADR 042 k-of-n script-path fallback
+      // (F1c) is rejected by the library's beacon-output reconstruction check, because a
+      // bare key-path prevout does not commit the fallback tapleaf. The cohort carries the
+      // network name; resolve it to the scure params so the address decodes correctly.
+      return buildFixtureTxData(cohort.cohortKeys, signalBytes, {
+        beaconAddress,
+        network: resolveNetwork(cohort.network),
+      });
     }
 
     // Pre-flight the funded UTXO so an unfunded cohort fails with an actionable
