@@ -178,20 +178,29 @@ describe('participant store - browse-and-pick join outcome', () => {
       expect(s.joinClosed).toBe(false);
     });
 
-    it('arms the grace at most once across repeated departure polls (arm-once)', () => {
-      // Repeated ~5s poll ticks over a still-departed cohort must not stack multiple
-      // firing timers or re-arm the window: the joinGraceLogged one-shot guards it. A
-      // seat lands, then advancing the window must not fail the (now seated) member.
+    it('measures the grace from the FIRST departure and later polls do not reset it (arm-once)', () => {
+      // Arm-once means the 90s window starts at the FIRST observed departure and later
+      // ~5s poll ticks over the still-departed cohort must NOT re-arm or extend it. Arm at
+      // t0, advance to just under the window while feeding more departure snapshots (which
+      // must not push the deadline out), then cross the ORIGINAL boundary and assert the
+      // join fails exactly at t0 + JOIN_SEAT_GRACE_MS - not later. No seated:true shortcut:
+      // the pre-fix test masked arm-once behind the callback's !seated guard, so it passed
+      // even with the one-shot removed and timers stacked. This pins the TIMING (WR-03).
       useParticipant.setState({ optedIn: true, status: 'live' });
-      const store = useParticipant.getState();
-      store.handleDirectorySnapshot([]);
-      store.handleDirectorySnapshot([]);
-      store.handleDirectorySnapshot([dirRow('other', 'CohortSet')]);
-      useParticipant.setState({ seated: true });
-      vi.advanceTimersByTime(JOIN_SEAT_GRACE_MS);
+      useParticipant.getState().handleDirectorySnapshot([]);        // arm at t0
+      vi.advanceTimersByTime(JOIN_SEAT_GRACE_MS - 1000);            // t0 + 89s
+      // Later departure ticks must not re-arm or reset the window (joinGraceLogged one-shot).
+      useParticipant.getState().handleDirectorySnapshot([]);
+      useParticipant.getState().handleDirectorySnapshot([dirRow('other', 'CohortSet')]);
+      // Still inside the ORIGINAL window: not yet failed.
+      expect(useParticipant.getState().status).toBe('live');
+      // Cross the original t0 + 90s boundary. If a later poll had reset the window this
+      // would still be 'live'; arm-once means the single timer fires exactly here.
+      vi.advanceTimersByTime(1000);                                // t0 + 90s
       const s = useParticipant.getState();
-      expect(s.status).toBe('live');
-      expect(s.joinClosed).toBe(false);
+      expect(s.status).toBe('failed');
+      expect(s.joinClosed).toBe(true);
+      expect(s.error).toMatch(/filled or closed/i);
     });
 
     it('protects an opted-in member the instant the picked cohort leaves Advertised (CR-01)', () => {
