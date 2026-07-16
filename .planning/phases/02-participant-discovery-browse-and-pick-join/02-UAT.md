@@ -11,13 +11,12 @@ updated: 2026-07-15T22:30:00Z
 number: 1
 name: Two-field k-of-n directory-honesty visual re-confirm
 expected: |
-  At /operator (signed in) the create form shows TWO fields, `Cohort size (seats)` and
-  `Signing threshold (k of n)`, each with a help line, the threshold defaulting to the size.
-  Create a size-4 / threshold-2 CAS cohort and advertise it; in an anonymous tab the directory
-  row reads 4 seats and a `2-of-4` co-sign figure with the caption
-  `all co-sign; anchors if at least 2 of 4 sign`. Separately create a size-2 / threshold-2
-  cohort and confirm its row reads `2-of-2` with the caption `all signers required`.
-awaiting: user response
+  Test 1 PASSED (two-field form + honest k-of-n row confirmed visually). The user additionally
+  reported "it wont join from the participant side" during the pass; diagnosed as gap G-02-2
+  (the 90s join-seat grace timer, armed at opt-in, falsely resolves a legitimately-filling
+  cohort to "filled or closed" under the wait-for-n + discover-over-time model). Tests 2 and 3
+  held pending until the G-02-2 fix lands (Test 3 exercises the join path it changes).
+awaiting: gap-closure plan (see ## Gaps G-02-2)
 
 ## Tests
 
@@ -40,7 +39,10 @@ why_human: |
   grep/unit tests; packages/web has no DOM render harness (deliberate, T-02-SC). The string
   logic is unit-proven (DirectoryList.spec.ts cosignValue/cosignCaption assertions) but the
   on-screen rendering and form layout are not automated.
-result: pending
+result: pass
+reported: |
+  "pass - it wont join from the participant side, idk if thats expected" (the visual checks
+  passed; the join report is diagnosed as gap G-02-2 below, re-tested by Test 3 after the fix).
 
 ### 2. F2 expiry-surfacing visual re-confirm (unchanged from the prior report; deferred from PLAN 02-06 Task 3 human-check)
 expected: |
@@ -72,16 +74,25 @@ result: pending
 ## Summary
 
 total: 3
-passed: 0
+passed: 1
 issues: 0
-pending: 3
+pending: 2
 skipped: 0
 blocked: 0
 
 ## Gaps
 
-All gaps from this phase's UAT are now resolved by executed gap-closure plans; retained for
-traceability.
+- gap_id: G-02-2
+  truth: "A participant who joins a not-yet-full cohort by choice stays in a truthful waiting state until the cohort fills all n seats (bounded only by the cohort's own server-side lifetime), and is never falsely told the cohort filled or closed while it is still openly Advertised."
+  status: failed
+  reason: "User reported at Test 1: 'it wont join from the participant side'. Root cause (proven from source, no debug agent needed): packages/web/src/stores/participant.ts arms a 90s join-seat grace timer (JOIN_SEAT_GRACE_MS, line 550) in the cohort-joined handler (opt-in sent). Its premise, written in the CR-01 comment at lines 272-282, is the booth-era model: a cohort locks at threshold within seconds (fillers) and the server reaps idle cohorts at 60s, so a seat is imminent after opt-in and 90s is generous slack. That premise was invalidated by the accepted gap fixes: 02-05 makes a cohort seat members only when ALL n join (min == max == n, the user-confirmed wait-for-n model), 02-06 gives an advertised cohort a 30-minute discovery window, and there are no fillers. A solo joiner now opts in, waits at 'Joining...', and at 90s the timer fires fail('That cohort filled or closed before you were seated.') while the cohort is still Advertised and open in the directory. fail() also calls teardownLive() (line 395-401), stopping the runner while the accepted opt-in remains server-side: a zombie seat the protocol cannot reclaim (no leave signal) that can wedge the cohort in keygen when it eventually fills. The directory-poll handler (handleDirectorySnapshot, lines 688-719) already distinguishes the states correctly (still-Advertised: keep waiting; left-Advertised while never-opted-in: true filled-or-closed; left-Advertised while opted-in: the genuinely ambiguous window). The sole defect is WHERE the grace timer is armed."
+  severity: major
+  verdict: gap
+  test: 1
+  artifacts: [packages/web/src/stores/participant.ts, packages/web/src/stores/participant.spec.ts, packages/web/src/components/browse/JoinIdentityStep.tsx, packages/web/src/components/browse/BrowseView.tsx]
+  missing: ["move the grace-timer arming from the cohort-joined handler to the poll's opted-in-departure branch (handleDirectorySnapshot lines 709-718, alongside the existing joinGraceLogged one-shot), so 90s bounds only the genuine lock-to-cohort-ready ambiguity window and an opted-in participant waits as long as the picked cohort remains Advertised (the cohort's own 30-min expiry bounds the wait via the poll when the row vanishes)", "a truthful waiting surface while opted-in and Advertised: store the polled row's joined/capacity (e.g. an awaitingSeats field updated in handleDirectorySnapshot) and render 'Waiting for the cohort to fill ({joined}/{capacity} seats)' in the join flow instead of a bare indefinite 'Joining...'", "rework participant.spec.ts: RED that an opted-in participant with the picked cohort STILL Advertised past the old 90s window is NOT failed (old behavior fails this), plus the moved-grace outcomes (departure then no cohort-ready within window -> filled-or-closed terminal; cohort-ready during grace -> seated; never-opted-in departure -> immediate terminal unchanged)"]
+
+Resolved gaps from earlier passes (retained for traceability):
 
 - gap_id: G-02-1
   truth: "The operator can shape a k-of-n cohort: n seats that all join (the cohort starts only when n join) with a separate signing threshold k (k required to sign), and the participant directory shows `joined/n seats` + a `k-of-n` co-sign figure honestly."
