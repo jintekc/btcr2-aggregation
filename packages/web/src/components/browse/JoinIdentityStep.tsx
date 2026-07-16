@@ -36,6 +36,7 @@ export function JoinIdentityStep({
   const idType = useParticipant((s) => s.idType);
   const secret = useParticipant((s) => s.secret);
   const status = useParticipant((s) => s.status);
+  const awaitingSeats = useParticipant((s) => s.awaitingSeats);
   const configStatus = useParticipant((s) => s.configStatus);
   const generate = useParticipant((s) => s.generate);
   const importSecret = useParticipant((s) => s.importSecret);
@@ -156,6 +157,14 @@ export function JoinIdentityStep({
               Cancel
             </Button>
           </div>
+          {/* Truthful waiting surface (G-02-2): while opted in and the picked cohort is
+              still openly Advertised, show the live seat count instead of only a bare,
+              indefinite Joining spinner. Additive context; the button keeps its state. */}
+          {joining && awaitingSeats && (
+            <p className="text-xs text-faint">
+              Waiting for the cohort to fill ({awaitingSeats.joined}/{awaitingSeats.capacity} seats)
+            </p>
+          )}
         </div>
       )}
     </div>
