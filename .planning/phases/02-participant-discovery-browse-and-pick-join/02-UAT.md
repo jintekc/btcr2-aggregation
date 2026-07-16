@@ -8,15 +8,14 @@ updated: 2026-07-15T22:30:00Z
 
 ## Current Test
 
-number: 1
-name: Two-field k-of-n directory-honesty visual re-confirm
+number: 2
+name: F2 expiry-surfacing visual re-confirm
 expected: |
-  Test 1 PASSED (two-field form + honest k-of-n row confirmed visually). The user additionally
-  reported "it wont join from the participant side" during the pass; diagnosed as gap G-02-2
-  (the 90s join-seat grace timer, armed at opt-in, falsely resolves a legitimately-filling
-  cohort to "filled or closed" under the wait-for-n + discover-over-time model). Tests 2 and 3
-  held pending until the G-02-2 fix lands (Test 3 exercises the join path it changes).
-awaiting: gap-closure plan (see ## Gaps G-02-2)
+  At /operator, advertise a cohort and let it sit unjoined past the discovery window (or use a
+  short PHASE_TIMEOUT_MS override for a faster check). The row flips to a bad-tone `Expired`
+  badge with a reason, and `Re-advertise` puts a fresh cohort back into the directory. The row
+  now also shows the k-of-n co-sign figure.
+awaiting: user response
 
 ## Tests
 
@@ -55,20 +54,23 @@ why_human: |
   (pnpm e2e:operator F2 leg, independently re-run), not the rendered surface.
 result: pending
 
-### 3. Pick to join to seated click flow (UAT Test 2; previously skipped pending gap closure, still due)
+### 3. Pick to join to seated click flow, including the truthful waiting line (UAT Test 2; re-scoped after the G-02-2 fix)
 expected: |
   As operator advertise a 2-of-2 cohort; from a second anonymous tab click Join on the Open
   row, Cancel once before generating a key, then generate a KEY identity and confirm Join
-  cohort while a second participant fills the cohort; separately advertise a 1-of-1 that fills
-  before confirming and try to join it; then use Leave cohort from a seated state.
-  Non-joinable rows show disabled Join; Cancel mints no key; a successful join reaches the
-  seated confirmation `You're seated in cohort ...` and the reused tail proceeds to a 64-byte
-  co-sign + resolve; a lost pick shows `That cohort just filled or closed. Pick another from
-  the directory.` and returns to browse with no dead spinner; Leave returns to the directory
-  with no confirmation dialog. The row's co-sign figure reads `2-of-2` (k == n honest default).
+  cohort. While the cohort waits for its second seat, the join flow shows the truthful
+  `Waiting for the cohort to fill (1/2 seats)` line (NOT a bare indefinite `Joining...`, and
+  it is NOT falsely failed after 90 seconds - the G-02-2 fix). Then fill the second seat from
+  another tab (or a headless participant): the seated confirmation `You're seated in cohort
+  ...` appears and the reused tail proceeds to a 64-byte co-sign + resolve. Separately
+  advertise a 1-of-1 that fills before confirming and try to join it: the deterministic
+  `filled or closed` message appears and returns to browse with no dead spinner. Leave cohort
+  from a seated state returns to the directory with no confirmation dialog. The row's co-sign
+  figure reads `2-of-2` (k == n honest default).
 why_human: |
   Same DOM-harness gap; pnpm e2e:browse proves the underlying lifecycle and selectivity
-  headlessly (independently re-run, exit 0), but not the rendered click path.
+  headlessly (independently re-run, exit 0), and the 16 store spec tests pin the G-02-2 timer
+  semantics, but the rendered click path and waiting line are not automated.
 result: pending
 
 ## Summary
@@ -84,7 +86,9 @@ blocked: 0
 
 - gap_id: G-02-2
   truth: "A participant who joins a not-yet-full cohort by choice stays in a truthful waiting state until the cohort fills all n seats (bounded only by the cohort's own server-side lifetime), and is never falsely told the cohort filled or closed while it is still openly Advertised."
-  status: failed
+  status: resolved
+  resolved_by: 02-09-PLAN.md
+  resolved_at: 2026-07-16
   reason: "User reported at Test 1: 'it wont join from the participant side'. Root cause (proven from source, no debug agent needed): packages/web/src/stores/participant.ts arms a 90s join-seat grace timer (JOIN_SEAT_GRACE_MS, line 550) in the cohort-joined handler (opt-in sent). Its premise, written in the CR-01 comment at lines 272-282, is the booth-era model: a cohort locks at threshold within seconds (fillers) and the server reaps idle cohorts at 60s, so a seat is imminent after opt-in and 90s is generous slack. That premise was invalidated by the accepted gap fixes: 02-05 makes a cohort seat members only when ALL n join (min == max == n, the user-confirmed wait-for-n model), 02-06 gives an advertised cohort a 30-minute discovery window, and there are no fillers. A solo joiner now opts in, waits at 'Joining...', and at 90s the timer fires fail('That cohort filled or closed before you were seated.') while the cohort is still Advertised and open in the directory. fail() also calls teardownLive() (line 395-401), stopping the runner while the accepted opt-in remains server-side: a zombie seat the protocol cannot reclaim (no leave signal) that can wedge the cohort in keygen when it eventually fills. The directory-poll handler (handleDirectorySnapshot, lines 688-719) already distinguishes the states correctly (still-Advertised: keep waiting; left-Advertised while never-opted-in: true filled-or-closed; left-Advertised while opted-in: the genuinely ambiguous window). The sole defect is WHERE the grace timer is armed."
   severity: major
   verdict: gap
