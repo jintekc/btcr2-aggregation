@@ -1,6 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DirectoryCohortDTO } from '../lib/operator';
 import { pickedCohortClosed, useParticipant } from './participant';
+
+// The join-seat grace window (participant.ts JOIN_SEAT_GRACE_MS). Mirrored here as a
+// literal (the store keeps it module-private) so the grace-window tests can advance
+// fake timers exactly to the boundary. Must stay in step with the source constant.
+const JOIN_SEAT_GRACE_MS = 90000;
 
 // Coverage of the store-level mainnet guard on register(): the acknowledgment gate
 // must live BENEATH the UI (defense in depth) and fire before any network I/O, so
@@ -52,14 +57,14 @@ describe('participant store - register() mainnet guard', () => {
 // interval poll path is exercised by plan 01's e2e, not here.
 
 /** Build a minimal directory row for the outcome predicate tests. */
-function dirRow(cohortId: string, phase: string): DirectoryCohortDTO {
+function dirRow(cohortId: string, phase: string, joined = 0, capacity = 2): DirectoryCohortDTO {
   return {
     cohortId,
     beaconType: 'CASBeacon',
     network: 'mutinynet',
     threshold: 2,
-    capacity: 2,
-    joined: 0,
+    capacity,
+    joined,
     phase,
   };
 }
@@ -82,6 +87,9 @@ describe('participant store - browse-and-pick join outcome', () => {
 
   describe('handleDirectorySnapshot', () => {
     beforeEach(() => {
+      // Fake timers so the moved grace window (armed at observed departure) is driven
+      // deterministically, and so no real module-scope setTimeout leaks across tests.
+      vi.useFakeTimers();
       useParticipant.setState({
         status: 'live',
         seated: false,
@@ -91,10 +99,18 @@ describe('participant store - browse-and-pick join outcome', () => {
         optedIn: false,
         joinClosed: false,
         pickedCohortId: 'abc',
+        awaitingSeats: null,
         error: null,
         log: [],
         steps: { join: 'done', submit: 'active', sign: 'idle', anchored: 'idle' },
       });
+    });
+
+    afterEach(() => {
+      // leave() clears the module-scope joinGrace timer + joinGraceLogged one-shot so the
+      // armed grace never fires into (or leaks past) a later test; then restore real timers.
+      useParticipant.getState().leave();
+      vi.useRealTimers();
     });
 
     it('transitions to a filled-or-closed terminal state when the picked cohort leaves Advertised before opting in', () => {
@@ -116,13 +132,75 @@ describe('participant store - browse-and-pick join outcome', () => {
       expect(s.joinClosed).toBe(true);
     });
 
-    it('protects an opted-in member when the picked cohort leaves Advertised (CR-01)', () => {
+    it('captures awaitingSeats and never fails an opted-in member while the picked cohort is still Advertised (G-02-2)', () => {
+      // The wait-for-n truth: opted in, the picked cohort is STILL openly Advertised and
+      // filling (1/2 seats). The store records the polled counts into awaitingSeats for a
+      // truthful waiting line, and - critically - advancing well past the OLD 90s window
+      // does NOT fail the member (the grace no longer arms at opt-in). This is RED on the
+      // pre-move code: there was no awaitingSeats field, and the opt-in-armed grace fired.
+      useParticipant.setState({ optedIn: true, status: 'live' });
+      useParticipant.getState().handleDirectorySnapshot([dirRow('abc', 'Advertised', 1, 2)]);
+      let s = useParticipant.getState();
+      expect(s.awaitingSeats).toEqual({ joined: 1, capacity: 2 });
+      vi.advanceTimersByTime(JOIN_SEAT_GRACE_MS + 1000);
+      s = useParticipant.getState();
+      expect(s.status).toBe('live');
+      expect(s.joinClosed).toBe(false);
+    });
+
+    it('arms the grace once on an observed departure and resolves to filled-or-closed after the window (G-02-2)', () => {
+      // Opted in, then the picked cohort leaves Advertised (departure). The poll never
+      // fails directly; it arms the bounded grace. With no cohort-ready inside the window
+      // the grace resolves to the deterministic filled-or-closed terminal. RED on the
+      // pre-move code: its opted-in branch only logged and armed nothing, so advancing
+      // timers would leave the member 'live'.
+      useParticipant.setState({ optedIn: true, status: 'live' });
+      useParticipant.getState().handleDirectorySnapshot([]);
+      // Still live the instant the timer is armed (the poll itself never fails a member).
+      expect(useParticipant.getState().status).toBe('live');
+      vi.advanceTimersByTime(JOIN_SEAT_GRACE_MS);
+      const s = useParticipant.getState();
+      expect(s.status).toBe('failed');
+      expect(s.joinClosed).toBe(true);
+      expect(s.error).toMatch(/filled or closed/i);
+    });
+
+    it('protects a genuine member seated during the grace window (CR-01)', () => {
+      // The departure arms the grace, then cohort-ready seats the member (simulated by
+      // setState seated: true). The grace callback's !seated guard must spare it: after
+      // the full window it stays live, never failed.
+      useParticipant.setState({ optedIn: true, status: 'live' });
+      useParticipant.getState().handleDirectorySnapshot([]);
+      useParticipant.setState({ seated: true });
+      vi.advanceTimersByTime(JOIN_SEAT_GRACE_MS);
+      const s = useParticipant.getState();
+      expect(s.status).toBe('live');
+      expect(s.joinClosed).toBe(false);
+    });
+
+    it('arms the grace at most once across repeated departure polls (arm-once)', () => {
+      // Repeated ~5s poll ticks over a still-departed cohort must not stack multiple
+      // firing timers or re-arm the window: the joinGraceLogged one-shot guards it. A
+      // seat lands, then advancing the window must not fail the (now seated) member.
+      useParticipant.setState({ optedIn: true, status: 'live' });
+      const store = useParticipant.getState();
+      store.handleDirectorySnapshot([]);
+      store.handleDirectorySnapshot([]);
+      store.handleDirectorySnapshot([dirRow('other', 'CohortSet')]);
+      useParticipant.setState({ seated: true });
+      vi.advanceTimersByTime(JOIN_SEAT_GRACE_MS);
+      const s = useParticipant.getState();
+      expect(s.status).toBe('live');
+      expect(s.joinClosed).toBe(false);
+    });
+
+    it('protects an opted-in member the instant the picked cohort leaves Advertised (CR-01)', () => {
       // CR-01 core: after cohort-joined (optedIn: true) but before cohort-ready (seated
       // still false), a directory poll that no longer lists the picked cohort as
       // Advertised is AMBIGUOUS - the cohort locks membership at threshold BEFORE keygen
       // finishes, so this member may be forming with cohort-ready imminent. The poll must
       // NOT tear it down (that would drop it from the n-of-n round and stall every member);
-      // the bounded join-grace timer owns the outcome. Assert the member is protected.
+      // it only arms the bounded grace. Assert the member is protected at that instant.
       useParticipant.setState({ optedIn: true });
       useParticipant.getState().handleDirectorySnapshot([]);
       const s = useParticipant.getState();
@@ -130,19 +208,6 @@ describe('participant store - browse-and-pick join outcome', () => {
       expect(s.joinClosed).toBe(false);
       expect(s.seated).toBe(false);
       expect(s.error).toBeNull();
-    });
-
-    it('keeps protecting an opted-in member across repeated closed polls (idempotent)', () => {
-      // Repeated poll ticks (every ~5s) must never accumulate into a teardown: the
-      // opted-in member stays live no matter how many closed snapshots arrive.
-      useParticipant.setState({ optedIn: true });
-      const store = useParticipant.getState();
-      store.handleDirectorySnapshot([]);
-      store.handleDirectorySnapshot([]);
-      store.handleDirectorySnapshot([dirRow('other', 'CohortSet')]);
-      const s = useParticipant.getState();
-      expect(s.status).toBe('live');
-      expect(s.joinClosed).toBe(false);
     });
 
     it('is a no-op once seated (a seated cohort legitimately leaves Advertised)', () => {
@@ -158,6 +223,14 @@ describe('participant store - browse-and-pick join outcome', () => {
       const s = useParticipant.getState();
       expect(s.status).toBe('live');
       expect(s.joinClosed).toBe(false);
+    });
+
+    it('resets awaitingSeats to null on leave()', () => {
+      // The waiting surface must not survive a leave: leave() clears awaitingSeats along
+      // with seated/optedIn/joinClosed. RED on the pre-move code (leave never touched it).
+      useParticipant.setState({ awaitingSeats: { joined: 1, capacity: 2 } });
+      useParticipant.getState().leave();
+      expect(useParticipant.getState().awaitingSeats).toBeNull();
     });
   });
 });
