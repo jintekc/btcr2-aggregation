@@ -640,7 +640,10 @@ export const useParticipant = create<ParticipantState>((set, get) => {
           announcementEntries: info.casAnnouncement ? Object.keys(info.casAnnouncement).length : 0,
           updateHashHex: updateHex,
         };
-        set({ result, sidecar, status: 'complete', beaconAddress: info.beaconAddress });
+        // awaitingSeats: null for symmetry with every sibling terminal (fail/adopt/join/
+        // leave/cohort-ready). Benign in practice - cohort-ready nulls it first and the UI
+        // hides the line off 'joining' - but a complete parity reset in case ordering drifts (IN-02).
+        set({ result, sidecar, status: 'complete', beaconAddress: info.beaconAddress, awaitingSeats: null });
         append('good', `cohort ${info.cohortId} anchored; your update was ${info.included ? 'included' : 'not included'}`);
         // Refresh the IPFS availability just as the publish panel appears: the
         // page-load probe may predate a coordinator restart that enabled (or
@@ -730,6 +733,14 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         return;
       }
       if (!pickedCohortClosed(rows, pickedCohortId)) {
+        // Defensive (IN-03): a cohort id never re-enters Advertised once it locks
+        // membership (a re-advertise mints a fresh id), but if a flaky/replayed
+        // directory re-lists the picked cohort as Advertised after an earlier
+        // departure already armed the grace, cancel that stale timer - a genuinely
+        // reopened cohort must not be torn down at first-departure + 90s.
+        if (joinGrace !== null) {
+          clearJoinGrace();
+        }
         // Still openly Advertised: keep waiting (wait-for-n). Capture the picked row's
         // live joined / capacity so the join flow can render a truthful "Waiting for the
         // cohort to fill" line. This is the only place awaitingSeats is set to a value.
@@ -760,6 +771,11 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       // filled-or-closed terminal instead of hanging. The poll itself never fails a member.
       if (!joinGraceLogged) {
         joinGraceLogged = true;
+        // The row is gone from the Advertised set, so its frozen joined/capacity counts
+        // are stale - clear the "Waiting for the cohort to fill (j/n seats)" line rather
+        // than keep claiming a live fill count for the 90s grace window (IN-01). The
+        // waiting surface disappearing while the seat resolves is the honest state.
+        set({ awaitingSeats: null });
         append('info', `cohort ${pickedCohortId} left the open set; awaiting seat confirmation`);
         joinGrace = setTimeout(() => {
           const { seated, status } = get();
