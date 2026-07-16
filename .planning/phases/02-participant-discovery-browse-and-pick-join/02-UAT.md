@@ -80,6 +80,18 @@ why_human: |
   headlessly (independently re-run, exit 0), and the 16 store spec tests pin the G-02-2 timer
   semantics, but the rendered click path and waiting line are not automated.
 result: pending
+progress: |
+  Partial evidence via user screenshot (2026-07-16): the happy tail is CONFIRMED working
+  (seated confirmation -> co-sign -> ANCHORED card with Taproot signature/beacon address/
+  update hash -> sidecar -> genesis-document resolve; register-first-update correctly
+  awaiting funds on the hermetic path). Finding: the seated card rendered the STALE pick-time
+  directory snapshot ("0/2 seats - Open. When this cohort fills, co-signing begins below")
+  after the cohort had filled, co-signed, and anchored; seated (cohort-ready) always means
+  the cohort locked full, so that snapshot line is always wrong there. Fixed immediately
+  (cosmetic, not a gap): BrowseView now renders truthful state-driven copy ("All n seats
+  filled and the cohort co-signed; your results are below" / "...is co-signing your update"),
+  web gates green. Remaining to confirm: the waiting line before the second seat fills, the
+  filled-or-closed negative, Cancel-mints-nothing, and Leave.
 
 ## Summary
 

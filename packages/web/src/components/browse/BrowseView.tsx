@@ -88,8 +88,16 @@ export function BrowseView({ baseUrl }: { baseUrl: string }) {
   // cohort anchors, the reused tail. Leave returns to the directory (D-11/D-15).
   if (seated) {
     const shortCohortId = pickedRow ? pickedRow.cohortId.slice(0, 8) : '';
-    const seats = pickedRow ? `${pickedRow.joined}/${pickedRow.capacity} seats` : '';
-    const label = pickedRow ? statusLabel(pickedRow) : '';
+    // Seated (cohort-ready) means the cohort LOCKED with every seat filled (min == max == n),
+    // so the pick-time directory snapshot (its joined/Open figures) is always stale here and
+    // must not be rendered (UAT Test 3 finding). State the truth for the current phase instead.
+    const seatedLine = pickedRow
+      ? hasResult
+        ? `All ${pickedRow.capacity} seats filled and the cohort co-signed; your results are below.`
+        : `All ${pickedRow.capacity} seats are filled; the cohort is co-signing your update. Results appear below when it completes.`
+      : hasResult
+        ? 'The cohort co-signed; your results are below.'
+        : 'The cohort is co-signing your update. Results appear below when it completes.';
     return (
       <div className="space-y-8">
         <ServiceIdentityHeader baseUrl={baseUrl} />
@@ -97,9 +105,7 @@ export function BrowseView({ baseUrl }: { baseUrl: string }) {
           <h2 className="text-xl font-bold tracking-tight text-ink">
             You&apos;re seated in cohort {shortCohortId}
           </h2>
-          <p className="text-sm text-muted">
-            {seats} · {label}. When this cohort fills, co-signing begins below.
-          </p>
+          <p className="text-sm text-muted">{seatedLine}</p>
           <Button variant="ghost" onClick={backToDirectory}>
             Leave cohort
           </Button>
