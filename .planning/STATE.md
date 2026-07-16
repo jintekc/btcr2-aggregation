@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 02
 current_phase_name: participant-discovery-browse-and-pick-join
 status: gap_closure
-stopped_at: Completed 02-08-PLAN.md (G-02-1 two-field k-of-n cohort; signing threshold k restored)
-last_updated: "2026-07-15T19:01:00.000Z"
-last_activity: 2026-07-15
-last_activity_desc: Executed 02-08 (G-02-1 restore signing threshold k as a second honest number; DTO flip threshold=k/capacity=n; n=4/k=2 hermetic capstone)
+stopped_at: Completed 02-09-PLAN.md (G-02-2 join-grace rearm for wait-for-n; awaitingSeats waiting line)
+last_updated: "2026-07-16T13:25:00.000Z"
+last_activity: 2026-07-16
+last_activity_desc: Executed 02-09 (G-02-2 move the 90s join-grace arm from opt-in to observed departure; add the truthful awaitingSeats waiting line so a still-Advertised opted-in participant is never falsely failed)
 progress:
   total_phases: 2
   completed_phases: 1
-  total_plans: 11
-  completed_plans: 11
+  total_plans: 12
+  completed_plans: 12
 ---
 
 # Project State
@@ -27,10 +27,10 @@ See: .planning/PROJECT.md (updated 2026-07-08)
 
 ## Current Position
 
-Phase: 02 (participant-discovery-browse-and-pick-join) - GAP CLOSURE (all F1/F2 + G-02-1 gap plans built)
-Plan: gap plans 02-05 (F1a/F1b) + 02-06 (F2) + 02-07 (F1c k-of-n script-path fallback) + 02-08 (G-02-1 two-field k-of-n) all executed; UAT Tests 1 + 2 deferred to post-gap re-verify
-Status: Run /gsd-verify-work 2 to re-verify Test 1 (k-of-n honesty) + Test 2 (browse -> pick -> join -> co-sign -> resolve) now that all four gap plans (F1a/F1b, F2, F1c, G-02-1) have landed.
-Last activity: 2026-07-15 - Executed 02-08 (G-02-1 restore signing threshold k as a second honest number; DTO flip threshold=k/capacity=n)
+Phase: 02 (participant-discovery-browse-and-pick-join) - GAP CLOSURE (all F1/F2 + G-02-1 + G-02-2 gap plans built)
+Plan: gap plans 02-05 (F1a/F1b) + 02-06 (F2) + 02-07 (F1c k-of-n script-path fallback) + 02-08 (G-02-1 two-field k-of-n) + 02-09 (G-02-2 join-grace rearm) all executed; UAT Tests 1 + 2 + 3 deferred to post-gap re-verify
+Status: Run /gsd-verify-work 2 to re-verify Test 1 (k-of-n honesty) + Test 2/3 (browse -> pick -> join -> co-sign -> resolve, incl. the wait-for-n waiting state) now that all five gap plans (F1a/F1b, F2, F1c, G-02-1, G-02-2) have landed.
+Last activity: 2026-07-16 - Executed 02-09 (G-02-2 move the 90s join-grace arm from opt-in to observed departure; add the truthful awaitingSeats waiting line)
 
 Progress: [██░░░░░░░░] 17% (Phase 1 of 6 complete)
 
@@ -70,6 +70,7 @@ Progress: [██░░░░░░░░] 17% (Phase 1 of 6 complete)
 | Phase 02 P06 | 18min | 3 tasks | 9 files |
 | Phase 02 P07 | 10min | 2 tasks | 7 files |
 | Phase 02 P08 | 12min | 3 tasks | 16 files |
+| Phase 02 P09 | 7min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -91,6 +92,7 @@ Recent decisions affecting current work:
 - [Phase 02]: 02-06 (F2): raise the single stall/TTL timer defaults to a 30-min discovery window (env-tunable); retain a bounded operator-only 'expired' terminal record on completion rejection (surfaced via listCohorts, never directory/status); readvertiseExpired is a second operator-driven advertiseCohort caller (D-17 preserved) behind the gated POST /v1/operator/cohorts/:id/readvertise
 - [Phase ?]: 02-07 (F1c): n-of-n MuSig2 stays the primary spend; the ADR 042 k-of-n script-path fallback is ACTIVATED for signing liveness (createService.autoFallbackOnStall threaded to the runner; demo-server default ON via AUTO_FALLBACK). buildCohortConfig gains an optional fallbackThreshold (default n-1). The fixture beacon tx now spends the real beacon-address output so the script-path fallback validates hermetically (fixed 'Reconstructed beacon output script' rejection).
 - [Phase 02]: 02-08 (G-02-1): restore the operator signing threshold k as a SECOND honest number. size n = seats (min == max == n, verbatim from 02-05); threshold k = fallbackThreshold (the ADR-042 script-path floor, 1 <= k <= n). Wire body { beaconType, size, threshold? } with threshold OPTIONAL defaulting to size (k = n); createDraft ALWAYS sets fallbackThreshold = k explicitly (so a default cohort's committed beacon leaf moves n-1 -> n, deliberate + safe). DTO flip threshold=k/capacity=n atomic at all four emit sites. Decision 4: validateDraft refuses k < size when autoFallbackOnStall is off (FALLBACK_OFF_ERROR). New e2e/kofn-cohort.ts n=4/k=2 capstone (distinguishable from the library n-1 default) proves k reaches the gate (drop 2 -> script-path) + gates anchoring (drop 3 -> cohort-failed). Empirical: 1-survivor fallback stalls in FallbackRequested phase rather than emitting 'Not enough valid fallback signatures'.
+- [Phase 02]: 02-09 (G-02-2): under wait-for-n (min == max == n, no fillers, 30-min discovery window) the 90s join-seat grace timer must arm at the FIRST OBSERVED DEPARTURE of the picked cohort from the Advertised set (handleDirectorySnapshot opted-in branch), NOT at opt-in (cohort-joined). cohort-joined now records optedIn/steps/log and arms nothing; the poll arms the grace once (joinGraceLogged one-shot). So an opted-in participant whose picked cohort is still Advertised is never falsely failed at 90s and captures the polled joined/capacity into a new awaitingSeats field (rendered as `Waiting for the cohort to fill ({joined}/{capacity} seats)`). awaitingSeats resets in adopt/join/leave/cohort-ready/fail. CR-01 preserved (the bounded window still protects a genuine member forming mid-keygen, now armed at departure). Browser-store-only, zero new packages, zero e2e/Node-participant changes; the four hermetic capstones (browse/operator/kofn/fallback) re-run green.
 
 ### Pending Todos
 
@@ -118,7 +120,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-15T19:01:00.000Z
-Stopped at: Completed 02-08-PLAN.md (G-02-1 two-field k-of-n cohort; signing threshold k restored)
+Last session: 2026-07-16T13:25:00.000Z
+Stopped at: Completed 02-09-PLAN.md (G-02-2 join-grace rearm for wait-for-n; awaitingSeats waiting line)
 Resume file: None
 Next command: /gsd-verify-work 2
