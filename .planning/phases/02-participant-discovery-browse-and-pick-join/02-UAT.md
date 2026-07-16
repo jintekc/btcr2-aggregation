@@ -1,24 +1,14 @@
 ---
-status: testing
+status: complete
 phase: 02-participant-discovery-browse-and-pick-join
 source: [02-VERIFICATION.md]
 started: 2026-07-14T21:30:00Z
-updated: 2026-07-15T22:30:00Z
+updated: 2026-07-16T18:30:00.000Z
 ---
 
 ## Current Test
 
-number: 3
-name: Pick to join to seated click flow, including the truthful waiting line
-expected: |
-  As operator advertise a 2-of-2 cohort; from a second anonymous tab click Join on the Open
-  row, Cancel once before generating a key, then generate a KEY identity and confirm Join
-  cohort. While the cohort waits for its second seat, the join flow shows the truthful
-  `Waiting for the cohort to fill (1/2 seats)` line and is NOT falsely failed after 90
-  seconds. Then fill the second seat from another tab: the seated confirmation appears and
-  the reused tail proceeds to a 64-byte co-sign + resolve. A 1-of-1 that fills before
-  confirming shows the deterministic filled-or-closed message; Leave returns to the directory.
-awaiting: user response
+[testing complete - 3/3 passed, all gaps resolved]
 
 ## Tests
 
@@ -79,7 +69,7 @@ why_human: |
   Same DOM-harness gap; pnpm e2e:browse proves the underlying lifecycle and selectivity
   headlessly (independently re-run, exit 0), and the 16 store spec tests pin the G-02-2 timer
   semantics, but the rendered click path and waiting line are not automated.
-result: pending
+result: pass
 progress: |
   Partial evidence via user screenshot (2026-07-16): the happy tail is CONFIRMED working
   (seated confirmation -> co-sign -> ANCHORED card with Taproot signature/beacon address/
@@ -96,9 +86,9 @@ progress: |
 ## Summary
 
 total: 3
-passed: 2
+passed: 3
 issues: 0
-pending: 1
+pending: 0
 skipped: 0
 blocked: 0
 
