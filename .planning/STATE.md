@@ -4,16 +4,16 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 02
 current_phase_name: participant-discovery-browse-and-pick-join
-status: gap_closure
-stopped_at: Completed 02-09-PLAN.md (G-02-2 join-grace rearm for wait-for-n; awaitingSeats waiting line)
-last_updated: "2026-07-16T13:25:00.000Z"
+status: security_gate
+stopped_at: Phase 2 UAT COMPLETE 3/3 passed, 0 issues, all gaps (F1/F2/F1c/G-02-1/G-02-2) resolved; blocked only on the security capability gate (no 02-SECURITY.md yet)
+last_updated: "2026-07-16T18:45:00.000Z"
 last_activity: 2026-07-16
-last_activity_desc: Executed 02-09 (G-02-2 move the 90s join-grace arm from opt-in to observed departure; add the truthful awaitingSeats waiting line so a still-Advertised opted-in participant is never falsely failed)
+last_activity_desc: UAT 3/3 passed (two-field k-of-n form, expiry surface, join click-path incl. waiting line); seated-card stale-snapshot copy fixed (faa3922); form label/order tweaks (2c5c285)
 progress:
   total_phases: 2
   completed_phases: 1
-  total_plans: 12
-  completed_plans: 12
+  total_plans: 13
+  completed_plans: 13
 ---
 
 # Project State
@@ -27,10 +27,10 @@ See: .planning/PROJECT.md (updated 2026-07-08)
 
 ## Current Position
 
-Phase: 02 (participant-discovery-browse-and-pick-join) - GAP CLOSURE (all F1/F2 + G-02-1 + G-02-2 gap plans built)
-Plan: gap plans 02-05 (F1a/F1b) + 02-06 (F2) + 02-07 (F1c k-of-n script-path fallback) + 02-08 (G-02-1 two-field k-of-n) + 02-09 (G-02-2 join-grace rearm) all executed; UAT Tests 1 + 2 + 3 deferred to post-gap re-verify
-Status: Run /gsd-verify-work 2 to re-verify Test 1 (k-of-n honesty) + Test 2/3 (browse -> pick -> join -> co-sign -> resolve, incl. the wait-for-n waiting state) now that all five gap plans (F1a/F1b, F2, F1c, G-02-1, G-02-2) have landed.
-Last activity: 2026-07-16 - Executed 02-09 (G-02-2 move the 90s join-grace arm from opt-in to observed departure; add the truthful awaitingSeats waiting line)
+Phase: 02 (participant-discovery-browse-and-pick-join) - UAT COMPLETE, SECURITY GATE PENDING
+Plan: all 9 plans executed (02-01..04 + gap plans 02-05 F1a/F1b, 02-06 F2, 02-07 F1c, 02-08 G-02-1 two-field k-of-n, 02-09 G-02-2 join-grace rearm). UAT 3/3 PASSED 2026-07-16 (b9a15d2), 0 issues, all gaps resolved. Re-verification 28/28 must-haves; 02-09 review 0 blocker/3 warn/3 info, all findings fixed except WR-02 (deferred: service-down-mid-join feedback). Two UAT-driven inline fixes landed post-verification: create-form labels/order (Signing threshold (k) first, Cohort size (n) second, 2c5c285) + truthful seated-card copy (stale pick-time snapshot dropped, faa3922).
+Status: RESUME HERE - (1) run /gsd-secure-phase 2 (the active security capability blocks phase advancement until 02-SECURITY.md exists with threats_open=0; Phase 2 added the gated readvertise route + the k-of-n surface; threat models to verify: T-05-*, T-06-*, T-07-*, T-KOFN-* across the 5 gap PLANs). (2) When threats_open=0: set 02-VERIFICATION.md frontmatter status human_needed -> passed (gsd-tools query frontmatter.set <file> --field status --value passed), then `gsd-tools phase uat-passed 2 --require-verification` must return passed=true, then run the transition (phase.complete) to mark Phase 2 done and route to Phase 3 (/gsd-discuss-phase 3 or /gsd-plan-phase 3). NOTE: git signing was restored to the user's default; GSD commits must use `git -c commit.gpgsign=false commit` or re-set `git config --local commit.gpgsign false` for the session (YubiKey cannot sign non-interactively).
+Last activity: 2026-07-16 - Phase 2 UAT completed 3/3 (all visual tests passed); awaiting security gate only
 
 Progress: [██░░░░░░░░] 17% (Phase 1 of 6 complete)
 
