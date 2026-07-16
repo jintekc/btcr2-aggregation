@@ -125,9 +125,11 @@ interface ParticipantState {
    * True once we have OPTED IN to the picked cohort (the `cohort-joined` event: opt-in
    * SENT, not yet a granted seat). Distinguishes the two directory-poll outcomes (CR-01):
    * before opt-in, the picked cohort leaving Advertised means we missed it (fail now);
-   * after opt-in, it is ambiguous (forming with us vs. filled without us) and the
-   * bounded join-grace timer, not the poll, owns the outcome so a real member is never
-   * torn down mid-keygen. Reset wherever `seated`/`joinClosed` reset.
+   * after opt-in, it is ambiguous (forming with us vs. filled without us), so the poll
+   * ARMS the bounded join-grace timer on the first observed departure (rather than the
+   * poll itself owning the outcome), and a real member is never torn down mid-keygen.
+   * While opted in and the picked cohort is still Advertised, we wait as long as it
+   * stays open. Reset wherever `seated`/`joinClosed` reset.
    */
   optedIn: boolean;
   /**
@@ -135,6 +137,15 @@ interface ParticipantState {
    * distinct terminal cause from an ordinary failure or an unreachable service.
    */
   joinClosed: boolean;
+  /**
+   * While opted in and the picked cohort is still Advertised, the latest polled
+   * joined / capacity for the picked row, so the join flow can render a truthful
+   * `Waiting for the cohort to fill ({joined}/{capacity} seats)` line instead of a
+   * bare, indefinite `Joining...`. Null when not awaiting a seat (never opted in,
+   * seated, or after any terminal / reset). Carries only counts already public in
+   * the directory row, no DIDs or keys.
+   */
+  awaitingSeats: { joined: number; capacity: number } | null;
   /** The cohort id the participant picked to join (browse-and-pick, D-14); null when idle. */
   pickedCohortId: string | null;
   result: ParticipantResult | null;
@@ -269,21 +280,27 @@ function teardownIpfs(): void {
 let directoryPoll: ReturnType<typeof setInterval> | null = null;
 const DIRECTORY_POLL_MS = 5000;
 
-// Join-seat grace window (CR-01). Once we have opted in (cohort-joined fired), the
-// picked cohort leaving the Advertised set is AMBIGUOUS: it may be forming WITH us
-// (cohort-ready imminent, since a cohort locks membership at its threshold BEFORE
-// keygen finishes) or filled WITHOUT us. The protocol emits no accept/reject signal,
-// so the client cannot distinguish immediately and MUST NOT tear down a genuine member
-// mid-keygen (that would drop it from the n-of-n MuSig2 round and stall every member).
-// This backstop timer, armed at cohort-joined, owns the silent "opted in but never
-// seated" outcome: if no cohort-ready lands within the window, the join resolves to a
-// deterministic filled-or-closed terminal instead of hanging. The server's
-// PHASE_TIMEOUT_MS is the real bound; this window is only generous slack for
-// real-internet keygen + SSE latency. Cleared on seat/complete/fail/leave.
+// Join-seat grace window (CR-01). It is armed on the FIRST observed DEPARTURE of the
+// picked cohort from the Advertised set (in handleDirectorySnapshot), NOT at opt-in.
+// Under the wait-for-n model (02-05: min == max == n, no fillers) an opted-in
+// participant whose picked cohort is still Advertised waits as long as it stays
+// Advertised - there is no "seat imminent right after opt-in" premise anymore. Only
+// once the picked cohort LEAVES Advertised while we are opted-in but unseated is the
+// outcome AMBIGUOUS: it may be forming WITH us (cohort-ready imminent, since a cohort
+// locks membership at its threshold BEFORE keygen finishes) or filled WITHOUT us. The
+// protocol emits no accept/reject signal, so the client cannot distinguish immediately
+// and MUST NOT tear down a genuine member mid-keygen (that would drop it from the n-of-n
+// MuSig2 round and stall every member). This backstop timer bounds only that genuine
+// lock-to-cohort-ready gap: if no cohort-ready lands within the window, the join resolves
+// to a deterministic filled-or-closed terminal instead of hanging. The client can never
+// hang forever: the cohort's own 30-min discovery window (02-06) bounds the wait
+// server-side, and its row-vanish is observed by the poll as exactly such a departure.
+// Cleared on seat/complete/fail/leave.
 let joinGrace: ReturnType<typeof setTimeout> | null = null;
 const JOIN_SEAT_GRACE_MS = 90000;
-// One-shot flag so a repeated directory poll (every ~5s) logs the "awaiting seat"
-// note at most once per opted-in wait. Reset whenever the grace window is (re)armed.
+// One-shot flag so a repeated directory poll (every ~5s) arms the grace and logs the
+// "awaiting seat" note at most once per opted-in wait - never re-arming or resetting the
+// window out from under itself. Reset whenever the grace window is cleared.
 let joinGraceLogged = false;
 
 /**
@@ -394,7 +411,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
   /** Move to a terminal failed state, surface the reason, and stop listening. */
   function fail(reason: string): void {
     failActiveStep();
-    set({ status: 'failed', error: reason });
+    set({ status: 'failed', error: reason, awaitingSeats: null });
     clearDirectoryPoll();
     clearJoinGrace();
     teardownLive();
@@ -415,6 +432,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       seated: false,
       optedIn: false,
       joinClosed: false,
+      awaitingSeats: null,
       pickedCohortId: null,
       error: null,
       // The first-update SingletonBeacon address to fund is the key's genesis P2TR
@@ -440,6 +458,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
     seated: false,
     optedIn: false,
     joinClosed: false,
+    awaitingSeats: null,
     pickedCohortId: null,
     error: null,
     log: [],
@@ -513,6 +532,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         seated: false,
         optedIn: false,
         joinClosed: false,
+        awaitingSeats: null,
         pickedCohortId: cohortId,
         ...INITIAL_OUTCOME,
       });
@@ -542,25 +562,19 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         setStep('join', 'done');
         setStep('submit', 'active');
         append('good', `joined cohort ${cohortId}; running distributed keygen`);
-        // From this point the directory poll must NOT tear us down on its own (CR-01):
-        // now that we have opted in, the cohort leaving Advertised is ambiguous. Arm the
-        // bounded grace backstop instead; cohort-ready clears it, and if no seat ever
-        // arrives it resolves the silent "opted in but not a member" case deterministically.
-        clearJoinGrace();
-        joinGrace = setTimeout(() => {
-          const { seated, status } = get();
-          if (!seated && (status === 'connecting' || status === 'live')) {
-            set({ joinClosed: true });
-            fail('That cohort filled or closed before you were seated. Pick another from the directory.');
-          }
-        }, JOIN_SEAT_GRACE_MS);
+        // cohort-joined records the opt-in ONLY and arms nothing. Under the wait-for-n
+        // model there is no "seat imminent" premise here: the picked cohort may stay
+        // openly Advertised and filling for a long time, and failing at a fixed post-opt-in
+        // deadline would falsely close a legitimately-filling cohort (gap G-02-2). The
+        // directory poll now owns arming the bounded grace, and only on the FIRST observed
+        // departure of the picked cohort from the Advertised set (handleDirectorySnapshot).
       });
       r.on('cohort-ready', ({ cohortId, beaconAddress }) => {
         // The DEFINITIVE seat (D-11): the cohort formed with us in it and membership
         // is locked. This is the only place `seated` flips true. The directory poll
         // can stand down now - a seated cohort legitimately leaves the Advertised
         // set, and that must not read as "filled or closed".
-        set({ beaconAddress, seated: true });
+        set({ beaconAddress, seated: true, awaitingSeats: null });
         clearDirectoryPoll();
         clearJoinGrace();
         append('info', `cohort ${cohortId} keygen complete; beacon ${beaconAddress}`);
@@ -694,6 +708,13 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         return;
       }
       if (!pickedCohortClosed(rows, pickedCohortId)) {
+        // Still openly Advertised: keep waiting (wait-for-n). Capture the picked row's
+        // live joined / capacity so the join flow can render a truthful "Waiting for the
+        // cohort to fill" line. This is the only place awaitingSeats is set to a value.
+        const row = rows.find((r) => r.cohortId === pickedCohortId && r.phase === 'Advertised');
+        if (row) {
+          set({ awaitingSeats: { joined: row.joined, capacity: row.capacity } });
+        }
         return;
       }
       // The picked cohort has left the Advertised set while we are still unseated.
@@ -710,11 +731,21 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       // cohort locks membership at its threshold BEFORE keygen finishes, so this may be
       // OUR cohort forming with cohort-ready imminent, or one that filled without us. The
       // protocol gives no accept/reject signal, so tearing down here would drop a genuine
-      // member mid-keygen and stall the whole n-of-n round. The join-grace timer (armed at
-      // cohort-joined) owns this outcome; the poll only waits. Log once, idempotently.
+      // member mid-keygen and stall the whole n-of-n round. Arm the bounded grace ONCE on
+      // this first observed departure (guarded by the joinGraceLogged one-shot so repeated
+      // ~5s poll ticks never re-arm or reset the window); cohort-ready clears it and seats
+      // the member. If no seat lands within the window, resolve to the deterministic
+      // filled-or-closed terminal instead of hanging. The poll itself never fails a member.
       if (!joinGraceLogged) {
         joinGraceLogged = true;
         append('info', `cohort ${pickedCohortId} left the open set; awaiting seat confirmation`);
+        joinGrace = setTimeout(() => {
+          const { seated, status } = get();
+          if (!seated && (status === 'connecting' || status === 'live')) {
+            set({ joinClosed: true });
+            fail('That cohort filled or closed before you were seated. Pick another from the directory.');
+          }
+        }, JOIN_SEAT_GRACE_MS);
       }
     },
 
@@ -733,6 +764,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         seated: false,
         optedIn: false,
         joinClosed: false,
+        awaitingSeats: null,
         pickedCohortId: null,
         error: null,
         ...INITIAL_OUTCOME,
