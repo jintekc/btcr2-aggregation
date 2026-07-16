@@ -14,7 +14,7 @@ This milestone is a course-correction, not a greenfield build. The full `did:btc
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Authenticated Operator Console + On-Demand Cohort Creation** - Operator logs in and creates/configures/advertises a cohort on demand, replacing the auto-advertise loop (completed 2026-07-08)
-- [x] **Phase 2: Participant Discovery + Browse-and-Pick Join** - Participant points at a service URL, browses its open cohorts, and joins one by choice (completed 2026-07-14)
+- [x] **Phase 2: Participant Discovery + Browse-and-Pick Join** - Participant points at a service URL, browses its open cohorts, and joins one by choice (completed 2026-07-16)
 - [ ] **Phase 3: Participant Submit, Co-Sign, Track, and Resolve** - From a chosen cohort, participant submits a DID update, co-signs, tracks the anchor, and resolves
 - [ ] **Phase 4: Operator Cohort Monitoring** - Operator watches members, submissions, co-sign progress, and anchor status live on the protected console
 - [ ] **Phase 5: Operator Cohort Lifecycle Control** - Operator runs open->close->finalize and pauses/cancels/reconfigures advertising without restarting
@@ -161,7 +161,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Authenticated Operator Console + On-Demand Cohort Creation | 4/4 | Complete    | 2026-07-08 |
-| 2. Participant Discovery + Browse-and-Pick Join | 6/7 | In Progress|  |
+| 2. Participant Discovery + Browse-and-Pick Join | 9/9 | Complete    | 2026-07-16 |
 | 3. Participant Submit, Co-Sign, Track, and Resolve | 0/TBD | Not started | - |
 | 4. Operator Cohort Monitoring | 0/TBD | Not started | - |
 | 5. Operator Cohort Lifecycle Control | 0/TBD | Not started | - |

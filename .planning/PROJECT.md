@@ -29,6 +29,8 @@ This project is being onboarded into a structured workflow to **course-correct**
 - ✓ Operator authentication protects the control + telemetry surface: httpOnly opaque server-tracked session, fail-closed boot when `OPERATOR_PASSWORD` unset, no unauthenticated mutating/control route (HOST-01 - Phase 1, ADR 0015 supersedes 0004)
 - ✓ Operator creates and configures a cohort on demand from a protected `/operator` console (beacon type CAS/SMT, n-of-n threshold, capacity), not via a boot-time loop (SVC-01 - Phase 1)
 - ✓ Operator advertises a cohort into a per-service directory (public `GET /v1/directory` + `GET /v1/status` derived from the live set); the boot-time auto-advertise loop + fillers are removed (SVC-02 - Phase 1)
+- ✓ Participant discovers and browses a service's advertised open cohorts by pointing at that service's URL: anonymous directory landing at `/` (service-identity header, ~5s-polled list, plain-language labels, honest seats + k-of-n co-sign figures, empty/unreachable states) (PART-01 - Phase 2)
+- ✓ Participant joins an advertised cohort by choice (browse-and-pick with inline identity), waits with a truthful `joined/n seats` line until all n seats fill, is seated when the cohort locks, and a full or closed cohort cannot be joined (deterministic filled-or-closed outcome, Leave from a seated state) (PART-02 - Phase 2; multi-cohort management stays deferred as PMG-01)
 
 ### Active
 
@@ -39,8 +41,6 @@ Service side (operator experience):
 - [ ] Operator can **run aggregation and manage cohort lifecycle** (open -> close -> finalize; pause/cancel/reconfigure) without restarting the process
 
 Participant side (attendee experience):
-- [ ] Participant can **discover and browse** a service's advertised open cohorts by pointing at that service's URL (per-service directory)
-- [ ] Participant can **join** an advertised cohort by choice (browse-and-pick), potentially across more than one cohort
 - [ ] Participant can **submit a DID update and co-sign** the cohort's beacon (wire the existing signing flow into the discover -> join path)
 - [ ] Participant can **track status and resolve** the updated DID once it is anchored
 
@@ -84,12 +84,16 @@ Self-hostable for real:
 | Onboard the existing repo into a GSD-managed workflow to course-correct | An unstructured flow drifted from the intended end product | Pending |
 | Target is a two-sided product: services advertise/manage cohorts, participants discover/join/participate | The intended end product is two-sided, not a single demo flow; confirmed by the owner | Pending |
 | Discovery is a per-service cohort directory (not a federated registry, not invite-only) | Keeps each service a self-contained, self-hostable node with no shared infra | ✓ Phase 1 (public `GET /v1/directory` + `/v1/status` shipped) |
-| Realign a clean, smooth, self-hostable two-sided core first; fold accreted features (x1/baked/IPFS/mainnet/CI/Docker) in behind it | The drift is demo-grade and not-smooth, not the features themselves | In progress (Phase 1 delivered the operator half) |
+| Realign a clean, smooth, self-hostable two-sided core first; fold accreted features (x1/baked/IPFS/mainnet/CI/Docker) in behind it | The drift is demo-grade and not-smooth, not the features themselves | In progress (Phases 1-2 delivered operator create/advertise + participant browse-and-pick join) |
 | Consume published `@did-btcr2/*`; do not fork the library | This is a reference/example consumer application | ✓ Good (established) |
 | Operator auth = httpOnly opaque server-tracked session cookie (gates the SSE telemetry feed); fail-closed boot when `OPERATOR_PASSWORD` unset | Only scheme that gates the EventSource feed; enforces "no unauthenticated mutating/control surface" | ✓ Phase 1 (ADR 0015, supersedes ADR 0004) |
 | Remove the boot-time auto-advertise loop; `advertiseDraft` is the sole `runner.advertiseCohort` caller (cohorts exist only on operator action) | Retires the demo happy-path driver; makes advertise operator-driven (the core course-correction) | ✓ Phase 1 (D-17/D-18) |
 | Active Bitcoin network is the service's resolved network, shown read-only per cohort (never a per-cohort form value) | Honors "config-driven network, never hardcoded"; avoids simultaneous multi-network cohorts | ✓ Phase 1 (D-10) |
 | Known follow-up: login throttle keys on raw socket IP (per-proxy under ADR 0014), and session TTL misconfig can disable expiry | Surfaced by code review (WR-01/WR-02) + security audit (T-01-06, medium, non-blocking) | Open - fix recommended before public-internet deploy (01-SECURITY.md) |
+| Cohort shape is a two-field k-of-n: n seats that ALL join before the cohort starts (min == max == n), plus a separate signing floor k wired to the activated ADR-042 script-path fallback (`fallbackThreshold`, 1 <= k <= n, default k = n); the directory shows `joined/n seats` + a `k-of-n` co-sign figure honestly | A single-field n-of-n over-promised "all co-sign" while the fallback could anchor with fewer; the owner corrected the model to two honest numbers (G-02-1) | ✓ Phase 2 (02-05/02-07/02-08; `pnpm e2e:kofn` n=4/k=2 capstone) |
+| Advertised cohorts get a 30-minute discovery window (env-tunable); expiry is surfaced to the operator as a bounded `expired` record with a reason and a gated re-advertise route, never silently deleted and never shown to participants | A stranger browsing by choice needs real time to discover; the booth-era ~60s reap made browse-and-pick impossible (F2) | ✓ Phase 2 (02-06) |
+| The join-seat grace timer arms at the picked cohort's first observed departure from the Advertised directory set, not at opt-in; while the row stays Advertised the participant waits indefinitely with a truthful `Waiting for the cohort to fill (joined/n seats)` line | Under wait-for-n with no fillers, arming at opt-in falsely failed every solo joiner at 90s and stranded a zombie seat (G-02-2) | ✓ Phase 2 (02-09) |
+| Known follow-up: no distinct participant feedback when the service goes down mid-join (poll failure is indistinguishable from a slow directory) | Surfaced by 02-09 code review (WR-02, non-blocking); fold into the participant status work | Open - candidate for Phase 3 |
 
 ## Evolution
 
@@ -109,4 +113,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-08 after Phase 1 (Authenticated Operator Console + On-Demand Cohort Creation)*
+*Last updated: 2026-07-16 after Phase 2 (Participant Discovery + Browse-and-Pick Join)*

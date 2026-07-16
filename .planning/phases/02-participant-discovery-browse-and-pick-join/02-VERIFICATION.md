@@ -1,7 +1,7 @@
 ---
 phase: 02-participant-discovery-browse-and-pick-join
 verified: 2026-07-16T14:00:00Z
-status: human_needed
+status: passed
 score: 28/28 must-haves verified
 behavior_unverified: 0
 overrides_applied: 0
@@ -9,14 +9,17 @@ re_verification:
   previous_status: human_needed
   previous_score: 23/23 must-haves verified
   gaps_closed:
+
     - "G-02-2: the 90s join-seat grace timer, previously armed in the cohort-joined handler at opt-in, falsely resolved a legitimately-filling cohort to 'filled or closed' under the wait-for-n (02-05) + 30-min discovery window (02-06) model, and its teardown stranded the accepted opt-in as an unreclaimable zombie seat. Closed by 02-09: the grace now arms exactly once, in handleDirectorySnapshot's opted-in-departure branch (the FIRST observed departure of the picked cohort from the Advertised set), guarded by the pre-existing joinGraceLogged one-shot; cohort-joined records the opt-in only and arms nothing; a new awaitingSeats { joined, capacity } | null field is captured on every still-Advertised poll tick and rendered in JoinIdentityStep.tsx as 'Waiting for the cohort to fill ({joined}/{capacity} seats)'; awaitingSeats resets on all five terminal/reset paths (adopt, join, leave, cohort-ready, fail)."
   gaps_remaining: []
   regressions: []
 gaps: []
 human_verification:
+
   - test: "F2 expiry-surfacing visual re-confirm (unchanged from the prior two reports, deferred from PLAN 02-06 Task 3 <human-check>, non-blocking)"
     expected: "An expired cohort visibly persists in the operator's list (never silently vanishes) with a legible reason; Re-advertise successfully revives it."
     why_human: "Visual fidelity + interaction cannot be grepped; pnpm e2e:operator's F2 leg (independently re-run this session, exit 0) proves the wire behavior, not the rendered surface."
+
   - test: "Pick -> identity -> join -> seated -> tail click flow, INCLUDING the new G-02-2 waiting-line behavior (UAT Test 2/3, previously deferred pending gap closure; the join path this gap changed). As operator advertise a 2-of-2 cohort; from a second anonymous tab click Join on the Open row, Cancel once before generating a key, then generate a KEY identity and click Join cohort while the cohort is NOT yet full; confirm the button stays 'Joining...' AND a faint line reads 'Waiting for the cohort to fill (1/2 seats)' (or the live count) instead of only a bare spinner, and the participant is NOT falsely failed while the row stays Advertised; then have a second participant fill the cohort and confirm it reaches the seated confirmation. Separately try to join a cohort that fills first; use Leave cohort from a seated state."
     expected: "A joinable row shows an enabled Join; a Filling/Full row shows Join disabled. Clicking Join reveals the inline identity step; Cancel returns to the directory having minted no key. Confirming Join while the cohort is still filling shows the truthful 'Waiting for the cohort to fill ({joined}/{capacity} seats)' line (not a false 90s failure), and once a second participant fills the cohort the seated confirmation 'You're seated in cohort ...' appears, with the reused tail proceeding to a 64-byte co-sign + resolve. Trying to join an already-filled cohort yields the deterministic filled/closed message and returns to browse with no dead spinner. Leave cohort returns to the directory with no confirmation dialog."
     why_human: "Same DOM-harness gap (packages/web has no render harness, deliberate, T-02-SC); pnpm e2e:browse (independently re-run this session, exit 0) proves the underlying lifecycle and selectivity headlessly, but not the rendered click path or the new waiting-line copy on screen. The prior Test 1 (two-field k-of-n form + honest directory row) already PASSED visually and needs no re-test."

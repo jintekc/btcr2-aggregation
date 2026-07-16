@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 02
-current_phase_name: participant-discovery-browse-and-pick-join
-status: security_gate
-stopped_at: Phase 2 UAT COMPLETE 3/3 passed, 0 issues, all gaps (F1/F2/F1c/G-02-1/G-02-2) resolved; blocked only on the security capability gate (no 02-SECURITY.md yet)
-last_updated: "2026-07-16T18:45:00.000Z"
+current_phase: 3
+current_phase_name: Participant Submit, Co-Sign, Track, and Resolve
+status: planning
+stopped_at: Phase 2 complete (UAT 3/3, security gate 25/25 closed, verification passed), ready to plan Phase 3
+last_updated: "2026-07-16T22:22:48.777Z"
 last_activity: 2026-07-16
-last_activity_desc: UAT 3/3 passed (two-field k-of-n form, expiry surface, join click-path incl. waiting line); seated-card stale-snapshot copy fixed (faa3922); form label/order tweaks (2c5c285)
+last_activity_desc: Phase 02 complete, transitioned to Phase 3
 progress:
   total_phases: 2
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 13
   completed_plans: 13
 ---
@@ -20,25 +20,25 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-07-08)
+See: .planning/PROJECT.md (updated 2026-07-16)
 
 **Core value:** A stranger can self-host a real aggregation service that advertises cohorts, and another stranger can point a participant at that service's URL, browse its cohorts, join, co-sign, and resolve - a genuinely two-sided, self-hostable product, not a demo.
-**Current focus:** Phase 02 - participant-discovery-browse-and-pick-join
+**Current focus:** Phase 3 - Participant Submit, Co-Sign, Track, and Resolve
 
 ## Current Position
 
-Phase: 02 (participant-discovery-browse-and-pick-join) - UAT COMPLETE, SECURITY GATE PENDING
-Plan: all 9 plans executed (02-01..04 + gap plans 02-05 F1a/F1b, 02-06 F2, 02-07 F1c, 02-08 G-02-1 two-field k-of-n, 02-09 G-02-2 join-grace rearm). UAT 3/3 PASSED 2026-07-16 (b9a15d2), 0 issues, all gaps resolved. Re-verification 28/28 must-haves; 02-09 review 0 blocker/3 warn/3 info, all findings fixed except WR-02 (deferred: service-down-mid-join feedback). Two UAT-driven inline fixes landed post-verification: create-form labels/order (Signing threshold (k) first, Cohort size (n) second, 2c5c285) + truthful seated-card copy (stale pick-time snapshot dropped, faa3922).
-Status: RESUME HERE - (1) run /gsd-secure-phase 2 (the active security capability blocks phase advancement until 02-SECURITY.md exists with threats_open=0; Phase 2 added the gated readvertise route + the k-of-n surface; threat models to verify: T-05-*, T-06-*, T-07-*, T-KOFN-* across the 5 gap PLANs). (2) When threats_open=0: set 02-VERIFICATION.md frontmatter status human_needed -> passed (gsd-tools query frontmatter.set <file> --field status --value passed), then `gsd-tools phase uat-passed 2 --require-verification` must return passed=true, then run the transition (phase.complete) to mark Phase 2 done and route to Phase 3 (/gsd-discuss-phase 3 or /gsd-plan-phase 3). NOTE: git signing was restored to the user's default; GSD commits must use `git -c commit.gpgsign=false commit` or re-set `git config --local commit.gpgsign false` for the session (YubiKey cannot sign non-interactively).
-Last activity: 2026-07-16 - Phase 2 UAT completed 3/3 (all visual tests passed); awaiting security gate only
+Phase: 3 - Participant Submit, Co-Sign, Track, and Resolve
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-07-16 - Phase 02 complete, transitioned to Phase 3
 
-Progress: [██░░░░░░░░] 17% (Phase 1 of 6 complete)
+Progress: [███░░░░░░░] 33% (Phase 2 of 6 complete)
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 4
+- Total plans completed: 13
 - Average duration: - min
 - Total execution time: 0 hours
 
@@ -47,6 +47,7 @@ Progress: [██░░░░░░░░] 17% (Phase 1 of 6 complete)
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 1 | 4 | - | - |
+| 02 | 9 | - | - |
 
 **Recent Trend:**
 
@@ -77,22 +78,13 @@ Progress: [██░░░░░░░░] 17% (Phase 1 of 6 complete)
 ### Decisions
 
 Decisions are logged in PROJECT.md Key Decisions table.
-Recent decisions affecting current work:
+Recent decisions affecting current work (Phase 2):
 
-- Roadmap: Two-sided product realignment - services advertise/manage cohorts, participants discover/join/participate (not a single demo flow).
-- Roadmap: Discovery is a per-service cohort directory (not federated, not invite-only).
-- Roadmap: Operator auth (HOST-01) bundled with the first operator control action (Phase 1) so no unauthenticated mutating operator route ever ships.
-- [Phase ?]: Phase 1: operator auth = httpOnly opaque server-tracked session cookie (only scheme that gates the EventSource SSE feed); fail-closed boot when OPERATOR_PASSWORD unset (ADR 0015, supersedes ADR 0004)
-- [Phase 01]: Phase 1 P02: a cohort draft is app-level config only (never touches the runner until advertise, plan 03); active network is the service's resolved network, never a form value (D-10); capacity applied app-side as maxParticipants (D-11/D-19)
-- [Phase ?]: 01-03: advertiseDraft is the sole runner.advertiseCohort caller; the boot-time auto-advertise loop + boot-path fillers removed (D-17/D-18)
-- [Phase ?]: 01-03: public /v1/directory + /v1/status derive from live runner.session.cohorts filtered to pre-signing OPEN_PHASES; enrichment pruned on completion.finally so the open-count cannot drift (D-09/D-15)
-- [Phase ?]: Phase-1 e2e (e2e:operator) never calls runner.run(); the operator advertise route self-drives the cohort and the harness observes the 64-byte signature off signing-complete
-- [Phase ?]: e2e:operator registered but intentionally NOT wired into CI (deferred to a Phase-6 / CI concern)
-- [Phase ?]: 02-05 (F1a/F1b): collapse operator cohort size to one n (min == max == n); capacity > threshold unrepresentable server-side; directory rows honest with zero display change
-- [Phase 02]: 02-06 (F2): raise the single stall/TTL timer defaults to a 30-min discovery window (env-tunable); retain a bounded operator-only 'expired' terminal record on completion rejection (surfaced via listCohorts, never directory/status); readvertiseExpired is a second operator-driven advertiseCohort caller (D-17 preserved) behind the gated POST /v1/operator/cohorts/:id/readvertise
-- [Phase ?]: 02-07 (F1c): n-of-n MuSig2 stays the primary spend; the ADR 042 k-of-n script-path fallback is ACTIVATED for signing liveness (createService.autoFallbackOnStall threaded to the runner; demo-server default ON via AUTO_FALLBACK). buildCohortConfig gains an optional fallbackThreshold (default n-1). The fixture beacon tx now spends the real beacon-address output so the script-path fallback validates hermetically (fixed 'Reconstructed beacon output script' rejection).
-- [Phase 02]: 02-08 (G-02-1): restore the operator signing threshold k as a SECOND honest number. size n = seats (min == max == n, verbatim from 02-05); threshold k = fallbackThreshold (the ADR-042 script-path floor, 1 <= k <= n). Wire body { beaconType, size, threshold? } with threshold OPTIONAL defaulting to size (k = n); createDraft ALWAYS sets fallbackThreshold = k explicitly (so a default cohort's committed beacon leaf moves n-1 -> n, deliberate + safe). DTO flip threshold=k/capacity=n atomic at all four emit sites. Decision 4: validateDraft refuses k < size when autoFallbackOnStall is off (FALLBACK_OFF_ERROR). New e2e/kofn-cohort.ts n=4/k=2 capstone (distinguishable from the library n-1 default) proves k reaches the gate (drop 2 -> script-path) + gates anchoring (drop 3 -> cohort-failed). Empirical: 1-survivor fallback stalls in FallbackRequested phase rather than emitting 'Not enough valid fallback signatures'.
-- [Phase 02]: 02-09 (G-02-2): under wait-for-n (min == max == n, no fillers, 30-min discovery window) the 90s join-seat grace timer must arm at the FIRST OBSERVED DEPARTURE of the picked cohort from the Advertised set (handleDirectorySnapshot opted-in branch), NOT at opt-in (cohort-joined). cohort-joined now records optedIn/steps/log and arms nothing; the poll arms the grace once (joinGraceLogged one-shot). So an opted-in participant whose picked cohort is still Advertised is never falsely failed at 90s and captures the polled joined/capacity into a new awaitingSeats field (rendered as `Waiting for the cohort to fill ({joined}/{capacity} seats)`). awaitingSeats resets in adopt/join/leave/cohort-ready/fail. CR-01 preserved (the bounded window still protects a genuine member forming mid-keygen, now armed at departure). Browser-store-only, zero new packages, zero e2e/Node-participant changes; the four hermetic capstones (browse/operator/kofn/fallback) re-run green.
+- [Phase 02] Two-field k-of-n cohort shape: n seats that ALL join before start (min == max == n, no phantom seat), k = the ADR-042 script-path fallbackThreshold (1 <= k <= n, default k = n); DTO flipped threshold=k / capacity=n at all four emit sites; honest cosignValue/cosignCaption copy (02-05/02-08).
+- [Phase 02] The ADR-042 k-of-n script-path fallback is ACTIVATED for signing liveness (createService.autoFallbackOnStall; demo-server default ON via AUTO_FALLBACK); n-of-n MuSig2 stays the primary spend; validateDraft refuses k < n when the fallback is off (02-07).
+- [Phase 02] Advertised cohorts get a 30-min discovery window (env-tunable); expiry surfaces to the operator as a bounded 'expired' record + reason behind the gated re-advertise route (second operator-driven advertiseCohort caller, D-17 preserved); never shown to participants (02-06).
+- [Phase 02] Join-seat grace arms at the picked cohort's FIRST OBSERVED DEPARTURE from the Advertised set (directory poll), not at opt-in; while still Advertised the participant waits with the truthful awaitingSeats `joined/capacity` line (02-09).
+- [Phase 02] Hermetic capstones gate the phase: e2e:browse + e2e:kofn (n=4/k=2, chosen because k = n-1 is a false green vs the library default) + e2e:operator + e2e:fallback, all green alongside 302 unit tests.
 
 ### Pending Todos
 
@@ -106,6 +98,7 @@ None yet.
 
 - ✓ [Phase 1] Operator authentication shipped (ADR 0015) - the control plane is no longer unauthenticated; this must stay green in every later phase. Non-blocking follow-up before public-internet deploy: T-01-06 login-throttle-per-proxy + WR-02 NaN-TTL hardening (see 01-SECURITY.md / 01-REVIEW.md).
 - Cohort state is single-process and in-memory; durability/crash-recovery is deferred to v2 (DUR-01). The boot-time auto-advertise loop that used to drive cohorts was removed in Phase 1 - cohorts now exist only on operator action.
+- [Phase 2] No distinct participant feedback when the service goes down mid-join (a directory-poll failure looks like a slow directory) - 02-09 review WR-02, non-blocking; candidate to fold into Phase 3's status/tracking surface.
 
 ## Deferred Items
 
@@ -120,7 +113,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-16T13:25:00.000Z
-Stopped at: Completed 02-09-PLAN.md (G-02-2 join-grace rearm for wait-for-n; awaitingSeats waiting line)
+Last session: 2026-07-16T22:25:00.000Z
+Stopped at: Phase 2 complete (UAT 3/3, security 25/25 closed, verification passed), ready to plan Phase 3
 Resume file: None
-Next command: /gsd-verify-work 2
+Next command: /gsd-discuss-phase 3
