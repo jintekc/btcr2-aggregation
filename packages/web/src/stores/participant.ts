@@ -279,6 +279,14 @@ function teardownIpfs(): void {
 // long-lived handle, not a render value. Cleared on seat/complete/fail/leave.
 let directoryPoll: ReturnType<typeof setInterval> | null = null;
 const DIRECTORY_POLL_MS = 5000;
+// Round token for the directory poll's async continuation (mirrors ipfsEpoch). A
+// fetchDirectory promise already in flight when the poll is cleared or restarted
+// (fail / seat / leave / re-join) would otherwise resolve into the WRONG round:
+// handleDirectorySnapshot reads the LIVE pickedCohortId via get(), so a stale snapshot
+// taken during round A could falsely fail a legitimate fresh round B join (WR-01).
+// clearDirectoryPoll bumps this epoch; the continuation drops any snapshot whose
+// captured epoch no longer matches the live one.
+let directoryEpoch = 0;
 
 // Join-seat grace window (CR-01). It is armed on the FIRST observed DEPARTURE of the
 // picked cohort from the Advertised set (in handleDirectorySnapshot), NOT at opt-in.
@@ -328,6 +336,10 @@ function clearDirectoryPoll(): void {
     clearInterval(directoryPoll);
     directoryPoll = null;
   }
+  // Invalidate any fetchDirectory still in flight so its stale snapshot cannot drive
+  // the next round (WR-01). Bumped unconditionally: the interval may have fired and
+  // started a fetch that is still pending even after clearInterval.
+  directoryEpoch += 1;
 }
 
 function clearJoinGrace(): void {
@@ -684,9 +696,19 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         // swallowed: an unreachable service must never masquerade as a closed cohort;
         // the next tick retries. The poll is cleared on seat (cohort-ready),
         // cohort-complete, fail, and leave.
+        // Capture the round token now (mirrors ipfsEpoch): a snapshot that resolves
+        // after this poll was cleared/restarted belongs to a prior round and must be
+        // dropped, not applied against the current pickedCohortId (WR-01).
+        const epoch = directoryEpoch;
         directoryPoll = setInterval(() => {
           fetchDirectory(baseUrl).then(
-            (rows) => get().handleDirectorySnapshot(rows),
+            (rows) => {
+              // Drop a stale in-flight snapshot from a prior round; only a fetch issued
+              // and resolved within the still-current round may drive the outcome (WR-01).
+              if (epoch === directoryEpoch) {
+                get().handleDirectorySnapshot(rows);
+              }
+            },
             () => {
               // Ignore: a fetch error is "unreachable", not "closed" (D-12).
             },
