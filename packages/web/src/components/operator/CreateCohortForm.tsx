@@ -82,21 +82,8 @@ export function CreateCohortForm({ baseUrl }: { baseUrl: string }) {
           />
         </Field>
 
-        <Field label="Cohort size (seats)" htmlFor="cohort-size">
-          <Input
-            id="cohort-size"
-            type="number"
-            value={sizeText}
-            onChange={setSizeText}
-            disabled={creating}
-          />
-          <p className="mt-1 text-xs text-faint">
-            Everyone in the cohort co-signs together, so this is the number of seats and the n in n-of-n. The
-            cohort starts only once every seat is filled.
-          </p>
-        </Field>
-
-        <Field label="Signing threshold (k of n)" htmlFor="cohort-threshold">
+        {/* Field order is a UAT-confirmed operator preference: threshold (k) first, size (n) second. */}
+        <Field label="Signing threshold (k)" htmlFor="cohort-threshold">
           <Input
             id="cohort-threshold"
             type="number"
@@ -107,6 +94,20 @@ export function CreateCohortForm({ baseUrl }: { baseUrl: string }) {
           <p className="mt-1 text-xs text-faint">
             Everyone co-signs first. If a signer stalls, the cohort can still anchor as long as at least this
             many of the n seats sign. Set it equal to the size to require everyone.
+          </p>
+        </Field>
+
+        <Field label="Cohort size (n)" htmlFor="cohort-size">
+          <Input
+            id="cohort-size"
+            type="number"
+            value={sizeText}
+            onChange={setSizeText}
+            disabled={creating}
+          />
+          <p className="mt-1 text-xs text-faint">
+            Everyone in the cohort co-signs together, so this is the number of seats and the n in n-of-n. The
+            cohort starts only once every seat is filled.
           </p>
         </Field>
 

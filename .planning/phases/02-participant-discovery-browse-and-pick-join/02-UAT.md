@@ -8,13 +8,16 @@ updated: 2026-07-15T22:30:00Z
 
 ## Current Test
 
-number: 2
-name: F2 expiry-surfacing visual re-confirm
+number: 3
+name: Pick to join to seated click flow, including the truthful waiting line
 expected: |
-  At /operator, advertise a cohort and let it sit unjoined past the discovery window (or use a
-  short PHASE_TIMEOUT_MS override for a faster check). The row flips to a bad-tone `Expired`
-  badge with a reason, and `Re-advertise` puts a fresh cohort back into the directory. The row
-  now also shows the k-of-n co-sign figure.
+  As operator advertise a 2-of-2 cohort; from a second anonymous tab click Join on the Open
+  row, Cancel once before generating a key, then generate a KEY identity and confirm Join
+  cohort. While the cohort waits for its second seat, the join flow shows the truthful
+  `Waiting for the cohort to fill (1/2 seats)` line and is NOT falsely failed after 90
+  seconds. Then fill the second seat from another tab: the seated confirmation appears and
+  the reused tail proceeds to a 64-byte co-sign + resolve. A 1-of-1 that fills before
+  confirming shows the deterministic filled-or-closed message; Leave returns to the directory.
 awaiting: user response
 
 ## Tests
@@ -52,7 +55,12 @@ expected: |
 why_human: |
   Visual fidelity + interaction cannot be grepped; the e2e proves the wire behavior
   (pnpm e2e:operator F2 leg, independently re-run), not the rendered surface.
-result: pending
+result: pass
+reported: |
+  "pass" plus three cosmetic create-form notes (applied immediately, web gates green, not
+  gaps): label `Cohort size (seats)` -> `Cohort size (n)`; label `Signing threshold (k of n)`
+  -> `Signing threshold (k)`; field order flipped so the threshold (k) box renders before the
+  cohort size (n) box.
 
 ### 3. Pick to join to seated click flow, including the truthful waiting line (UAT Test 2; re-scoped after the G-02-2 fix)
 expected: |
@@ -76,9 +84,9 @@ result: pending
 ## Summary
 
 total: 3
-passed: 1
+passed: 2
 issues: 0
-pending: 2
+pending: 1
 skipped: 0
 blocked: 0
 
