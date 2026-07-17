@@ -33,8 +33,16 @@ import type { DirectoryCohortDTO, OperatorBeaconType } from './operator.js';
  */
 export const JOINABLE_PHASE = 'Advertised';
 
-/** The plain-language status labels the directory renders (D-09). */
-export type StatusLabel = 'Open' | 'Filling' | 'Collecting updates' | 'Full' | string;
+/**
+ * The mid-signing phases the widened directory DISPLAY set surfaces (D-26): a service that
+ * is busy co-signing still looks alive to a stranger, listed as a non-joinable "In progress"
+ * row. These mirror the service's `IN_FLIGHT_PHASES` (`packages/service/src/operator-cohorts.ts`)
+ * and are never in {@link JOINABLE_PHASE}, so {@link isJoinable} stays Advertised-only.
+ */
+const IN_FLIGHT_PHASES = new Set<string>(['SigningStarted', 'NoncesCollected', 'AwaitingPartialSigs']);
+
+/** The plain-language status labels the directory renders (D-09/D-26). */
+export type StatusLabel = 'Open' | 'Filling' | 'Collecting updates' | 'In progress' | 'Full' | string;
 
 /** The Badge/StatusDot tones this surface uses (a subset of the primitives' Tone union). */
 export type StatusTone = 'accent' | 'warn' | 'neutral';
@@ -53,6 +61,12 @@ export function isJoinable(row: DirectoryCohortDTO): boolean {
  * Collecting updates, and an unrecognized phase falls back to its raw string.
  */
 export function statusLabel(row: DirectoryCohortDTO): StatusLabel {
+  // In-flight signing rows read the D-26 "In progress" label BEFORE the full check: a
+  // co-signing cohort has every seat filled (joined == capacity), so a plain "Full" would
+  // mask that it is actively signing. "In progress" is the more honest, informative state.
+  if (IN_FLIGHT_PHASES.has(row.phase)) {
+    return 'In progress';
+  }
   if (row.joined >= row.capacity) {
     return 'Full';
   }

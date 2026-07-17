@@ -71,6 +71,14 @@ describe('directory helpers - statusLabel (all four labels incl. Full)', () => {
   it('falls back to the raw phase for an unknown phase', () => {
     expect(statusLabel(row({ phase: 'SomethingNew', joined: 0, capacity: 3 }))).toBe('SomethingNew');
   });
+
+  it('maps an in-flight signing phase -> In progress even when full (D-26)', () => {
+    // A co-signing cohort is full (joined == capacity); the in-flight label wins so the
+    // busy row reads "In progress" rather than a bare "Full".
+    expect(statusLabel(row({ phase: 'SigningStarted', joined: 3, capacity: 3 }))).toBe('In progress');
+    expect(statusLabel(row({ phase: 'NoncesCollected', joined: 3, capacity: 3 }))).toBe('In progress');
+    expect(statusLabel(row({ phase: 'AwaitingPartialSigs', joined: 3, capacity: 3 }))).toBe('In progress');
+  });
 });
 
 describe('directory helpers - statusTone', () => {

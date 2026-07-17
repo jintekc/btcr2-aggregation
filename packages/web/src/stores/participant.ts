@@ -326,6 +326,20 @@ function clearPendingSubmit(): void {
   pendingSubmit = null;
 }
 
+/**
+ * The already-built, already-signed update body for the OPEN explicit-submit window
+ * (PART-03, D-12), or null when no window is open. An additive, non-reactive read of the
+ * module-scope `pendingSubmit` deferred so the SubmitPanel can preview the EXACT body that
+ * `submitUpdate()` will submit (the previewed body IS the submitted body, D-29). Not held in
+ * reactive state (the raw signed body is not a value React should diff): the serializable
+ * `pendingSubmit: boolean` projection drives the SubmitPanel render, and this returns the body
+ * that was stashed synchronously in the same callback that flipped that flag true, so reading
+ * it during that render is always current. Returns null once the window closes (submit/teardown).
+ */
+export function pendingSubmitUpdate(): SubmittedUpdate | null {
+  return pendingSubmit ? pendingSubmit.update : null;
+}
+
 // The in-browser IPFS node (heavy, lazily created on first publish). Module
 // scope like `live`: a long-lived object with sockets, not a value React should
 // diff. It keeps serving the controller's blocks over bitswap until the round
