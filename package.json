@@ -30,6 +30,7 @@
     "e2e:live:regtest": "tsc -b && LIVE=1 LIVE_NETWORK=regtest tsx e2e/resolve-cohort.ts",
     "e2e:browser": "pnpm -r build && tsx e2e/browser-cohort.ts",
     "e2e:browser:prod": "pnpm -r build && tsx e2e/browser-prod-cohort.ts",
+    "e2e:browser:participant": "pnpm -r build && tsx e2e/browser-participant-cohort.ts",
     "dev": "pnpm --filter @btcr2-aggregation/web dev",
     "demo": "pnpm -r build && tsx packages/service/src/demo-server.ts",
     "lint": "eslint .",
