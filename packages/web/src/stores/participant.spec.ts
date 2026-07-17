@@ -3,6 +3,7 @@ import type { Identity } from '@btcr2-aggregation/shared';
 import type { DirectoryCohortDTO } from '../lib/operator';
 import { fetchAnchor, type AnchorDTO } from '../lib/anchor';
 import {
+  anchorSummaryState,
   deriveStage,
   pickedCohortClosed,
   postSeatCohortGone,
@@ -525,6 +526,44 @@ describe('participant store - shouldAutoResolve (D-28 gating)', () => {
 
   it('is true on a live service once the beacon tx is confirmed', () => {
     expect(shouldAutoResolve({ enabled: true, state: 'confirmed', txid: 'a' })).toBe(true);
+  });
+
+  it('is true on a live service once the beacon broadcast terminally failed (WR-01)', () => {
+    // A failed broadcast still reaches a resolve outcome (not-reflected/retry) rather than
+    // freezing the participant with no resolve.
+    expect(shouldAutoResolve({ enabled: true, state: 'failed', txid: 'a', reason: 'x' })).toBe(true);
+  });
+});
+
+// Mode-honest anchor narration (WR-01, D-07/D-22): maps every anchor read to one of four
+// honest completion-summary states, so a broadcasting/failed live service is never narrated
+// as a hermetic no-broadcast service.
+
+describe('participant store - anchorSummaryState (mode-honest, WR-01)', () => {
+  it('is hermetic before any read', () => {
+    expect(anchorSummaryState(null)).toBe('hermetic');
+  });
+
+  it('is hermetic on a no-broadcast service', () => {
+    expect(anchorSummaryState({ enabled: false, state: 'none' })).toBe('hermetic');
+  });
+
+  it('is broadcasting on an enabled service whose beacon tx has not posted yet', () => {
+    expect(anchorSummaryState({ enabled: true, state: 'none' })).toBe('broadcasting');
+  });
+
+  it('is anchored on an enabled service with a broadcast beacon tx', () => {
+    expect(anchorSummaryState({ enabled: true, state: 'broadcast', txid: 'ab' })).toBe('anchored');
+  });
+
+  it('is anchored on an enabled service with a confirmed beacon tx', () => {
+    expect(anchorSummaryState({ enabled: true, state: 'confirmed', txid: 'ab' })).toBe('anchored');
+  });
+
+  it('is broadcast-failed on an enabled service whose beacon broadcast failed', () => {
+    expect(anchorSummaryState({ enabled: true, state: 'failed', txid: 'ab', reason: 'x' })).toBe(
+      'broadcast-failed',
+    );
   });
 });
 

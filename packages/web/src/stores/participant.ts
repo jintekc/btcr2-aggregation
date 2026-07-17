@@ -668,11 +668,45 @@ export function roundTripOutcome(input: { beaconPresent: boolean; anchorEnabled:
 }
 
 /**
+ * Pure mode-honest anchor narration selector (WR-01, D-07/D-22). Maps every anchor read to
+ * exactly one of four honest completion-summary states, replacing the two-way anchored-or-
+ * hermetic collapse WR-01 flagged (which mis-narrated a broadcasting or failed live service
+ * as a hermetic no-broadcast service, claiming it "does not publish to Bitcoin" when it
+ * merely had a pending or failed beacon tx):
+ *
+ * - `hermetic`: the service does not broadcast (`!anchor?.enabled`, the D-07 mode bit). The
+ *   only state that may narrate the no-broadcast copy.
+ * - `anchored`: enabled AND a real beacon tx exists (`state` is `broadcast` or `confirmed`),
+ *   matching the existing `anchored` boolean and StageTimeline's "Anchored" relabel.
+ * - `broadcast-failed`: enabled AND `state === 'failed'` - the beacon broadcast terminally
+ *   failed, so there is no confirmed anchor (a distinct honest state, not hermetic).
+ * - `broadcasting`: otherwise (enabled AND `state === 'none'`) - the beacon tx has not posted
+ *   yet, so the summary honestly says it is broadcasting rather than claiming no broadcast.
+ */
+export function anchorSummaryState(
+  anchor: AnchorDTO | null,
+): 'anchored' | 'broadcasting' | 'broadcast-failed' | 'hermetic' {
+  if (!anchor?.enabled) {
+    return 'hermetic';
+  }
+  if (anchor.state === 'confirmed' || anchor.state === 'broadcast') {
+    return 'anchored';
+  }
+  if (anchor.state === 'failed') {
+    return 'broadcast-failed';
+  }
+  return 'broadcasting';
+}
+
+/**
  * Pure auto-resolve trigger (D-28): should the anchor stage be treated as complete enough
  * to auto-resolve? A hermetic (no-broadcast) service is signed-complete after one anchor
  * read (`enabled: false`, resolve returns the genesis - the expected fixture outcome); a
- * live service auto-resolves only once its beacon tx is `confirmed`. A live `broadcast`
- * (accepted, not yet mined) is NOT yet resolvable. The caller fires resolve() at most once.
+ * live service auto-resolves once its beacon tx is `confirmed`, OR once its broadcast has
+ * terminally `failed` so the participant still reaches a resolve outcome (the honest
+ * not-reflected/retry path) instead of freezing with no resolve (WR-01, D-28). A live
+ * `broadcast`/`none` (accepted or not yet posted, not yet mined) is NOT yet resolvable. The
+ * caller fires resolve() at most once.
  */
 export function shouldAutoResolve(anchor: AnchorDTO | null): boolean {
   if (!anchor) {
@@ -681,7 +715,7 @@ export function shouldAutoResolve(anchor: AnchorDTO | null): boolean {
   if (!anchor.enabled) {
     return true;
   }
-  return anchor.state === 'confirmed';
+  return anchor.state === 'confirmed' || anchor.state === 'failed';
 }
 
 /** The baked aggregate-beacon service types present in a genesis document (x1 only). */
