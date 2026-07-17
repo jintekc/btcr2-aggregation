@@ -291,6 +291,16 @@ async function advertise(
   });
 }
 
+/** Create a draft and advertise it in one step; returns the advertised DTO. */
+async function createAndAdvertise(
+  app: ReturnType<typeof operatorCohortApp>['app'],
+  cookie: string,
+  body: unknown,
+): Promise<OperatorCohortDTO> {
+  const created = (await (await createDraft(app, cookie, body)).json()) as OperatorCohortDTO;
+  return (await (await advertise(app, cookie, created.draftId)).json()) as OperatorCohortDTO;
+}
+
 describe('POST /v1/operator/cohorts/:id/advertise (advertise a draft)', () => {
   it('advertises a draft: it leaves the drafts list and becomes an open directory entry', async () => {
     const { app, runner } = operatorCohortApp();
@@ -556,6 +566,91 @@ describe('public /v1/directory + /v1/status (no session required)', () => {
     const status = await app.request('/v1/status');
     expect(status.status).toBe(200);
     expect(await status.json()).toEqual({ up: true, network: ACTIVE_NETWORK, openCohorts: 0 });
+
+    runner.stop();
+  });
+});
+
+describe('D-26: in-flight cohorts widen the public directory DISPLAY, not the joinable count', () => {
+  it('lists an Advertised row AND a signing-phase row while status().openCohorts counts only the Advertised one', async () => {
+    const { app, runner } = operatorCohortApp();
+    const cookie = await login(app);
+
+    // Two live advertised cohorts. Both start in the Advertised phase.
+    const advertisedCohort = await createAndAdvertise(app, cookie, { beaconType: 'CASBeacon', size: 2 });
+    const signingCohort = await createAndAdvertise(app, cookie, { beaconType: 'SMTBeacon', size: 3 });
+
+    // Drive ONLY the second cohort into an in-flight signing phase by stubbing its
+    // reported phase (no real signing is exercised in this spec); the first stays
+    // Advertised via the real phase lookup. Its enrichment config is untouched, so the
+    // widened DISPLAY set (D-26) should list it as a non-joinable "In progress" row.
+    const realGetCohortPhase = runner.session.getCohortPhase.bind(runner.session);
+    vi.spyOn(runner.session, 'getCohortPhase').mockImplementation((id: string) =>
+      id === signingCohort.draftId ? 'SigningStarted' : realGetCohortPhase(id),
+    );
+
+    // directory() lists BOTH cohorts, each carrying its raw phase (D-26 widened DISPLAY).
+    const directory = (await (await app.request('/v1/directory')).json()) as DirectoryCohortDTO[];
+    expect(directory).toHaveLength(2);
+    const advertisedRow = directory.find((r) => r.cohortId === advertisedCohort.draftId);
+    const signingRow = directory.find((r) => r.cohortId === signingCohort.draftId);
+    expect(advertisedRow?.phase).toBe('Advertised');
+    expect(signingRow?.phase).toBe('SigningStarted'); // the raw in-flight phase, for the client label
+
+    // status().openCohorts counts ONLY the Advertised (joinable) tier - the widened DISPLAY
+    // never inflates the public open count (Pitfall 3 / D-09).
+    const status = (await (await app.request('/v1/status')).json()) as ServiceStatusDTO;
+    expect(status.openCohorts).toBe(1);
+
+    runner.stop();
+  });
+
+  it('drops a settled (pruned) cohort from the widened directory even when its phase would still match the DISPLAY set', async () => {
+    const { app, runner } = operatorCohortApp();
+    const cookie = await login(app);
+    const advDto = await createAndAdvertise(app, cookie, { beaconType: 'CASBeacon', size: 2 });
+    const cohortId = advDto.draftId;
+
+    // Force the reported phase to an in-flight DISPLAY-set phase, THEN expire the cohort.
+    // The enrichment prune on settle (not the phase filter) is what must remove it: proving
+    // that widening the phase filter never makes the directory outlive the live/enriched set.
+    vi.spyOn(runner.session, 'getCohortPhase').mockReturnValue('SigningStarted');
+    runner.stopCohort(cohortId);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const directory = (await (await app.request('/v1/directory')).json()) as DirectoryCohortDTO[];
+    expect(directory).toHaveLength(0);
+    const status = (await (await app.request('/v1/status')).json()) as ServiceStatusDTO;
+    expect(status.openCohorts).toBe(0);
+
+    runner.stop();
+  });
+
+  it('keeps an expired terminal record out of the widened directory/status but present in listCohorts', async () => {
+    const { app, runner } = operatorCohortApp();
+    const cookie = await login(app);
+    const advDto = await createAndAdvertise(app, cookie, { beaconType: 'CASBeacon', size: 2 });
+    const cohortId = advDto.draftId;
+
+    // Even with the reported phase forced to an in-flight DISPLAY-set phase, expiry moves
+    // the cohort to the operator-only terminal set and prunes its enrichment entry, so the
+    // widened DISPLAY must NOT resurrect it into the public directory (D-26 / T-03-03-03).
+    vi.spyOn(runner.session, 'getCohortPhase').mockReturnValue('AwaitingPartialSigs');
+    runner.stopCohort(cohortId);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const directory = (await (await app.request('/v1/directory')).json()) as DirectoryCohortDTO[];
+    expect(directory).toHaveLength(0);
+    const status = (await (await app.request('/v1/status')).json()) as ServiceStatusDTO;
+    expect(status.openCohorts).toBe(0);
+
+    // Operator-only: the expired record is still listed to the operator (never silently gone).
+    const { cohorts } = (await (await app.request('/v1/operator/cohorts', { headers: { cookie } })).json()) as {
+      cohorts: OperatorCohortDTO[];
+    };
+    expect(cohorts).toHaveLength(1);
+    expect(cohorts[0].draftId).toBe(cohortId);
+    expect(cohorts[0].state).toBe('expired');
 
     runner.stop();
   });
