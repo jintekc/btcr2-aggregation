@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 03
 current_phase_name: participant-submit-co-sign-track-and-resolve
 status: executing
-stopped_at: Completed 03-01-PLAN.md
-last_updated: "2026-07-17T19:04:01.478Z"
+stopped_at: Completed 03-02-PLAN.md
+last_updated: "2026-07-17T19:13:17.493Z"
 last_activity: 2026-07-17
 last_activity_desc: Phase 03 execution started
 progress:
   total_phases: 3
   completed_phases: 2
   total_plans: 19
-  completed_plans: 13
+  completed_plans: 15
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-16)
 ## Current Position
 
 Phase: 03 (participant-submit-co-sign-track-and-resolve) — EXECUTING
-Plan: 2 of 6
+Plan: 3 of 6
 Status: Ready to execute
 Last activity: 2026-07-17 — Phase 03 execution started
 
-Progress: [███████░░░] 68% (Phase 2 of 6 complete)
+Progress: [████████░░] 79% (Phase 2 of 6 complete)
 
 ## Performance Metrics
 
@@ -73,6 +73,7 @@ Progress: [███████░░░] 68% (Phase 2 of 6 complete)
 | Phase 02 P08 | 12min | 3 tasks | 16 files |
 | Phase 02 P09 | 7min | 2 tasks | 3 files |
 | Phase 03 P01 | 8 min | 2 tasks | 2 files |
+| Phase 03 P02 | 6min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -87,6 +88,7 @@ Recent decisions affecting current work (Phase 2):
 - [Phase 02] Join-seat grace arms at the picked cohort's FIRST OBSERVED DEPARTURE from the Advertised set (directory poll), not at opt-in; while still Advertised the participant waits with the truthful awaitingSeats `joined/capacity` line (02-09).
 - [Phase 02] Hermetic capstones gate the phase: e2e:browse + e2e:kofn (n=4/k=2, chosen because k = n-1 is a false green vs the library default) + e2e:operator + e2e:fallback, all green alongside 302 unit tests.
 - [Phase ?]: [Phase 03] PART-03 explicit-submit gate is opt-in via CreateParticipantOptions.onSubmitGate: absent = byte-identical auto-submit (headless peers/FILLERS/capstones unchanged), present = build-once then await the gate then submit the exact previewed body (D-12/D-16); logic extracted to exported createUpdateProvider seam for hermetic testing.
+- [Phase ?]: [Phase 03] PART-04 anchor tracking source is a PUBLIC GET /v1/anchor/:cohortId backed by a bounded (24, oldest-first) per-service retained map that folds the existing BeaconBroadcaster frames (broadcast/anchored/failed) into a last-known DTO; anonymous because anchor facts are public chain data, mode-honest via an enabled bit, non-oracle (unknown->state:none), and mounted OUTSIDE the operatorAuth block so ADR 0015 gating stays byte-untouched (D-20/D-21/D-22).
 
 ### Pending Todos
 
@@ -115,7 +117,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-17T19:03:47.802Z
-Stopped at: Completed 03-01-PLAN.md
+Last session: 2026-07-17T19:13:08.837Z
+Stopped at: Completed 03-02-PLAN.md
 Resume file: None
 Next command: /gsd-discuss-phase 3
