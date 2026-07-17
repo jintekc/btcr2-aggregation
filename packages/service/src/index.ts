@@ -19,6 +19,7 @@ import type { BitcoinConnection, FeeEstimator } from '@did-btcr2/bitcoin';
 import { createHonoApp } from './hono-adapter.js';
 import { createLoginThrottle, createSessionStore } from './operator-auth.js';
 import { createOperatorCohorts } from './operator-cohorts.js';
+import { createAnchorState } from './anchor-state.js';
 import { makeProvideTxData, type LiveTxConfig } from './tx.js';
 import { persistCohortArtifacts } from './persist.js';
 import { GenesisStagingCache, persistMemberGenesis } from './genesis-capture.js';
@@ -56,6 +57,7 @@ export {
   type ServiceStatusDTO,
   type DraftInput,
 } from './operator-cohorts.js';
+export { createAnchorState, type AnchorState, type AnchorReadDTO } from './anchor-state.js';
 export { makeProvideTxData, MIN_LIVE_FUNDING_SATS, type LiveTxConfig } from './tx.js';
 export { bridgeRunnerToSse, type DashboardExtras } from './dashboard-sse.js';
 export {
@@ -532,6 +534,14 @@ export function createService(opts: CreateServiceOptions): Service {
     });
   }
 
+  // Retained anchor state for the PUBLIC `GET /v1/anchor/:cohortId` read (PART-04,
+  // D-20/D-21). Constructed ONLY when a broadcaster exists (a broadcasting service),
+  // so its `enabled` bit is mode-honest: a hermetic/non-broadcasting service passes
+  // `undefined`, the route stays mounted, and every read is `{ enabled: false, state:
+  // 'none' }`. `netConfig` is present here because a broadcaster implies live (guarded
+  // above), so the explorer URL derives from the resolved live network.
+  const anchorState = broadcaster ? createAnchorState(broadcaster, netConfig) : undefined;
+
   // Operator on-demand cohort drafts (SVC-01). Constructed per-createService like the
   // auth closures above, and ONLY when the operator surface is enabled - fail-closed
   // (D-07): no operator password, no cohort routes. The active network is the service's
@@ -571,6 +581,9 @@ export function createService(opts: CreateServiceOptions): Service {
     // surface unmounted (fail-closed, D-07).
     operatorAuth,
     operatorCohorts,
+    // Present only when the service broadcasts (mode honesty); the public anchor read
+    // is mounted either way (fail-open) and does not weaken the operator gating.
+    anchorState,
   });
   let server: ServerType | undefined;
 

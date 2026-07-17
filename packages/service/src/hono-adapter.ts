@@ -28,6 +28,7 @@ import {
   type OperatorAuthConfig,
 } from './operator-auth.js';
 import type { DraftInput, OperatorCohorts } from './operator-cohorts.js';
+import type { AnchorState } from './anchor-state.js';
 import { mountStaticSite } from './static-site.js';
 import { mountArtifactRoutes, type ArtifactStore } from './store.js';
 import { resolveBtcr2 } from './resolve.js';
@@ -169,6 +170,16 @@ export interface HonoAppOptions {
    * they always inherit the session guard - never an unauthenticated mutating surface).
    */
   operatorCohorts?: OperatorCohorts;
+  /**
+   * Retained anchor state backing the PUBLIC `GET /v1/anchor/:cohortId` read (PART-04,
+   * D-20/D-21). Present only when this service broadcasts on-chain (a broadcaster is
+   * wired); when absent, the route still mounts and answers the fail-open
+   * `{ enabled: false, state: 'none' }` (mode honesty, mirrors `/v1/directory`'s empty
+   * default). Anchor facts are public chain data, so the route is anonymous - it does
+   * NOT weaken the operator-gated telemetry (ADR 0015); it is mounted OUTSIDE the
+   * operator-auth block beside `/v1/directory` and `/v1/ipfs`.
+   */
+  anchorState?: AnchorState;
 }
 
 /**
@@ -198,6 +209,7 @@ export function createHonoApp(
     ipfs,
     operatorAuth,
     operatorCohorts,
+    anchorState,
   } = opts;
   const app = new Hono<Env>();
 
@@ -287,6 +299,26 @@ export function createHonoApp(
       },
     );
   }
+
+  // Public anchor read (PART-04, D-20/D-21). Mounted here in the PUBLIC block beside
+  // /v1/directory + /v1/ipfs and BEFORE the `if (operatorAuth)` gate: anchor facts are
+  // public chain data (like /resolve + /cas), so a participant tracks their anchor with
+  // no session, and this must NOT weaken the operator-gated telemetry (ADR 0015 - the
+  // /dashboard/* + /v1/operator/* gating below is byte-untouched). Read-only, no body.
+  // Guard the cohortId shape with a cheap 400 BEFORE any lookup, then return the retained
+  // DTO. When no anchorState is wired (the hermetic default, no broadcaster) answer the
+  // fail-open `{ enabled: false, state: 'none' }` - never a 500 - mirroring how
+  // /v1/directory defaults to `[]`. An unknown cohortId reads as `{ state: 'none' }`
+  // (never a 404), so never-existed and evicted are indistinguishable (no existence
+  // oracle). The read never touches esplora: it serves last-known broadcaster state, so
+  // an anonymous route can never drive chain I/O (DoS) nor break the hermetic default.
+  app.get('/v1/anchor/:cohortId', (c) => {
+    const cohortId = c.req.param('cohortId');
+    if (!/^[0-9a-zA-Z-]{1,64}$/.test(cohortId)) {
+      return c.json({ error: 'invalid cohort id' }, 400);
+    }
+    return c.json(anchorState ? anchorState.read(cohortId) : { enabled: false, state: 'none' });
+  });
 
   // Operator surface (HOST-01, ADR 0015). Mounted ONLY when operator auth is
   // configured (fail-closed, D-07): a service booted without an OPERATOR_PASSWORD

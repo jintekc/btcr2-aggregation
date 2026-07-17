@@ -1,6 +1,9 @@
+import { HttpServerTransport } from '@did-btcr2/aggregation/service';
+import { resolveBtcr2SenderPk } from '@did-btcr2/method';
 import { describe, expect, it } from 'vitest';
 import type { NetworkConfig } from '@btcr2-aggregation/shared';
 import { BeaconBroadcaster } from './broadcast.js';
+import { createHonoApp } from './hono-adapter.js';
 import { createAnchorState } from './anchor-state.js';
 
 // Hermetic coverage of the retained anchor-state fold (D-20/D-21/D-22). A real
@@ -113,5 +116,59 @@ describe('createAnchorState', () => {
     expect(dto.txid).toBe('tx-abc');
     // A bad/absent explorer must never throw on the anonymous read (mirrors dashboard-sse).
     expect(dto.explorerUrl).toBeUndefined();
+  });
+});
+
+describe('GET /v1/anchor/:cohortId route', () => {
+  /** A bare app with no anchorState wired - the public read must still fail open. */
+  function bareApp() {
+    const transport = new HttpServerTransport({ resolveSenderPk: resolveBtcr2SenderPk, heartbeatIntervalMs: 0 });
+    return createHonoApp(transport, {});
+  }
+
+  /** An app wired with a broadcaster-backed anchorState we can drive directly. */
+  function anchoredApp() {
+    const transport = new HttpServerTransport({ resolveSenderPk: resolveBtcr2SenderPk, heartbeatIntervalMs: 0 });
+    const broadcaster = new BeaconBroadcaster();
+    const anchorState = createAnchorState(broadcaster, STUB_NETWORK);
+    return { app: createHonoApp(transport, { anchorState }), broadcaster };
+  }
+
+  it('fails open to { enabled:false, state:none } when no anchorState is wired', async () => {
+    const res = await bareApp().request('/v1/anchor/c1');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ enabled: false, state: 'none' });
+  });
+
+  it('rejects a malformed cohortId with a cheap 400 BEFORE any lookup', async () => {
+    // A path-illegal id cannot reach the router; test the character-class + length guard
+    // with ids that ARE routable but fail the shape check.
+    const res = await bareApp().request('/v1/anchor/has_underscore');
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'invalid cohort id' });
+
+    const tooLong = 'a'.repeat(65);
+    const resLong = await bareApp().request(`/v1/anchor/${tooLong}`);
+    expect(resLong.status).toBe(400);
+  });
+
+  it('serves the retained DTO for a known cohort on a broadcasting service', async () => {
+    const { app, broadcaster } = anchoredApp();
+    broadcaster.emit('beacon-broadcast', { cohortId: 'cohort-1', txid: 'tx-abc' });
+    const res = await app.request('/v1/anchor/cohort-1');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      enabled: true,
+      state: 'broadcast',
+      txid: 'tx-abc',
+      explorerUrl: 'https://example.test/tx/tx-abc',
+    });
+  });
+
+  it('answers an unknown cohortId with state:none (200, never 404) on a wired service', async () => {
+    const { app } = anchoredApp();
+    const res = await app.request('/v1/anchor/never-existed');
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { state: string }).toMatchObject({ enabled: true, state: 'none' });
   });
 });
