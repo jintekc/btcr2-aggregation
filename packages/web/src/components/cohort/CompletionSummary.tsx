@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { REGISTRATION_FEE_SATS, resolveNetwork } from '@btcr2-aggregation/shared';
-import { roundTripOutcome, useParticipant } from '../../stores/participant';
+import { anchorSummaryState, roundTripOutcome, useParticipant } from '../../stores/participant';
 import {
   findAppendedBeacon,
   serviceEndpointString,
@@ -71,6 +71,9 @@ export function CompletionSummary({ baseUrl, onBrowse }: { baseUrl: string; onBr
   const netLabel = resolveNetwork(network).label;
   const anchored = Boolean(anchor?.enabled && (anchor.state === 'confirmed' || anchor.state === 'broadcast'));
   const anchorEnabled = Boolean(anchor?.enabled);
+  // Mode-honest Signed-line narration (WR-01, D-07): map the anchor read to one of four honest
+  // states so a broadcasting or failed live anchor is never described as a no-broadcast service.
+  const anchorNarration = anchorSummaryState(anchor);
   const doc = resolution?.didDocument;
   const beacon = doc && did ? findAppendedBeacon(doc, did) : undefined;
   const roundTrip = roundTripOutcome({ beaconPresent: Boolean(beacon), anchorEnabled });
@@ -88,8 +91,17 @@ export function CompletionSummary({ baseUrl, onBrowse }: { baseUrl: string; onBr
             {result.included ? 'update included' : 'not included'}
           </Badge>
         </div>
-        {anchored ? (
+        {anchorNarration === 'anchored' ? (
           <p className="text-sm text-ink">Signed and anchored on {netLabel}.</p>
+        ) : anchorNarration === 'broadcasting' ? (
+          <p className="text-sm text-ink">
+            Signed. Broadcasting the beacon transaction to {netLabel}. This can take a few minutes to post.
+          </p>
+        ) : anchorNarration === 'broadcast-failed' ? (
+          <p className="text-sm text-ink">
+            Signed. The beacon broadcast to {netLabel} failed, so there is no confirmed anchor. Your co-signed
+            update is in the sidecar below; resolve to check the current state.
+          </p>
         ) : (
           <p className="text-sm text-ink">
             Signed. This no-broadcast service does not publish to Bitcoin, so there is no on-chain anchor to
