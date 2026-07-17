@@ -1,7 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Identity } from '@btcr2-aggregation/shared';
 import type { DirectoryCohortDTO } from '../lib/operator';
-import { fetchAnchor } from '../lib/anchor';
-import { pickedCohortClosed, useParticipant } from './participant';
+import { fetchAnchor, type AnchorDTO } from '../lib/anchor';
+import {
+  deriveStage,
+  pickedCohortClosed,
+  preSeatFitWarning,
+  roundTripOutcome,
+  useParticipant,
+  type StageInput,
+} from './participant';
 
 // The join-seat grace window (participant.ts JOIN_SEAT_GRACE_MS). Mirrored here as a
 // literal (the store keeps it module-private) so the grace-window tests can advance
@@ -312,5 +320,111 @@ describe('participant store - explicit submit window (PART-03, D-12)', () => {
     useParticipant.setState({ pendingSubmit: true });
     useParticipant.getState().leave();
     expect(useParticipant.getState().pendingSubmit).toBe(false);
+  });
+});
+
+// Pure render authority (D-01/D-31, Pattern 3). deriveStage is the SINGLE stage
+// selector the cohort page renders; no parallel stage enum is stored. roundTripOutcome
+// and preSeatFitWarning are the honest round-trip + pre-seat-fit helpers. All three are
+// pure (no set/get), spec-pinned in the same style as pickedCohortClosed.
+
+/** Build a minimal StageInput for the deriveStage transition tests. */
+function stageInput(over: Partial<StageInput> = {}): StageInput {
+  return {
+    status: 'live',
+    optedIn: true,
+    seated: false,
+    pendingSubmit: false,
+    steps: { join: 'done', submit: 'active', sign: 'idle', anchored: 'idle' },
+    anchor: null,
+    resolveStatus: 'idle',
+    ...over,
+  };
+}
+
+describe('participant store - deriveStage (pure render authority)', () => {
+  it('is waiting-for-seats while opted in but not yet seated', () => {
+    expect(deriveStage(stageInput({ seated: false }))).toBe('waiting-for-seats');
+  });
+
+  it('is seated once the cohort locks with us in it (before the submit window)', () => {
+    expect(deriveStage(stageInput({ seated: true }))).toBe('seated');
+  });
+
+  it('is submit-window while the explicit-submit deferred is open', () => {
+    // pendingSubmit dominates seated: the runner is asking for the update right now.
+    expect(deriveStage(stageInput({ seated: true, pendingSubmit: true }))).toBe('submit-window');
+  });
+
+  it('is co-signing once the update is submitted (steps.submit done)', () => {
+    expect(
+      deriveStage(stageInput({ seated: true, steps: { join: 'done', submit: 'done', sign: 'active', anchored: 'idle' } })),
+    ).toBe('co-signing');
+  });
+
+  it('is signed on a hermetic complete (no broadcast: anchor disabled or null)', () => {
+    expect(deriveStage(stageInput({ status: 'complete', anchor: { enabled: false, state: 'none' } }))).toBe('signed');
+    expect(deriveStage(stageInput({ status: 'complete', anchor: null }))).toBe('signed');
+  });
+
+  it('is anchored on a live complete with a broadcast/confirmed anchor', () => {
+    expect(
+      deriveStage(stageInput({ status: 'complete', anchor: { enabled: true, state: 'confirmed', txid: 'ab' } })),
+    ).toBe('anchored');
+    expect(
+      deriveStage(stageInput({ status: 'complete', anchor: { enabled: true, state: 'broadcast', txid: 'ab' } })),
+    ).toBe('anchored');
+  });
+
+  it('is resolved once resolution lands (regardless of anchor mode)', () => {
+    expect(deriveStage(stageInput({ status: 'complete', resolveStatus: 'resolved' }))).toBe('resolved');
+  });
+});
+
+describe('participant store - roundTripOutcome (Finding 7, three honest outcomes)', () => {
+  it('is reflected on a live path where the appended beacon is present', () => {
+    expect(roundTripOutcome({ beaconPresent: true, anchorEnabled: true })).toBe('reflected');
+  });
+
+  it('is hermetic-genesis when the service does not broadcast (expected, NOT a mismatch)', () => {
+    expect(roundTripOutcome({ beaconPresent: false, anchorEnabled: false })).toBe('hermetic-genesis');
+    // Even if a beacon somehow appears, a no-broadcast service is still the expected
+    // fixture outcome, never a mismatch warning.
+    expect(roundTripOutcome({ beaconPresent: true, anchorEnabled: false })).toBe('hermetic-genesis');
+  });
+
+  it('is not-reflected on a live path where the beacon is absent (honest warning + retry)', () => {
+    expect(roundTripOutcome({ beaconPresent: false, anchorEnabled: true })).toBe('not-reflected');
+  });
+});
+
+describe('participant store - preSeatFitWarning (D-19, warn-only, pre-seat computable only)', () => {
+  const k1: Identity = { did: 'did:btcr2:k1qexample', keys: {} as Identity['keys'] };
+  const x1Cas: Identity = {
+    did: 'did:btcr2:x1example',
+    keys: {} as Identity['keys'],
+    genesisDocument: { service: [{ type: 'CASBeacon', serviceEndpoint: 'bitcoin:tb1qexample' }] },
+  };
+
+  it('returns null for no identity', () => {
+    expect(preSeatFitWarning(null, dirRow('abc', 'Advertised'), 'mutinynet')).toBeNull();
+  });
+
+  it('returns null for a KEY identity on the matching network (no baked beacon)', () => {
+    expect(preSeatFitWarning(k1, dirRow('abc', 'Advertised'), 'mutinynet')).toBeNull();
+  });
+
+  it('warns on a baked aggregate-beacon TYPE mismatch (baked CAS, cohort SMT)', () => {
+    const smtRow = { ...dirRow('abc', 'Advertised'), beaconType: 'SMTBeacon' as const };
+    expect(preSeatFitWarning(x1Cas, smtRow, 'mutinynet')).toMatch(/beacon/i);
+  });
+
+  it('returns null when the baked beacon type matches the cohort type', () => {
+    expect(preSeatFitWarning(x1Cas, dirRow('abc', 'Advertised'), 'mutinynet')).toBeNull();
+  });
+
+  it('warns on a network mismatch (row network differs from the participant network)', () => {
+    const signetRow = { ...dirRow('abc', 'Advertised'), network: 'signet' };
+    expect(preSeatFitWarning(k1, signetRow, 'mutinynet')).toMatch(/network|signet|mutinynet/i);
   });
 });

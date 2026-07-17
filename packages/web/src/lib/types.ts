@@ -1,22 +1,13 @@
-/** Status of one step in the participant flow stepper. */
+/**
+ * Status of one internal protocol step. Retained as the substrate the store's event
+ * handlers write and `deriveStage` reads (join/submit/sign/anchored); the standalone
+ * FlowStepper that rendered these directly is retired (D-31, superseded by the pure
+ * stage derivation on the live cohort page).
+ */
 export type StepStatus = 'idle' | 'active' | 'done' | 'failed';
 
-/** The four protocol milestones an attendee passes through, in order. */
+/** The four internal protocol milestones the store tracks (the deriveStage substrate). */
 export type StepKey = 'join' | 'submit' | 'sign' | 'anchored';
-
-export interface FlowStep {
-  key: StepKey;
-  label: string;
-  hint: string;
-}
-
-/** Ordered definition of the participant stepper. */
-export const FLOW_STEPS: readonly FlowStep[] = [
-  { key: 'join', label: 'Join cohort', hint: 'Opt in and run distributed keygen' },
-  { key: 'submit', label: 'Submit update', hint: 'Sign your DID update, add the CAS beacon' },
-  { key: 'sign', label: 'Co-sign', hint: 'Contribute your MuSig2 nonce + partial signature' },
-  { key: 'anchored', label: 'Anchored', hint: 'Aggregated Taproot signature produced' },
-];
 
 /** Severity colorway for a log line. */
 export type LogLevel = 'info' | 'good' | 'warn' | 'bad';

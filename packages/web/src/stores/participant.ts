@@ -11,6 +11,7 @@ import {
   createIdentity,
   DEFAULT_NETWORK,
   genesisP2trBeaconAddress,
+  hasBakedAggregateBeacon,
   identitySecretHex,
   importExternalIdentity,
   importIdentity,
@@ -24,6 +25,7 @@ import {
   type NetworkName,
   type PublishableArtifactKind,
 } from '@btcr2-aggregation/shared';
+import { type AnchorDTO } from '../lib/anchor';
 import { elapsed } from '../lib/clock';
 import { fetchNetworkConfig } from '../lib/config';
 import { fetchDirectory, type DirectoryCohortDTO } from '../lib/operator';
@@ -404,6 +406,149 @@ function clearJoinGrace(): void {
  */
 export function pickedCohortClosed(rows: DirectoryCohortDTO[], pickedId: string): boolean {
   return !rows.some((row) => row.cohortId === pickedId && row.phase === 'Advertised');
+}
+
+/**
+ * The D-01 live-journey stage. This is the SINGLE render authority (Pattern 3): the
+ * cohort page and the persistent "Your cohort" chip both derive it from existing store
+ * facts via {@link deriveStage}, so the rendered stage can never drift from the event
+ * handlers. No parallel stage enum is stored. Terminal states (failed) are read from
+ * `status` by the UI, not encoded here.
+ */
+export type Stage =
+  | 'waiting-for-seats'
+  | 'seated'
+  | 'submit-window'
+  | 'co-signing'
+  | 'signed'
+  | 'anchored'
+  | 'resolved';
+
+/** The exact store facts {@link deriveStage} reads (a structural subset of the state). */
+export interface StageInput {
+  status: ParticipantStatus;
+  optedIn: boolean;
+  seated: boolean;
+  pendingSubmit: boolean;
+  steps: Record<StepKey, StepStatus>;
+  anchor: AnchorDTO | null;
+  resolveStatus: ResolutionStatus;
+}
+
+/**
+ * Pure render authority (Pattern 3): map existing store facts to the one D-01 stage the
+ * cohort page renders. Ordered by precedence from the tail backward so the latest-reached
+ * milestone wins:
+ *
+ * - `resolved` once resolution lands (a read, so it is the true end of the journey).
+ * - On a completed cohort, `anchored` only when the anchor read is `enabled` AND carries a
+ *   broadcast/confirmed txid (D-07 mode honesty: never claim an anchor on the hermetic
+ *   no-broadcast path); otherwise `signed`.
+ * - `submit-window` while the explicit-submit deferred is open (dominates `seated`: the
+ *   runner is awaiting the update right now, D-12/D-13 urgency).
+ * - `co-signing` once the update was submitted (`steps.submit === 'done'`).
+ * - `seated` once the cohort locked with us in it, before the submit window.
+ * - `waiting-for-seats` otherwise (opted in / connecting, still filling).
+ */
+export function deriveStage(state: StageInput): Stage {
+  if (state.resolveStatus === 'resolved') {
+    return 'resolved';
+  }
+  if (state.status === 'complete') {
+    const a = state.anchor;
+    if (a?.enabled && (a.state === 'confirmed' || a.state === 'broadcast')) {
+      return 'anchored';
+    }
+    return 'signed';
+  }
+  if (state.pendingSubmit) {
+    return 'submit-window';
+  }
+  if (state.steps.submit === 'done') {
+    return 'co-signing';
+  }
+  if (state.seated) {
+    return 'seated';
+  }
+  return 'waiting-for-seats';
+}
+
+/**
+ * The three honest round-trip outcomes (Finding 7 / D-29). Compares the presence of the
+ * appended aggregate beacon (via `findAppendedBeacon`) against the anchor read's mode bit:
+ *
+ * - `reflected`: a live (broadcasting) service AND the resolved document lists the cohort's
+ *   beacon service (the update was discovered on-chain).
+ * - `hermetic-genesis`: a no-broadcast service has no on-chain signal to discover, so the
+ *   resolve returns the genesis document. This is the EXPECTED fixture outcome, NOT a
+ *   mismatch - the co-signed update lives in the downloadable sidecar/artifacts.
+ * - `not-reflected`: a live service where the beacon is absent - an honest warning + retry.
+ */
+export type RoundTrip = 'reflected' | 'hermetic-genesis' | 'not-reflected';
+
+export function roundTripOutcome(input: { beaconPresent: boolean; anchorEnabled: boolean }): RoundTrip {
+  if (input.beaconPresent && input.anchorEnabled) {
+    return 'reflected';
+  }
+  // A no-broadcast service is the expected genesis outcome even if a beacon somehow
+  // appears; the mode bit dominates so the hermetic path is never flagged as a mismatch.
+  if (!input.anchorEnabled) {
+    return 'hermetic-genesis';
+  }
+  return 'not-reflected';
+}
+
+/** The baked aggregate-beacon service types present in a genesis document (x1 only). */
+function bakedAggregateBeaconTypes(genesisDocument: Record<string, unknown>): string[] {
+  const service = genesisDocument.service;
+  if (!Array.isArray(service)) {
+    return [];
+  }
+  const types: string[] = [];
+  for (const entry of service) {
+    const type = (entry as { type?: unknown })?.type;
+    if (type === 'CASBeacon' || type === 'SMTBeacon') {
+      types.push(type);
+    }
+  }
+  return types;
+}
+
+/**
+ * Pre-seat fit warning (D-19, Finding 6): warn (NEVER block) on the only two fit problems
+ * reliably computable BEFORE `cohort-ready` - the beacon ADDRESS is a keygen output and is
+ * unknowable pre-seat, so a late cooperative non-inclusion stays the backstop for the rest.
+ *
+ * 1. Network mismatch: the participant's runtime network must match the cohort's advertised
+ *    network or every derived address diverges. An in-app identity always matches (both
+ *    derive from `GET /v1/config`); the honest warn case is an imported identity on another
+ *    chain.
+ * 2. Baked aggregate-beacon TYPE mismatch (x1 only): a baked genesis commits to a beacon
+ *    type; if none of its baked aggregate beacons match the picked row's `beaconType`,
+ *    submitting into this cohort would strand the DID. The TYPE half is checkable now; the
+ *    address half is not (D-19).
+ *
+ * Returns a plain-language warn string or null. Warn-only: the join-anyway choice is the UI's.
+ */
+export function preSeatFitWarning(
+  identity: Identity | null,
+  pickedRow: Pick<DirectoryCohortDTO, 'beaconType' | 'network'>,
+  network: NetworkName,
+): string | null {
+  if (!identity) {
+    return null;
+  }
+  if (pickedRow.network !== network) {
+    return `This cohort runs on ${pickedRow.network}, but your identity is on ${network}. Addresses derived for one network do not work on the other.`;
+  }
+  const genesis = identity.genesisDocument;
+  if (genesis && hasBakedAggregateBeacon(genesis)) {
+    const bakedTypes = bakedAggregateBeaconTypes(genesis);
+    if (bakedTypes.length > 0 && !bakedTypes.includes(pickedRow.beaconType)) {
+      return `Your identity bakes a ${bakedTypes.join('/')} aggregate beacon, but this cohort uses ${pickedRow.beaconType}. You can join anyway, but your update may not be included.`;
+    }
+  }
+  return null;
 }
 
 const INITIAL_STEPS: Record<StepKey, StepStatus> = {
