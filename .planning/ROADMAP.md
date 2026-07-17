@@ -104,7 +104,27 @@ Plans:
   3. Once the beacon is anchored, the participant resolves the updated DID and sees the new DID document.
   4. The participant reaches submit/co-sign only via a cohort discovered and joined from the directory; the standalone linear KeyGen -> Register -> Publish -> Resolve stepper is no longer the entry path.
 
-**Plans**: TBD
+**Plans**: 6 plans
+Plans:
+
+**Wave 1** *(parallel foundations)*
+
+- [ ] 03-01-PLAN.md - Explicit submit gate (opt-in deferred onProvideUpdate) in the participant package (PART-03, Wave 1)
+- [ ] 03-02-PLAN.md - Minimal public anchor read (anchor-state module + GET /v1/anchor/:cohortId, mode-honest, bounded) (PART-04, Wave 1)
+- [ ] 03-03-PLAN.md - In-flight directory rows (D-26) with the joinable open count kept Advertised-only (PART-04, Wave 1)
+
+**Wave 2** *(blocked on Wave 1)*
+
+- [ ] 03-04-PLAN.md - Participant store restructure: stage model + submit deferred + anchor poll + mode-honest resolve + honest degraded-state detection (PART-03/PART-04, Wave 2)
+
+**Wave 3** *(blocked on Wave 2)*
+
+- [ ] 03-05-PLAN.md - The live cohort page through Signed + submit moment + directory row state + "Your cohort" link + delete the standalone stepper (PART-03, Wave 3)
+
+**Wave 4** *(blocked on Wave 3)*
+
+- [ ] 03-06-PLAN.md - Anchor sub-steps + auto-resolve round-trip + completion summary/export + honest degraded states + browser capstone (PART-04, criterion 4, Wave 4)
+
 **UI hint**: yes
 
 ### Phase 4: Operator Cohort Monitoring
@@ -162,7 +182,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 |-------|----------------|--------|-----------|
 | 1. Authenticated Operator Console + On-Demand Cohort Creation | 4/4 | Complete    | 2026-07-08 |
 | 2. Participant Discovery + Browse-and-Pick Join | 9/9 | Complete    | 2026-07-16 |
-| 3. Participant Submit, Co-Sign, Track, and Resolve | 0/TBD | Not started | - |
+| 3. Participant Submit, Co-Sign, Track, and Resolve | 0/6 | Planned | - |
 | 4. Operator Cohort Monitoring | 0/TBD | Not started | - |
 | 5. Operator Cohort Lifecycle Control | 0/TBD | Not started | - |
 | 6. Two-Stranger End-to-End + Real-Aggregator Framing | 0/TBD | Not started | - |
