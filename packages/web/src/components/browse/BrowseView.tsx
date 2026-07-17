@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useParticipant } from '../../stores/participant';
 import { Button, Card } from '../../ui/primitives';
-import { statusLabel, type DirectoryCohortDTO } from '../../lib/directory';
+import type { DirectoryCohortDTO } from '../../lib/directory';
 import { PublishPanel } from '../participant/PublishPanel';
 import { RegisterPanel } from '../participant/RegisterPanel';
 import { ResolvePanel } from '../participant/ResolvePanel';
@@ -129,14 +129,7 @@ export function BrowseView({ baseUrl }: { baseUrl: string }) {
       <div className="space-y-8">
         <ServiceIdentityHeader baseUrl={baseUrl} />
         <Card className="p-5">
-          <JoinIdentityStep
-            baseUrl={baseUrl}
-            cohortId={pickedRow.cohortId}
-            joined={pickedRow.joined}
-            capacity={pickedRow.capacity}
-            statusLabel={statusLabel(pickedRow)}
-            onCancel={() => setPickedRow(null)}
-          />
+          <JoinIdentityStep baseUrl={baseUrl} row={pickedRow} onCancel={() => setPickedRow(null)} />
         </Card>
       </div>
     );
