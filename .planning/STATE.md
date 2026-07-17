@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 03
 current_phase_name: participant-submit-co-sign-track-and-resolve
 status: executing
-stopped_at: Completed 03-06-PLAN.md
-last_updated: "2026-07-17T22:14:11.798Z"
+stopped_at: Completed 03-07-PLAN.md
+last_updated: "2026-07-17T22:25:25.320Z"
 last_activity: 2026-07-17
 last_activity_desc: Phase 03 execution started
 progress:
   total_phases: 3
   completed_phases: 3
-  total_plans: 19
-  completed_plans: 19
+  total_plans: 20
+  completed_plans: 20
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-07-16)
 ## Current Position
 
 Phase: 03 (participant-submit-co-sign-track-and-resolve) — EXECUTING
-Plan: 6 of 6
+Plan: 2 of 7
 Status: Ready to execute
 Last activity: 2026-07-17 — Phase 03 execution started
 
@@ -78,6 +78,7 @@ Progress: [██████████] 100% (Phase 2 of 6 complete)
 | Phase 03 P04 | 24 min | 3 tasks | 6 files |
 | Phase 03 P05 | 21min | 3 tasks | 12 files |
 | Phase 03 P06 | 20 min | 3 tasks | 13 files |
+| Phase 03 P07 | 3 min | 3 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -101,6 +102,7 @@ Recent decisions affecting current work (Phase 2):
 - [Phase ?]: [Phase 03] 03-06: the tracking+resolve tail lives on the one cohort page (CompletionSummary absorbs ResultCard/ResolvePanel/RegisterPanel/PublishPanel then the four panels are deleted, D-31); anchor sub-steps + round-trip + Register/IPFS all branch on the anchor enabled bit, so the hermetic path never claims an anchor/txid/reflected outcome (D-07/D-29).
 - [Phase ?]: [Phase 03] 03-06: post-seat terminal failures (D-24/D-25) route to the cohort page (BrowseView status===failed && seated -> CohortPage; App chip freezes bad-tone), pre-seat closes stay directory cards; the dedicated stall copy fires only on the positive 'submitted but co-signing never completed' signal (Finding 2), else the honest 'didn't say why' fallback.
 - [Phase ?]: [Phase 03] 03-06: e2e:browser:participant is the criterion-4 browser capstone (one real Chromium page + headless peers; directory landing, explicit submit click, mode-honest SIGNED, hermetic-genesis round-trip); local-only, not wired into CI (Phase-6 debt D-32).
+- [Phase ?]: [Phase 03] 03-07 (gap closure): CR-01 fixed with a POST_SEAT_GONE_CONFIRMATIONS=2 consecutive-gone streak on handlePostSeatSnapshot so a cohort-complete SSE wins the directory-drop race and a genuine success keeps its result+sidecar; WR-01 fixed with a pure anchorSummaryState (anchored/broadcasting/broadcast-failed/hermetic) driving a four-way honest Signed-line, plus shouldAutoResolve firing on enabled+failed so a failed live broadcast still reaches a resolve outcome. 364 tests + web build green.
 
 ### Pending Todos
 
@@ -129,7 +131,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-17T20:37:35.231Z
-Stopped at: Completed 03-06-PLAN.md
+Last session: 2026-07-17T22:25:07.280Z
+Stopped at: Completed 03-07-PLAN.md
 Resume file: None
 Next command: /gsd-discuss-phase 3
