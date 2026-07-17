@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 03
 current_phase_name: participant-submit-co-sign-track-and-resolve
 status: executing
-stopped_at: Completed 03-02-PLAN.md
-last_updated: "2026-07-17T19:13:17.493Z"
+stopped_at: Completed 03-03-PLAN.md
+last_updated: "2026-07-17T19:22:48.982Z"
 last_activity: 2026-07-17
 last_activity_desc: Phase 03 execution started
 progress:
   total_phases: 3
   completed_phases: 2
   total_plans: 19
-  completed_plans: 15
+  completed_plans: 16
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-16)
 ## Current Position
 
 Phase: 03 (participant-submit-co-sign-track-and-resolve) — EXECUTING
-Plan: 3 of 6
+Plan: 4 of 6
 Status: Ready to execute
 Last activity: 2026-07-17 — Phase 03 execution started
 
-Progress: [████████░░] 79% (Phase 2 of 6 complete)
+Progress: [████████░░] 84% (Phase 2 of 6 complete)
 
 ## Performance Metrics
 
@@ -74,6 +74,7 @@ Progress: [████████░░] 79% (Phase 2 of 6 complete)
 | Phase 02 P09 | 7min | 2 tasks | 3 files |
 | Phase 03 P01 | 8 min | 2 tasks | 2 files |
 | Phase 03 P02 | 6min | 2 tasks | 4 files |
+| Phase 03 P03 | 9min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -89,6 +90,7 @@ Recent decisions affecting current work (Phase 2):
 - [Phase 02] Hermetic capstones gate the phase: e2e:browse + e2e:kofn (n=4/k=2, chosen because k = n-1 is a false green vs the library default) + e2e:operator + e2e:fallback, all green alongside 302 unit tests.
 - [Phase ?]: [Phase 03] PART-03 explicit-submit gate is opt-in via CreateParticipantOptions.onSubmitGate: absent = byte-identical auto-submit (headless peers/FILLERS/capstones unchanged), present = build-once then await the gate then submit the exact previewed body (D-12/D-16); logic extracted to exported createUpdateProvider seam for hermetic testing.
 - [Phase ?]: [Phase 03] PART-04 anchor tracking source is a PUBLIC GET /v1/anchor/:cohortId backed by a bounded (24, oldest-first) per-service retained map that folds the existing BeaconBroadcaster frames (broadcast/anchored/failed) into a last-known DTO; anonymous because anchor facts are public chain data, mode-honest via an enabled bit, non-oracle (unknown->state:none), and mounted OUTSIDE the operatorAuth block so ADR 0015 gating stays byte-untouched (D-20/D-21/D-22).
+- [Phase ?]: [Phase 03] D-26 public directory DISPLAY widens to the in-flight signing phases (SigningStarted/NoncesCollected/AwaitingPartialSigs) via a display-only DISPLAY_PHASES union so a mid-signing service looks alive to a stranger, while IN_FLIGHT_PHASES stays OUT of OPEN_PHASES and status().openCohorts is narrowed via a new openCount() so the join gate and public open count stay Advertised-tier only (03-03; Pitfall 3 / D-09).
 
 ### Pending Todos
 
@@ -117,7 +119,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-17T19:13:08.837Z
-Stopped at: Completed 03-02-PLAN.md
+Last session: 2026-07-17T19:22:33.014Z
+Stopped at: Completed 03-03-PLAN.md
 Resume file: None
 Next command: /gsd-discuss-phase 3
