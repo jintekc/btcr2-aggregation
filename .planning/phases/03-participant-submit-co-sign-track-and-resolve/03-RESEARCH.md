@@ -481,11 +481,11 @@ const roundTrip: RoundTrip =
 | A2 | Completed cohorts leave `runner.session.cohorts` promptly after completion settles (post-completion directory row lifetime) | Finding 5 / D-26 | An "In progress" row could linger after completion; covered by a spec assertion task (Open Question 1) |
 | A3 | The exact baked-genesis field shape for the pre-seat TYPE check (read `hasBakedAggregateBeacon`/`classifyCohortFit` in shared during planning) | Finding 6 / D-19 | Warn logic might need a different accessor; boundary (address unknowable pre-seat) is verified |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Post-completion directory row lifetime (A2):** what phase string does a completed/failed cohort report before the settle-prune, and does it linger in `runner.session.cohorts`? What we know: the enrichment map prunes on settle, bounding listing. Recommendation: a small spec in the D-26 plan pins the observed behavior; label any post-sign unknown phase honestly via the existing raw-string fallback.
-2. **Where the submit gate lives:** `createParticipant` option (recommended: keeps the store dumb and the gate testable in the participant package) vs store-side wrapping of `onProvideUpdate` composition. Recommendation: participant-package option, default absent.
-3. **Whether the anchor DTO should carry the k-of-n fallback path fact (D-23):** the participant already observes `fallback-requested` in-tab, so the timeline can state the fallback outcome without server help; the anchor read stays minimal (D-21). Recommendation: client-side only; revisit in Phase 4's richer DTO.
+1. **Post-completion directory row lifetime (A2). RESOLVED:** what phase string does a completed/failed cohort report before the settle-prune, and does it linger in `runner.session.cohorts`? What we know: the enrichment map prunes on settle, bounding listing. Adopted into plans: a small spec assertion in the D-26 plan (03-03) pins the observed behavior; any post-sign unknown phase is labeled honestly via the existing raw-string fallback.
+2. **Where the submit gate lives. RESOLVED:** `createParticipant` option (recommended: keeps the store dumb and the gate testable in the participant package) vs store-side wrapping of `onProvideUpdate` composition. Adopted into plans: participant-package option, default absent (03-01).
+3. **Whether the anchor DTO should carry the k-of-n fallback path fact (D-23). RESOLVED:** the participant already observes `fallback-requested` in-tab, so the timeline can state the fallback outcome without server help; the anchor read stays minimal (D-21). Adopted into plans: client-side only (03-06); revisit in Phase 4's richer DTO.
 
 ## Sources
 
