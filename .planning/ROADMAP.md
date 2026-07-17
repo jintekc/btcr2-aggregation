@@ -104,7 +104,7 @@ Plans:
   3. Once the beacon is anchored, the participant resolves the updated DID and sees the new DID document.
   4. The participant reaches submit/co-sign only via a cohort discovered and joined from the directory; the standalone linear KeyGen -> Register -> Publish -> Resolve stepper is no longer the entry path.
 
-**Plans**: 6 plans
+**Plans**: 0/6 plans executed
 Plans:
 
 **Wave 1** *(parallel foundations)*
@@ -182,7 +182,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 |-------|----------------|--------|-----------|
 | 1. Authenticated Operator Console + On-Demand Cohort Creation | 4/4 | Complete    | 2026-07-08 |
 | 2. Participant Discovery + Browse-and-Pick Join | 9/9 | Complete    | 2026-07-16 |
-| 3. Participant Submit, Co-Sign, Track, and Resolve | 0/6 | Planned | - |
+| 3. Participant Submit, Co-Sign, Track, and Resolve | 0/6 | Planned    |  |
 | 4. Operator Cohort Monitoring | 0/TBD | Not started | - |
 | 5. Operator Cohort Lifecycle Control | 0/TBD | Not started | - |
 | 6. Two-Stranger End-to-End + Real-Aggregator Framing | 0/TBD | Not started | - |

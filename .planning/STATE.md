@@ -2,18 +2,18 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 3
+current_phase: 03
+current_phase_name: participant-submit-co-sign-track-and-resolve
 status: executing
-stopped_at: Phase 3 UI-SPEC approved
-last_updated: "2026-07-17T17:30:19.142Z"
-last_activity: 2026-07-16
-last_activity_desc: Phase 02 complete, transitioned to Phase 3
+stopped_at: Completed 03-01-PLAN.md
+last_updated: "2026-07-17T19:04:01.478Z"
+last_activity: 2026-07-17
+last_activity_desc: Phase 03 execution started
 progress:
   total_phases: 3
   completed_phases: 2
-  total_plans: 13
+  total_plans: 19
   completed_plans: 13
-current_phase_name: Participant Submit, Co-Sign, Track, and Resolve
 ---
 
 # Project State
@@ -23,16 +23,16 @@ current_phase_name: Participant Submit, Co-Sign, Track, and Resolve
 See: .planning/PROJECT.md (updated 2026-07-16)
 
 **Core value:** A stranger can self-host a real aggregation service that advertises cohorts, and another stranger can point a participant at that service's URL, browse its cohorts, join, co-sign, and resolve - a genuinely two-sided, self-hostable product, not a demo.
-**Current focus:** Phase 3 - Participant Submit, Co-Sign, Track, and Resolve
+**Current focus:** Phase 03 — participant-submit-co-sign-track-and-resolve
 
 ## Current Position
 
-Phase: 3 - Participant Submit, Co-Sign, Track, and Resolve
-Plan: Not started
+Phase: 03 (participant-submit-co-sign-track-and-resolve) — EXECUTING
+Plan: 2 of 6
 Status: Ready to execute
-Last activity: 2026-07-16 - Phase 02 complete, transitioned to Phase 3
+Last activity: 2026-07-17 — Phase 03 execution started
 
-Progress: [███░░░░░░░] 33% (Phase 2 of 6 complete)
+Progress: [███████░░░] 68% (Phase 2 of 6 complete)
 
 ## Performance Metrics
 
@@ -72,6 +72,7 @@ Progress: [███░░░░░░░] 33% (Phase 2 of 6 complete)
 | Phase 02 P07 | 10min | 2 tasks | 7 files |
 | Phase 02 P08 | 12min | 3 tasks | 16 files |
 | Phase 02 P09 | 7min | 2 tasks | 3 files |
+| Phase 03 P01 | 8 min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -85,6 +86,7 @@ Recent decisions affecting current work (Phase 2):
 - [Phase 02] Advertised cohorts get a 30-min discovery window (env-tunable); expiry surfaces to the operator as a bounded 'expired' record + reason behind the gated re-advertise route (second operator-driven advertiseCohort caller, D-17 preserved); never shown to participants (02-06).
 - [Phase 02] Join-seat grace arms at the picked cohort's FIRST OBSERVED DEPARTURE from the Advertised set (directory poll), not at opt-in; while still Advertised the participant waits with the truthful awaitingSeats `joined/capacity` line (02-09).
 - [Phase 02] Hermetic capstones gate the phase: e2e:browse + e2e:kofn (n=4/k=2, chosen because k = n-1 is a false green vs the library default) + e2e:operator + e2e:fallback, all green alongside 302 unit tests.
+- [Phase ?]: [Phase 03] PART-03 explicit-submit gate is opt-in via CreateParticipantOptions.onSubmitGate: absent = byte-identical auto-submit (headless peers/FILLERS/capstones unchanged), present = build-once then await the gate then submit the exact previewed body (D-12/D-16); logic extracted to exported createUpdateProvider seam for hermetic testing.
 
 ### Pending Todos
 
@@ -113,7 +115,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-17T17:00:13.049Z
-Stopped at: Phase 3 UI-SPEC approved
-Resume file: .planning/phases/03-participant-submit-co-sign-track-and-resolve/03-UI-SPEC.md
+Last session: 2026-07-17T19:03:47.802Z
+Stopped at: Completed 03-01-PLAN.md
+Resume file: None
 Next command: /gsd-discuss-phase 3
