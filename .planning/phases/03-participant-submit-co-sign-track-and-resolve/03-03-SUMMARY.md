@@ -152,3 +152,13 @@ None - no external service configuration required.
 ---
 *Phase: 03-participant-submit-co-sign-track-and-resolve*
 *Completed: 2026-07-17*
+
+## Self-Check: PASSED
+
+- FOUND: `packages/service/src/operator-cohorts.ts` (modified)
+- FOUND: `packages/service/src/operator-cohorts.spec.ts` (modified)
+- FOUND: `.planning/phases/03-participant-submit-co-sign-track-and-resolve/03-03-SUMMARY.md`
+- FOUND commit `df32517` (Task 1, feat)
+- FOUND commit `74bd52b` (Task 2, test)
+- FOUND commit `5212daa` (docs: complete plan)
+- 320 unit + e2e tests pass (tsc -b typecheck green); e2e:browse / e2e:operator / e2e:kofn all green
