@@ -464,11 +464,29 @@ describe('participant store - handlePostSeatSnapshot (post-seat cohort-gone)', (
     useParticipant.getState().leave();
   });
 
-  it('lands the honest D-25 fallback terminal when the cohort vanishes mid-round (Finding 2)', () => {
+  it('does not false-fail on a single gone read (CR-01: cohort-complete may still be racing)', () => {
+    useParticipant.getState().handlePostSeatSnapshot([]);
+    // One gone read is ambiguous (a completed cohort's row drops at the same moment
+    // cohort-complete fires on another channel); the round stays live so the SSE can win.
+    expect(useParticipant.getState().status).toBe('live');
+  });
+
+  it('lands the honest D-25 fallback terminal only after the bounded gone streak (Finding 2)', () => {
+    useParticipant.getState().handlePostSeatSnapshot([]);
+    expect(useParticipant.getState().status).toBe('live');
+    // The SECOND consecutive gone read with no intervening completion declares the cohort dead.
     useParticipant.getState().handlePostSeatSnapshot([]);
     const s = useParticipant.getState();
     expect(s.status).toBe('failed');
     expect(s.error).toMatch(/didn't say why/i);
+  });
+
+  it('resets the gone streak on a present read (a live cohort restarts the streak)', () => {
+    useParticipant.getState().handlePostSeatSnapshot([]);
+    useParticipant.getState().handlePostSeatSnapshot([dirRow('abc', 'SigningStarted')]);
+    // The present read cleared the streak, so the next gone read is again the FIRST: still live.
+    useParticipant.getState().handlePostSeatSnapshot([]);
+    expect(useParticipant.getState().status).toBe('live');
   });
 
   it('is a no-op while the cohort is still listed in a signing phase (D-26 in-flight row)', () => {

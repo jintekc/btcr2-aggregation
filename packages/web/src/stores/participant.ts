@@ -477,6 +477,19 @@ const POST_SEAT_POLL_MS = 5000;
 // Consecutive post-seat directory-read failures (the only poll running during co-signing).
 // Past UNREACHABLE_THRESHOLD it raises the same D-24 unreachable signal; a success resets it.
 let postSeatFailures = 0;
+// Consecutive post-seat directory-GONE reads (picked cohort absent entirely) required before
+// declaring the cohort dead (CR-01, D-24/D-25). A completed cohort legitimately leaves the
+// widened directory the instant its phase reaches Complete (operator-cohorts.ts directory()
+// drops the row at that transition), and that SAME completion fires the participant's
+// cohort-complete SSE on a different channel with no ordering guarantee. Failing on a single
+// gone read would false-fail a genuine success when the poll observes the drop before the
+// browser processes cohort-complete. Requiring POST_SEAT_GONE_CONFIRMATIONS consecutive gone
+// reads gives the racing cohort-complete SSE time to tear the poll down first (cohort-complete
+// -> teardownLive -> clearPostSeatPoll bumps postSeatEpoch and resets this streak), so a
+// completed cohort's normal directory-drop is never mistaken for a stall. A genuinely dead
+// cohort still fails honestly once the bounded streak completes with no intervening completion.
+let postSeatGoneStreak = 0;
+const POST_SEAT_GONE_CONFIRMATIONS = 2;
 
 function clearPostSeatPoll(): void {
   if (postSeatPoll !== null) {
@@ -485,6 +498,10 @@ function clearPostSeatPoll(): void {
   }
   postSeatEpoch += 1;
   postSeatFailures = 0;
+  // Reset the gone streak so each round (and each completion teardown) starts clean: the
+  // cohort-complete -> teardownLive -> clearPostSeatPoll path clears any accumulated streak
+  // before the threshold is reached, letting the success completion win the race (CR-01).
+  postSeatGoneStreak = 0;
 }
 
 /**
@@ -1325,16 +1342,34 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         return;
       }
       if (postSeatCohortGone(rows, pickedCohortId)) {
-        // The picked cohort vanished from the directory ENTIRELY mid-round: a stalled or
-        // ended cohort goes dark and the runner emits no cohort-expired event to members
-        // (Finding 2). Land the honest D-25 fallback reason - best-effort, no invented
-        // certainty about why.
+        // The picked cohort is absent from the directory ENTIRELY. This is AMBIGUOUS on a
+        // single read (CR-01): a completed cohort legitimately drops its row the instant it
+        // reaches Complete, which is the SAME completion that fires cohort-complete on a
+        // different channel with no ordering guarantee, so a poll that observes the drop
+        // first would false-fail a genuine success and discard the sidecar. Require
+        // corroboration (D-24/D-25): only after POST_SEAT_GONE_CONFIRMATIONS consecutive
+        // gone reads with no intervening completion do we declare the cohort dead. A racing
+        // cohort-complete/cohort-failed SSE tears this poll down (teardownLive ->
+        // clearPostSeatPoll resets the streak and bumps postSeatEpoch) before the threshold,
+        // so the SSE always wins the directory-drop race.
+        postSeatGoneStreak += 1;
+        if (postSeatGoneStreak < POST_SEAT_GONE_CONFIRMATIONS) {
+          append(
+            'info',
+            `cohort ${pickedCohortId} is not in the directory; a completion may still be arriving`,
+          );
+          return;
+        }
+        // The bounded streak completed with no intervening completion: a stalled or ended
+        // cohort goes dark and the runner emits no cohort-expired event to members (Finding
+        // 2). Land the honest D-25 fallback reason - best-effort, no invented certainty.
         append('warn', `cohort ${pickedCohortId} left the directory before completing`);
         fail("The cohort ended and this service didn't say why.");
         return;
       }
-      // Present (a signing-phase in-flight row is normal, D-26): we reached the service, so
-      // any prior transient unreachable signal clears.
+      // Present (a signing-phase in-flight row is normal, D-26): the cohort is alive, so any
+      // accumulated gone streak restarts and any prior transient unreachable signal clears.
+      postSeatGoneStreak = 0;
       if (get().unreachable) {
         set({ unreachable: false });
       }
