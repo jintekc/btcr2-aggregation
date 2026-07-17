@@ -36,6 +36,30 @@ export interface CreateParticipantOptions {
    * default for callers (the in-process demo drivers) that never picked.
    */
   cohortId?: string;
+  /**
+   * Opt-in explicit-submit gate (PART-03, D-12). STRICTLY OPT-IN: when omitted,
+   * this participant keeps today's auto-submit - `onProvideUpdate` builds the update
+   * and returns it immediately - so every headless caller (the e2e peers, the
+   * in-process FILLERS, the Phase 2 capstones) stays byte-for-byte unchanged.
+   *
+   * When supplied, `onProvideUpdate` builds the signed update EXACTLY ONCE, hands it
+   * to this gate as a {@link SubmitGateInfo}, awaits the returned promise, and only
+   * then records and submits that exact body. The browser store (03-04) resolves the
+   * promise when the user clicks "Submit my DID update", turning the auto-submit into
+   * a user-consented submit with no library change and no rebuild of the body.
+   *
+   * One consent covers the whole round: this single submit approval also authorizes
+   * the n-of-n beacon co-signature (D-14); there is deliberately no second
+   * signing-approval gate.
+   *
+   * This callback MUST NOT reject or throw. A throw inside `onProvideUpdate` sends
+   * neither a submit nor a decline and stalls the whole n-of-n cohort (Finding 1). A
+   * participant that never resolves the gate stalls only until the service's
+   * `phaseTimeoutMs` expires the cohort for everyone; there is no per-member forfeit.
+   * The caller (the store) owns teardown: on stop it drops the deferred without
+   * settling it rather than rejecting here.
+   */
+  onSubmitGate?: (info: SubmitGateInfo) => Promise<void>;
 }
 
 /**
@@ -59,6 +83,27 @@ function normalizeBeaconType(beaconType: string): BeaconType {
 
 /** A signed did:btcr2 update body (the object `buildSignedUpdate` produces). */
 export type SubmittedUpdate = ReturnType<typeof buildSignedUpdate>;
+
+/**
+ * The payload handed to an opt-in {@link CreateParticipantOptions.onSubmitGate}
+ * when this participant is asked to provide its cohort update (PART-03, D-12). It
+ * carries the update body that has ALREADY been built and signed - built exactly
+ * once - so a UI can preview the precise body that will be submitted: the previewed
+ * body IS the submitted body. BIP340 signing injects fresh randomness per call, so
+ * rebuilding would change the canonical hash and break the resolve round-trip check
+ * (D-29); the gate therefore never triggers a rebuild, it only defers the submit of
+ * this one captured body until the user consents.
+ */
+export interface SubmitGateInfo {
+  /** The cohort this update is being provided for. */
+  cohortId: string;
+  /** The cohort's aggregate beacon address (the value after the `bitcoin:` scheme). */
+  beaconAddress: string;
+  /** The cohort's beacon type (CAS or SMT). */
+  beaconType: BeaconType;
+  /** The already-built, already-signed update body that will be submitted as-is. */
+  update: SubmittedUpdate;
+}
 
 export interface Participant {
   /** The participant runner. Attach event listeners to it. */
@@ -89,6 +134,103 @@ export interface Participant {
    * participant declines, still co-signs, and the rest of the cohort is unharmed.
    */
   getDeclineReason(cohortId: string): string | undefined;
+}
+
+/**
+ * Everything {@link createUpdateProvider} needs to answer the runner's
+ * `onProvideUpdate` call: the identity it signs with, the per-cohort beacon-type and
+ * capture maps, and the optional explicit-submit gate. The maps are the SAME
+ * instances `createParticipant` exposes through `getSubmittedUpdate` /
+ * `getDeclineReason`, so recording into them here is what those accessors read.
+ */
+export interface UpdateProviderContext {
+  /** The participant's DID. */
+  did: string;
+  /** The participant's Schnorr keypair (the signer for the update). */
+  keys: Identity['keys'];
+  /** Present only for an EXTERNAL (x1) identity; drives the fit classification. */
+  genesisDocument?: Record<string, unknown>;
+  /** Fallback beacon type when a cohort's advertised type was not recorded. */
+  defaultBeaconType: BeaconType;
+  /** Per-cohort beacon type recorded at join time from the advert. */
+  cohortBeaconTypes: Map<string, BeaconType>;
+  /** Sink for the exact submitted body, keyed by cohort (build-once capture). */
+  submittedUpdates: Map<string, SubmittedUpdate>;
+  /** Sink for the decline reason, keyed by cohort (cooperative non-inclusion). */
+  declinedCohorts: Map<string, string>;
+  /** Opt-in explicit-submit gate; absent = auto-submit (see CreateParticipantOptions). */
+  onSubmitGate?: (info: SubmitGateInfo) => Promise<void>;
+}
+
+/**
+ * Build the participant runner's `onProvideUpdate` handler. Extracted and exported
+ * so its decline / build-once / gate contract can be unit-tested WITHOUT a runner,
+ * transport, or network (the seam PART-03's specs exercise). Behavior is identical to
+ * calling the body inline: the mismatch decline path runs FIRST (before the gate is
+ * ever offered, D-15/D-19 backstop), the signed update is built EXACTLY ONCE, and an
+ * opt-in gate - when present - is awaited before the body is recorded and returned.
+ *
+ * The handler NEVER throws or returns a rejected promise on the gate path: a throw
+ * inside `onProvideUpdate` sends neither a submit nor a decline and stalls the whole
+ * n-of-n cohort (Finding 1 / Pitfall 2). The only non-submit outcome is the explicit
+ * `null` decline for a baked-mismatch identity, which the runner treats as
+ * cooperative non-inclusion (the member still co-signs).
+ */
+export function createUpdateProvider(
+  ctx: UpdateProviderContext,
+): (args: { cohortId: string; beaconAddress: string }) => Promise<SubmittedUpdate | null> {
+  const {
+    did,
+    keys,
+    genesisDocument,
+    defaultBeaconType,
+    cohortBeaconTypes,
+    submittedUpdates,
+    declinedCohorts,
+    onSubmitGate,
+  } = ctx;
+  return async ({ cohortId, beaconAddress }) => {
+    const beaconType = cohortBeaconTypes.get(cohortId) ?? defaultBeaconType;
+    // A BAKED identity seated in a cohort that does not match its baked aggregate
+    // beacon (wrong address, or the other beacon type at the same address) must NOT
+    // submit: the update would strand the DID unresolvable. It must not throw either
+    // - the runner catches an onProvideUpdate throw and sends neither a submit nor a
+    // decline, which stalls the entire n-of-n cohort for everyone. Returning null is
+    // the protocol's cooperative non-inclusion: this member still co-signs, the
+    // cohort completes, and only its own update is absent. This decline runs BEFORE
+    // any onSubmitGate is offered, so a baked mismatch never reaches a submit window.
+    if (classifyCohortFit(genesisDocument, beaconAddress, beaconType) === 'mismatch') {
+      const reason =
+        `baked aggregate beacon does not match cohort ${cohortId} ` +
+        `(${beaconType} at bitcoin:${beaconAddress}); declining (cooperative non-inclusion)`;
+      declinedCohorts.set(cohortId, reason);
+      console.warn(`[participant ${did}] ${reason}`);
+      return null;
+    }
+    // Build the update EXACTLY ONCE. BIP340 signing is non-deterministic, so this
+    // body can never be rebuilt to the same canonical hash later; the preview handed
+    // to the gate below and the body recorded and returned here are the SAME object
+    // (identity-equal), which is what keeps the D-29 resolve round-trip check valid.
+    const update = buildSignedUpdate(
+      did,
+      keys,
+      beaconAddress,
+      beaconType,
+      // For x1, the current document is resolved from this genesis before the
+      // beacon-service patch is applied; for k1 it is undefined (deterministic
+      // resolution from the key), leaving the k1 update path unchanged.
+      genesisDocument,
+    );
+    // Opt-in explicit-submit gate (D-12), STRICTLY OPT-IN. Only when a gate is
+    // supplied do we defer: await the user's decision on this already-built body
+    // BEFORE recording and submitting it. Absent a gate this is byte-identical to the
+    // historical auto-submit (no await, immediate set-and-return). Never reject here.
+    if (onSubmitGate) {
+      await onSubmitGate({ cohortId, beaconAddress, beaconType, update });
+    }
+    submittedUpdates.set(cohortId, update);
+    return update;
+  };
 }
 
 /**
@@ -134,6 +276,20 @@ export function createParticipant(opts: CreateParticipantOptions): Participant {
   // Cohorts this participant declined to submit an update for, with the reason.
   const declinedCohorts = new Map<string, string>();
 
+  // The update-provision handler: decline-first, build-once, opt-in-gate-then-submit.
+  // Extracted so its contract is unit-testable (createUpdateProvider), but the maps it
+  // writes are the very ones getSubmittedUpdate / getDeclineReason read below.
+  const provideUpdate = createUpdateProvider({
+    did,
+    keys,
+    genesisDocument,
+    defaultBeaconType,
+    cohortBeaconTypes,
+    submittedUpdates,
+    declinedCohorts,
+    onSubmitGate: opts.onSubmitGate,
+  });
+
   const runner = new AggregationParticipantRunner({
     transport,
     did,
@@ -155,36 +311,11 @@ export function createParticipant(opts: CreateParticipantOptions): Participant {
       cohortBeaconTypes.set(advert.cohortId, normalizeBeaconType(advert.beaconType));
       return true;
     },
-    onProvideUpdate: async ({ cohortId, beaconAddress }) => {
-      const beaconType = cohortBeaconTypes.get(cohortId) ?? defaultBeaconType;
-      // A BAKED identity seated in a cohort that does not match its baked aggregate
-      // beacon (wrong address, or the other beacon type at the same address) must
-      // NOT submit: the update would strand the DID unresolvable. It must not throw
-      // either - the runner catches an onProvideUpdate throw and sends neither a
-      // submit nor a decline, which stalls the entire n-of-n cohort for everyone.
-      // Returning null is the protocol's cooperative non-inclusion: this member
-      // still co-signs, the cohort completes, and only its own update is absent.
-      if (classifyCohortFit(genesisDocument, beaconAddress, beaconType) === 'mismatch') {
-        const reason =
-          `baked aggregate beacon does not match cohort ${cohortId} ` +
-          `(${beaconType} at bitcoin:${beaconAddress}); declining (cooperative non-inclusion)`;
-        declinedCohorts.set(cohortId, reason);
-        console.warn(`[participant ${did}] ${reason}`);
-        return null;
-      }
-      const update = buildSignedUpdate(
-        did,
-        keys,
-        beaconAddress,
-        beaconType,
-        // For x1, the current document is resolved from this genesis before the
-        // beacon-service patch is applied; for k1 it is undefined (deterministic
-        // resolution from the key), leaving the k1 update path unchanged.
-        genesisDocument,
-      );
-      submittedUpdates.set(cohortId, update);
-      return update;
-    },
+    // Delegate to the extracted handler. Kept as an inline arrow so the runner's own
+    // callback types still flow to `cohortId` / `beaconAddress`; the body is
+    // decline-first, build-once, opt-in-gate-then-submit (see createUpdateProvider).
+    onProvideUpdate: async ({ cohortId, beaconAddress }) =>
+      provideUpdate({ cohortId, beaconAddress }),
   });
 
   return {
