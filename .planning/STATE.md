@@ -4,16 +4,16 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 03
 current_phase_name: participant-submit-co-sign-track-and-resolve
-status: executing
-stopped_at: Completed 03-05-PLAN.md
-last_updated: "2026-07-17T20:13:09.081Z"
+status: verifying
+stopped_at: Completed 03-06-PLAN.md
+last_updated: "2026-07-17T20:37:54.134Z"
 last_activity: 2026-07-17
 last_activity_desc: Phase 03 execution started
 progress:
   total_phases: 3
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 19
-  completed_plans: 18
+  completed_plans: 19
 ---
 
 # Project State
@@ -29,10 +29,10 @@ See: .planning/PROJECT.md (updated 2026-07-16)
 
 Phase: 03 (participant-submit-co-sign-track-and-resolve) — EXECUTING
 Plan: 6 of 6
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-07-17 — Phase 03 execution started
 
-Progress: [██████████] 95% (Phase 2 of 6 complete)
+Progress: [██████████] 100% (Phase 2 of 6 complete)
 
 ## Performance Metrics
 
@@ -77,6 +77,7 @@ Progress: [██████████] 95% (Phase 2 of 6 complete)
 | Phase 03 P03 | 9min | 2 tasks | 2 files |
 | Phase 03 P04 | 24 min | 3 tasks | 6 files |
 | Phase 03 P05 | 21min | 3 tasks | 12 files |
+| Phase 03 P06 | 20 min | 3 tasks | 13 files |
 
 ## Accumulated Context
 
@@ -97,6 +98,9 @@ Recent decisions affecting current work (Phase 2):
 - [Phase ?]: [Phase 03] 03-04: anchor tracking is an epoch-guarded post-sign poll over the public GET /v1/anchor read that freezes at confirmed/failed and stops after one read on a hermetic enabled:false service (D-22); auto-resolve (D-28) gates on pure shouldAutoResolve (hermetic-signed OR live-confirmed) with the resolver-lag retry gated on anchor.enabled (Finding 7); post-seat cohort-gone uses a NEW postSeatCohortGone predicate (absent entirely) never handleDirectorySnapshot, landing the honest D-25 fallback, and a post-seat directory poll raises the D-24 unreachable signal (closes 02-09 WR-02) without going terminal.
 - [Phase ?]: [Phase 03] 03-04: removing FLOW_STEPS/FlowStep from lib/types.ts forced deleting the now-dead FlowStepper.tsx + ParticipantView.tsx (already unreachable from App) to keep the web build green; KeyGenPanel + the BrowseView/CohortPage rewire stay in 03-05 (Rule 3 blocking-fix, partial pull-forward of the stepper retirement).
 - [Phase ?]: [Phase 03] 03-05: the live cohort page is one continuous surface routed by the pure deriveStage authority (StageTimeline + CohortPage). Active lifecycle (connecting/live/complete) mounts CohortPage; terminal failures keep the shipped Phase-2 error cards (full D-24/D-25 cohort-page absorption is 03-06). SubmitPanel probes the public GET /v1/anchor enabled bit for the mode-honest consent line before the post-sign poll runs. statusLabel maps in-flight signing phases to 'In progress' before Full (D-26). KeyGenPanel deleted: the directory is the only entry path (D-31).
+- [Phase ?]: [Phase 03] 03-06: the tracking+resolve tail lives on the one cohort page (CompletionSummary absorbs ResultCard/ResolvePanel/RegisterPanel/PublishPanel then the four panels are deleted, D-31); anchor sub-steps + round-trip + Register/IPFS all branch on the anchor enabled bit, so the hermetic path never claims an anchor/txid/reflected outcome (D-07/D-29).
+- [Phase ?]: [Phase 03] 03-06: post-seat terminal failures (D-24/D-25) route to the cohort page (BrowseView status===failed && seated -> CohortPage; App chip freezes bad-tone), pre-seat closes stay directory cards; the dedicated stall copy fires only on the positive 'submitted but co-signing never completed' signal (Finding 2), else the honest 'didn't say why' fallback.
+- [Phase ?]: [Phase 03] 03-06: e2e:browser:participant is the criterion-4 browser capstone (one real Chromium page + headless peers; directory landing, explicit submit click, mode-honest SIGNED, hermetic-genesis round-trip); local-only, not wired into CI (Phase-6 debt D-32).
 
 ### Pending Todos
 
@@ -125,7 +129,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-17T20:12:52.744Z
-Stopped at: Completed 03-05-PLAN.md
+Last session: 2026-07-17T20:37:35.231Z
+Stopped at: Completed 03-06-PLAN.md
 Resume file: None
 Next command: /gsd-discuss-phase 3
