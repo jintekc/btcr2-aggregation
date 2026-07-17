@@ -1,7 +1,8 @@
 ---
 phase: 3
 slug: participant-submit-co-sign-track-and-resolve
-status: draft
+status: approved
+reviewed_at: 2026-07-17
 shadcn_initialized: false
 preset: none
 created: 2026-07-17
@@ -137,22 +138,64 @@ All copy is mode-honest per D-07/D-23/D-25/D-29 (truthfulness over polish is the
 
 ## UI Considerations
 
-> Shape-rooted UI state coverage. Empty/error COPY lives in the Copywriting Contract above; this section covers state coverage and references those rows.
+> Shape-rooted UI state coverage, resolved through the ui-consideration probe (2026-07-17, user-confirmed). Empty/error COPY lives in the Copywriting Contract above; this section covers state coverage and references those rows. Probe surfaces: E1 stage timeline, E2 submit panel, E3 directory rows, E4 technical-detail expander, E5 resolve result view, E6 anchor sub-steps, E7 error banners, E8 destructive dialogs, E9 empty state, E10 "Your cohort" chip.
 
-Applicable state considerations resolved: 8 covered, 2 backstop, 0 unresolved.
+Applicable considerations resolved: 26 covered, 5 backstop, 9 dismissed with reason, 0 unresolved.
 
-| Category | Element(s) | Status | Resolution / Reason |
-|----------|------------|--------|---------------------|
-| empty | cohort page with no join / list-collection | ✅ covered | Renders the documented `No cohort joined yet` empty state with a `Browse cohorts` CTA back to the directory landing |
-| loading | active stage (waiting-for-seats, co-signing, resolving) | ✅ covered | Active stage shows the quiet `Active for {mm:ss}` indicator + `StatusDot` `pulse`; future stages dimmed as pending (D-05); resolve shows brief `resolving...` retries gated on `enabled` (D-28) |
-| error | service unreachable (transient) | ✅ covered | Distinct `Can't reach this service` banner with quiet auto-retry; stages freeze honestly, never a terminal by itself (D-24) |
-| error | terminal failure (stall / timeout / vanished / seat lost / unknown) | ✅ covered | Best-effort specific reason with the honest `didn't say why` fallback; lands on the page with `Back to cohorts` (D-25, Finding 2) |
-| populated | full stage timeline | ✅ covered | Full timeline upfront, active stage highlighted, completed stages good-tone, pending dimmed (D-01/D-05) |
-| partial | k-of-n fallback outcome + cooperative non-inclusion | ✅ covered | Explicit fallback-path copy stating k of n and inclusion (D-23); non-inclusion rendered as a distinct non-error outcome that still reports the cohort's anchor result (D-10) |
-| overflow | long DID / txid / beacon address / cohort id | ✅ covered | `Mono` `truncate` + `CopyField` guarantee the full value is copyable without breaking layout (shipped primitives) |
-| zero-one-many | activity log entries + seat counts | ✅ covered | Timestamped activity log accumulates inside the technical-detail expander (D-27); seat/co-sign figures use `tabular-nums`; aggregate counts about others only, never member identities (D-08) |
-| long-text | raw signed-update JSON + full resolved DID document | 🧪 backstop | Held behind the raw-detail expander (collapsed by default); UI-state test must confirm large JSON does not overflow the card and the expander scrolls |
-| loading | anchor sub-step transitions (Signed -> Broadcast -> Confirmed, live) | 🧪 backstop | Anchor poll on ~5s cadence, freeze at first confirmation (D-22); backstop test confirms the sub-step chevron renders each state and stops polling at `confirmed`/`failed` |
+### Covered (truths)
+
+| Category | Element(s) | Resolution |
+|----------|------------|------------|
+| empty | E1/E9 cohort page with no join | ✅ covered: renders the documented `No cohort joined yet` empty state with a `Browse cohorts` CTA back to the directory landing; the stage timeline only renders for a joined cohort |
+| empty | E2 submit panel before the window opens | ✅ covered: the `Submit update` stage renders dimmed/pending until the submit window opens; the preview body is built locally at window-open (D-01, RESEARCH) |
+| empty | E3 directory with no cohorts | ✅ covered: Phase 2 shipped the directory empty/expiry states; Phase 3 only changes row affordances |
+| empty | E5 resolve with no update found | ✅ covered: the hermetic-genesis and mismatch outcomes are the honest no-update states (D-28/D-29) |
+| loading | E1 active stage (waiting-for-seats, co-signing) | ✅ covered: active stage shows the quiet `Active for {mm:ss}` indicator + `StatusDot` `pulse`; future stages dimmed as pending (D-05) |
+| loading | E2 submit in flight | ✅ covered: submit click disables the CTA and advances the timeline to the co-signing stage's live indicator |
+| loading | E3 directory refresh | ✅ covered: Phase 2 shipped poll-driven row updates; joined-row state flips live (D-04/D-26) |
+| loading | E5 resolve in flight | ✅ covered: brief `resolving...` retries gated on the anchor `enabled` bit (D-28) |
+| loading | E10 chip liveness | ✅ covered: `Your cohort · {stage}` label + `StatusDot` update live from the same feed as the timeline (D-03) |
+| error | E1/E7 service unreachable (transient) | ✅ covered: distinct `Can't reach this service` banner with quiet auto-retry; stages freeze honestly, never a terminal by itself (D-24) |
+| error | E1/E7 terminal failure (stall / timeout / vanished / seat lost / unknown) | ✅ covered: best-effort specific reason with the honest `didn't say why` fallback + `Back to cohorts` (D-25, Finding 2) |
+| error | E2 submit failure | ✅ covered: submit-path failures surface the D-24 banner (transient) or D-25 terminal states; the stalled-cohort outcome uses the dedicated stall copy (Finding 2) |
+| error | E3 directory unreachable | ✅ covered: Phase 2 shipped directory error handling; seated-state failures route to the cohort page's D-24/D-25 states |
+| error | E5 resolve mismatch | ✅ covered: mismatch outcome with indexing explanation and `Resolve again` retry guidance (D-29) |
+| error | E10 chip on failure | ✅ covered: chip freezes with the stages under D-24 and reflects the terminal stage label under D-25; it never invents a state the page does not show |
+| populated | E1 full stage timeline | ✅ covered: full timeline upfront, active stage highlighted, completed stages good-tone, pending dimmed (D-01/D-05) |
+| populated | E3 directory rows while seated | ✅ covered: joined row shows `You're in this cohort` + `View cohort`; other rows show `In progress` or disabled Join (D-04/D-26) |
+| populated | E5 reflected outcome | ✅ covered: `Your update is reflected` with the resolved document listing the beacon service (version {N}) |
+| partial | E1 k-of-n fallback + cooperative non-inclusion | ✅ covered: explicit fallback-path copy stating k of n and inclusion (D-23); non-inclusion rendered as a distinct non-error outcome that still reports the cohort's anchor result (D-10) |
+| partial | E5 update not yet in resolved document | ✅ covered: the mismatch outcome is exactly the partial round-trip state, with retry guidance (D-29) |
+| overflow | E3 long DID / cohort id in rows | ✅ covered: `Mono` `truncate` + `CopyField` guarantee the full value is copyable without breaking layout (shipped primitives) |
+| long-text | E3 row values | ✅ covered: same `Mono` truncate + `CopyField` treatment as overflow (shipped `CohortRow` pattern) |
+| zero-one-many | E1/E4 activity log entries + seat counts | ✅ covered: timestamped activity log accumulates inside the technical-detail expander (D-27); seat/co-sign figures use `tabular-nums`; aggregate counts about others only, never member identities (D-08) |
+| zero-one-many | E3 directory at zero/one/many cohorts | ✅ covered: Phase 2 shipped the zero/one/many directory handling incl. the awaiting-seats waiting line; Phase 3 reuses it unchanged |
+| error (confirm-dialog) | E8 Leave confirmation | ✅ covered: explicit confirmation with commitment-point honesty, available only while waiting for seats (D-09) |
+| error (confirm-dialog) | E8 Start-over confirmation | ✅ covered: danger-variant confirmation with unrecoverable-key warning + sidecar export reminder (D-10) |
+
+### Backstop (held-out UI-state tests; verification: backstop)
+
+| Category | Element(s) | Statement |
+|----------|------------|-----------|
+| long-text | E4 raw signed-update JSON in the expander | 🧪 backstop: large JSON does not overflow the card; the collapsed-by-default expander scrolls. verification: backstop |
+| overflow | E4 activity log at many entries | 🧪 backstop: the expander contains and scrolls an unbounded log without breaking page layout. verification: backstop |
+| long-text | E5 full resolved DID document | 🧪 backstop: the document renders inside the expander treatment without card overflow. verification: backstop |
+| overflow | E2/E5 update-preview JSON at unusual size | 🧪 backstop: the preview uses the same expander/scroll treatment; no clipped-content silent loss. verification: backstop |
+| loading | E6 anchor sub-step transitions (Signed -> Broadcast -> Confirmed, live) | 🧪 backstop: sub-step chevron renders each state on the ~5s poll cadence and polling stops at `confirmed`/`failed` (D-22). verification: backstop |
+
+### Dismissed (fixed-shape surfaces; reasons recorded)
+
+| Category | Element(s) | Reason |
+|----------|------------|--------|
+| overflow | E1 stage labels | Fixed protocol enum of at most 7 short constant labels from the copy contract; no user content can overflow |
+| zero-one-many | E1 stage count | Stage count is a fixed protocol constant, not a variable collection |
+| long-text | E1 stage labels | Constant short strings; no dynamic text |
+| partial | E2 update preview | The preview is an atomic locally-built document; a partial-field state cannot occur |
+| partial | E3 directory rows | Rows render from complete directory DTO entries; no partial-row state exists |
+| zero-one-many | E5 resolved document view | Single-document surface, not a collection |
+| overflow | E9 empty-state copy | Constant two-line copy from the contract; no dynamic content |
+| long-text | E9 empty-state copy | Same constant copy; no dynamic text |
+| overflow / long-text | E10 chip label | `Your cohort · {stage}` uses the fixed stage enum; chip truncates defensively but no dynamic-length content exists |
 
 ---
 
@@ -168,11 +211,11 @@ No third-party registries declared; registry vetting gate not run.
 
 ## Checker Sign-Off
 
-- [ ] Dimension 1 Copywriting: PASS
-- [ ] Dimension 2 Visuals: PASS
-- [ ] Dimension 3 Color: PASS
-- [ ] Dimension 4 Typography: PASS
-- [ ] Dimension 5 Spacing: PASS
-- [ ] Dimension 6 Registry Safety: PASS
+- [x] Dimension 1 Copywriting: PASS
+- [x] Dimension 2 Visuals: PASS
+- [x] Dimension 3 Color: PASS
+- [x] Dimension 4 Typography: PASS
+- [x] Dimension 5 Spacing: PASS (non-blocking FLAG: inherited primitive spacing exceptions stay legacy-only)
+- [x] Dimension 6 Registry Safety: PASS
 
-**Approval:** pending
+**Approval:** approved 2026-07-17 (gsd-ui-checker, revision 1)
