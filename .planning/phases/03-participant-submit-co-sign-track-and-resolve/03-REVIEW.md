@@ -1,6 +1,6 @@
 ---
 phase: 03-participant-submit-co-sign-track-and-resolve
-reviewed: 2026-07-17T00:00:00Z
+reviewed: 2026-07-17T22:33:57Z
 depth: deep
 files_reviewed: 23
 files_reviewed_list:
@@ -28,122 +28,66 @@ files_reviewed_list:
   - packages/web/src/stores/participant.spec.ts
   - packages/web/src/stores/participant.ts
 findings:
-  critical: 1
-  warning: 2
-  info: 4
-  total: 7
+  critical: 0
+  warning: 4
+  info: 5
+  total: 9
 status: issues_found
 ---
 
 # Phase 3: Code Review Report
 
-**Reviewed:** 2026-07-17
+**Reviewed:** 2026-07-17T22:33:57Z
 **Depth:** deep
-**Files Reviewed:** 23
 **Status:** issues_found
 
 ## Summary
 
-Reviewed the Phase-3 participant submit / co-sign / track / resolve slice at deep depth: the opt-in explicit-submit gate (`participant/src/index.ts`), the public anonymous `GET /v1/anchor/:cohortId` read (`anchor-state.ts` + `hono-adapter.ts`), the in-flight directory widening (`operator-cohorts.ts`), the pure-`deriveStage` participant store (`web/src/stores/participant.ts`), and the cohort-page UI.
+This is a RE-REVIEW after gap-closure plan 03-07 landed the CR-01 (post-seat gone streak) and WR-01 (four-way anchor narration) fixes. Both prior findings verify as CLOSED under deep analysis:
 
-Security posture is solid on the headline concern: the new anchor route is mounted OUTSIDE the operator-auth block, is anonymous, drops the raw broadcast error for a generic reason, guards the cohortId with a cheap regex before any lookup, answers unknown ids with `state:'none'` (no existence oracle), never touches the chain, and bounds its retained map (T-03-02-* all hold). It does NOT weaken ADR-0015 operator gating. The explicit-submit gate correctly builds the body once, never rejects, and runs the baked-mismatch decline before the gate.
+- **CR-01 (post-seat poll-vs-SSE race) is closed.** `handlePostSeatSnapshot` now requires `POST_SEAT_GONE_CONFIRMATIONS` (2) consecutive gone reads before declaring a seated cohort dead (`participant.ts:1378-1402`), and `clearPostSeatPoll` (invoked by `teardownLive`, which every terminal path calls) resets both `postSeatGoneStreak` and `postSeatEpoch` (`:494-505`). A racing `cohort-complete` SSE tears the poll down and zeroes the streak before a second gone read can accumulate, so a completed cohort's normal directory-drop can no longer false-fail a genuine success or discard the sidecar. A present read resets the streak, so directory flapping never reaches the threshold. The `postSeatCohortGone` (absent-entirely) predicate stays correctly distinct from the pre-seat `pickedCohortClosed` (left-Advertised).
+- **WR-01 (mode-dishonest completion copy) is closed at the source.** `anchorSummaryState` maps every read to `hermetic | anchored | broadcasting | broadcast-failed` (`participant.ts:686-699`), and `shouldAutoResolve` now returns true on `state === 'failed'` (`:711-719`) so a failed live broadcast still reaches a resolve outcome instead of freezing. `CompletionSummary` branches on all four states with honest copy (`CompletionSummary.tsx:94-110`), and the store specs pin every case.
 
-The problems are on the participant-store lifecycle and the mode-honest completion copy, not on the security surface:
+The two closures hold. Deep cross-component tracing, however, shows the WR-01 fix did not fully propagate: `CompletionSummary`'s null-anchor default and `StageTimeline`'s enabled-only relabel still make the "no-broadcast" / premature-"Anchored" claim WR-01 was meant to eliminate, in adjacent render paths. Two findings from the pre-03-07 review that were OUT of the gap scope also remain open (operator draft has no size ceiling; a fast-path step regression). Security posture is unchanged and solid: the anonymous `/v1/anchor/:cohortId` read is guarded, non-oracle, chain-free, bounded, and mounted outside operator auth; the explicit-submit gate builds once and never rejects.
 
-- One BLOCKER: a race between the post-seat directory poll and the `cohort-complete` SSE can turn a genuinely SUCCESSFUL cohort into a false terminal failure and discard the captured sidecar.
-- Two WARNINGs: the completion copy claims "no-broadcast service" for a broadcasting service whose anchor is not yet (or never) confirmed; and the operator draft form has no upper bound on cohort size.
-- Four INFO items (dead struct field, a latent literal-entity string, a raw-TypeError 400 body, a cosmetically-masked step regression).
-
-No `<structural_findings>` block was provided, so there is no fallow substrate to reconcile; all findings below are narrative.
-
-## Critical Issues
-
-### CR-01: Post-seat directory poll can false-fail a SUCCESSFUL cohort and discard the participant's result
-
-**File:** `packages/web/src/stores/participant.ts:1015-1037` (post-seat poll) and `:1319-1341` (`handlePostSeatSnapshot`), with `packages/service/src/operator-cohorts.ts:378-403` (`directory()`)
-
-**Issue:** After a participant is seated, `cohort-ready` starts `postSeatPoll`, which every 5s fetches the public directory and calls `handlePostSeatSnapshot`. That handler treats "picked cohort absent from the directory entirely" as a terminal failure:
-
-```
-if (postSeatCohortGone(rows, pickedCohortId)) {
-  fail("The cohort ended and this service didn't say why.");
-  return;
-}
-```
-
-But on the service side, `directory()` excludes a cohort the instant its phase leaves `DISPLAY_PHASES` (`operator-cohorts.ts:385-388`). When a cohort finishes signing, its phase transitions to `Complete` (not in `DISPLAY_PHASES`), so `directory()` stops listing it. That transition and the participant's `cohort-complete` SSE both originate from the same completion but travel over different channels with no ordering guarantee. If a `postSeatPoll` `fetchDirectory` resolves in the window after the phase flips to `Complete` but before the browser processes `cohort-complete`, then:
-
-- `status` is still `'live'` and `seated` is still `true`, so the guard at `:1324` does not short-circuit,
-- `postSeatCohortGone` returns `true` (the cohort is gone from the directory),
-- `fail(...)` runs -> `status:'failed'`, `teardownLive()` stops the runner and nulls `live`.
-
-Once the runner is stopped, the pending `cohort-complete` is never processed, so the `result`/`sidecar`/`captured` artifacts (`:1060-1102`) are never built. A participant who really co-signed a 64-byte aggregate signature is shown "The cohort ended and this service didn't say why." and loses their downloadable sidecar. The epoch/`status !== 'live'` guards only protect the case where `cohort-complete` wins the race; they do not protect the case where the poll wins.
-
-**Fix:** Do not treat "absent from the directory" as terminal for a seated member without corroboration that the cohort actually failed (a completed cohort legitimately disappears). Options:
-
-```ts
-// Require the cohort-gone signal to persist across consecutive polls AND that no
-// cohort-complete has landed, so a completed cohort's normal directory-drop is not
-// mistaken for a stall. Reset the counter on any present read.
-handlePostSeatSnapshot(rows) {
-  const { status, seated, pickedCohortId } = get();
-  if (!seated || pickedCohortId === null || status !== 'live') return;
-  if (postSeatCohortGone(rows, pickedCohortId)) {
-    postSeatGoneStreak += 1;
-    if (postSeatGoneStreak < POST_SEAT_GONE_CONFIRMATIONS) return; // e.g. 2-3 polls
-    append('warn', `cohort ${pickedCohortId} left the directory before completing`);
-    fail("The cohort ended and this service didn't say why.");
-    return;
-  }
-  postSeatGoneStreak = 0;
-  if (get().unreachable) set({ unreachable: false });
-}
-```
-
-A cleaner alternative: gate the post-seat "gone" terminal on the runner having NOT emitted `cohort-complete` (e.g. only fail from a small delayed timer that a subsequent `cohort-complete`/`cohort-failed` cancels), so the SSE always wins even when the poll observes the completion drop first.
+No `<structural_findings>` block was provided; all findings below are narrative.
 
 ## Warnings
 
-### WR-01: Completion copy claims "no-broadcast service" on a broadcasting service whose anchor is not confirmed
+### WR-01: CompletionSummary defaults a null anchor to the hermetic "does not publish to Bitcoin" narration (transient WR-01 reassertion on the live path)
 
-**File:** `packages/web/src/components/cohort/CompletionSummary.tsx:72, 86-98` (and the derivation seam `packages/web/src/stores/participant.ts:605-626`)
-
-**Issue:** `anchored` is computed as `anchor?.enabled && (state === 'confirmed' || state === 'broadcast')`, and the Signed line branches on it:
-
-```tsx
-{anchored ? (
-  <p>Signed and anchored on {netLabel}.</p>
-) : (
-  <p>Signed. This no-broadcast service does not publish to Bitcoin, so there is no on-chain anchor to show.</p>
-)}
+**File:** `packages/web/src/components/cohort/CompletionSummary.tsx:76,105-110`, `packages/web/src/stores/participant.ts:686-699`
+**Issue:** `anchorSummaryState(null)` returns `'hermetic'`, and `CompletionSummary` renders immediately on `status === 'complete'` while `anchor` is still `null` (the anchor poll is started by `trackAnchor` in the same `cohort-complete` handler, but its first `fetchAnchor` resolves asynchronously, so at least one render happens with `anchor === null`). For that window on a LIVE broadcasting service the summary asserts "Signed. This no-broadcast service does not publish to Bitcoin, so there is no on-chain anchor to show." and the round-trip card shows the `anchorEnabled === false` copy "Resolving to the genesis document...". That is exactly the false hermetic claim WR-01 set out to kill, reasserted for the pre-first-read window. The root cause is that `anchorSummaryState` collapses "not yet read" (`null`) and "read: not broadcasting" (`enabled: false`) into one `hermetic` state.
+**Fix:** Give the null case its own neutral state instead of committing to hermetic, mirroring `SubmitPanel`'s `enabled === undefined` "Checking this service's broadcast mode" handling:
+```ts
+export function anchorSummaryState(
+  anchor: AnchorDTO | null,
+): 'checking' | 'anchored' | 'broadcasting' | 'broadcast-failed' | 'hermetic' {
+  if (anchor === null) return 'checking';
+  if (!anchor.enabled) return 'hermetic';
+  // ...unchanged
+}
 ```
+Render a neutral "Confirming this service's broadcast mode" line for `'checking'` until the first anchor read lands.
 
-On a LIVE broadcasting service (`anchor.enabled === true`), the anchor read is transiently `state:'none'` right after `cohort-complete` (the beacon tx has not been broadcast yet) and is permanently `state:'failed'` if the broadcast fails. In both cases `anchored` is `false`, so the page asserts "This no-broadcast service does not publish to Bitcoin" about a service that DOES broadcast. This is a mode-honesty violation (the exact posture D-07 is meant to protect) and it directly contradicts `StageTimeline`, which for `anchor.enabled === true` relabels the final row "Anchored" and renders the Signed/Broadcast/Confirmed sub-steps (`StageTimeline.tsx:130,152-154,70-108`). The user sees "Anchored / Broadcast pending" in the timeline and "no-broadcast service" in the summary simultaneously.
+### WR-02: StageTimeline relabels the final stage "Anchored" on any enabled service, including a still-broadcasting or FAILED broadcast
 
-The `failed` case is worse than transient: `shouldAutoResolve` returns `false` for `enabled + 'failed'` (`participant.ts:660-668`), so auto-resolve never fires and the poll freezes (`:1297`), leaving the participant permanently on the "no-broadcast service" copy with no resolve outcome for a broadcast that actually failed.
-
-**Fix:** Branch the Signed-line copy (and `deriveStage`'s `signed`/`anchored` decision) on `anchorEnabled`, not on `anchored`, adding the missing middle case:
-
-```tsx
-{anchored ? (
-  <p>Signed and anchored on {netLabel}.</p>
-) : anchorEnabled ? (
-  anchor?.state === 'failed'
-    ? <p>Signed. The beacon broadcast failed; retry from the operator or resolve later.</p>
-    : <p>Signed. Broadcasting the beacon transaction to {netLabel}...</p>
-) : (
-  <p>Signed. This no-broadcast service does not publish to Bitcoin, so there is no on-chain anchor to show.</p>
-)}
+**File:** `packages/web/src/components/cohort/StageTimeline.tsx:130,152`
+**Issue:** `liveAnchor = anchor?.enabled === true` drives `label = item.key === 'signed' && liveAnchor ? 'Anchored' : item.label`, so the final timeline row reads "Anchored" whenever the service broadcasts, regardless of the actual anchor `state`. On a `broadcast-failed` cohort (`enabled: true, state: 'failed'`) the row shows a pulsing (and, once `resolveStatus === 'resolved'`, good-tone) "Anchored" header even though the beacon broadcast terminally failed and there is no confirmed anchor. This contradicts the four-way honesty the WR-01 fix added to `CompletionSummary` (which keeps the `anchored` boolean false and renders the `broadcast-failed` copy). The `AnchorSubSteps` do mark the Broadcast sub-step bad-tone, but the dominant row header still claims "Anchored", so the timeline makes an on-chain-anchor claim the summary explicitly disclaims: the same defect class WR-01 targeted, one component over. The `broadcasting` (`state: 'none'`) sub-state has the same premature-"Anchored" problem.
+**Fix:** Relabel and tone the final row from the same four-way state the summary uses, not from `enabled` alone:
+```ts
+const summary = anchorSummaryState(anchor);
+const label = item.key === 'signed'
+  ? (summary === 'anchored' ? 'Anchored' : item.label)
+  : item.label;
 ```
+Only render "Anchored" for the `anchored` case; keep "Signed" (or a broadcast/failed label) otherwise.
 
-### WR-02: No upper bound on operator draft cohort `size`
+### WR-03: No upper bound on operator draft cohort `size` (carried forward from the pre-03-07 review, still open)
 
 **File:** `packages/service/src/operator-cohorts.ts:272-274` (`validateDraft`)
-
-**Issue:** `validateDraft` guards only the lower bound: `if (!Number.isInteger(size) || size < 1) throw SIZE_ERROR`. There is no maximum. An authenticated operator (or a fat-fingered form value, e.g. `size: 1000000`) reaches `buildCohortConfig(size, ...)` and `config.maxParticipants = size`, handing the library a cohort that can never fill and whose n-of-n structures scale with n. The rest of the module carefully bounds every other unbounded collection (`MAX_TERMINAL = 24`, the anchor `MAX_TERMINAL`, the dashboard `MAX_COHORTS`) precisely to avoid this class of issue; the cohort-size input is the one that is left open. The surface is operator-authenticated, so this is not remotely exploitable, but a single typo can wedge the runner.
-
+**Issue:** `validateDraft` guards only the lower bound: `if (!Number.isInteger(size) || size < 1) throw SIZE_ERROR`. There is no maximum. An authenticated operator (or a fat-fingered form value, e.g. `size: 1000000`) reaches `buildCohortConfig(size, ...)` and `config.maxParticipants = size`, handing the library a cohort that can never fill and whose n-of-n structures scale with n. Every other unbounded collection in the module is deliberately capped (`MAX_TERMINAL = 24`, the anchor `MAX_TERMINAL`, the dashboard `MAX_COHORTS`); the cohort-size input is the one left open. Operator-authenticated, so not remotely exploitable, but a single typo can wedge the runner. 03-07 was scoped to CR-01/WR-01, so this was not addressed.
 **Fix:** Add a sane upper bound with a user-facing message, mirroring the existing guard style:
-
 ```ts
 const MAX_COHORT_SIZE = 100; // or the protocol's practical n-of-n ceiling
 if (!Number.isInteger(size) || size < 1 || size > MAX_COHORT_SIZE) {
@@ -151,48 +95,49 @@ if (!Number.isInteger(size) || size < 1 || size > MAX_COHORT_SIZE) {
 }
 ```
 
-## Info
-
-### IN-01: `StageInput.optedIn` is passed everywhere but never read by `deriveStage`
-
-**File:** `packages/web/src/stores/participant.ts:580-588, 605-626`
-
-**Issue:** `StageInput` declares `optedIn`, and every caller (`App.tsx:55`, `CohortPage.tsx:113`, `BrowseView.tsx:53`) threads it in, but `deriveStage` never references `state.optedIn`. It is a dead input field: harmless, but it implies a dependency that does not exist and invites a future reader to assume `optedIn` affects the stage.
-
-**Fix:** Either drop `optedIn` from `StageInput` and the call sites, or add a code comment stating it is retained for symmetry with the store slice but not part of the derivation.
-
-### IN-02: Fallback string renders a literal `&apos;` HTML entity
+### WR-04: SubmitPanel renders a literal `&apos;` when the beacon-address fallback is used (carried forward, still open)
 
 **File:** `packages/web/src/components/cohort/SubmitPanel.tsx:137`
+**Issue:** `{beaconAddress ?? 'this cohort&apos;s beacon'}` places `&apos;` inside a JavaScript string literal (the `??` fallback), not JSX text. React renders string children verbatim without HTML-entity decoding, so when `beaconAddress` is null the live-broadcast consent line shows the literal text `this cohort&apos;s beacon` (ampersand-apos-semicolon) instead of an apostrophe. In normal flow `beaconAddress` is set by the `cohort-ready` handler before the submit window opens, so this defensive branch is effectively unreachable today, but it renders broken copy if the ordering ever changes. Flagged in the prior review (IN-02) and not fixed by 03-07.
+**Fix:** Use a plain apostrophe in the JS string (surrounding JSX text can keep `&apos;`):
+```tsx
+{beaconAddress ?? "this cohort's beacon"}
+```
 
-**Issue:** `{beaconAddress ?? 'this cohort&apos;s beacon'}` is a JavaScript string expression, not JSX text, so React renders it verbatim: if `beaconAddress` is null the user sees the raw `this cohort&apos;s beacon` (the entity is not decoded). The submit window only opens after `cohort-ready` sets `beaconAddress`, so this fallback is effectively unreachable today, but it is a latent defect if the ordering ever changes.
+## Info
 
-**Fix:** Use a plain apostrophe in the JS string: `'this cohort's beacon'` (or `"this cohort's beacon"`).
+### IN-01: Live broadcast/none path shows "Resolving your updated DID..." while no resolution is running
 
-### IN-03: `createDraft` on a null / non-object body surfaces a raw `TypeError` as the 400 body
+**File:** `packages/web/src/components/cohort/CompletionSummary.tsx:133-138`, `packages/web/src/stores/participant.ts:711-719`
+**Issue:** On a live service whose beacon is `broadcast` (accepted) or `none` (broadcasting), `shouldAutoResolve` returns false (correctly: the beacon is not yet mined, so resolution would not find the appended beacon). Meanwhile `resolveStatus` stays `idle` and the round-trip card renders "Resolving your updated DID..." for the entire broadcast-to-confirm interval (minutes on mutinynet) even though no `resolve()` call is in flight. The copy implies active work that is not happening; the honest state is "waiting for the beacon to confirm before resolving".
+**Fix:** Branch the pending copy on whether a resolve is actually in flight versus waiting on the anchor, e.g. show "Waiting for the beacon transaction to confirm before resolving" when `anchorEnabled && resolveStatus === 'idle' && !shouldAutoResolve(anchor)`.
 
-**File:** `packages/service/src/hono-adapter.ts:364-372` with `packages/service/src/operator-cohorts.ts:268`
+### IN-02: `StageInput.optedIn` is threaded everywhere but never read by `deriveStage` (carried forward)
 
-**Issue:** The route parses JSON, then calls `operatorCohorts.createDraft(body as DraftInput)` inside a try/catch that returns `err.message` as the 400 body. `validateDraft` destructures `const { beaconType, size, threshold } = input;` before any shape check, so a JSON `null` or a non-object body throws `Cannot destructure property 'beaconType' of ... as it is null`, which is returned verbatim to the caller. Operator-authenticated and not sensitive, but the message is an internal implementation detail rather than the intended user-facing validation copy.
+**File:** `packages/web/src/stores/participant.ts:597-605,622-643`
+**Issue:** `StageInput` declares `optedIn`, and every caller (`App.tsx:55`, `CohortPage.tsx:113`, `BrowseView.tsx:53`) threads it in, but `deriveStage` never references `state.optedIn`. It is a dead input field: harmless, but it implies a dependency that does not exist and invites a future reader to assume `optedIn` affects the stage. Unchanged since the prior review.
+**Fix:** Either drop `optedIn` from `StageInput` and the call sites, or add a comment stating it is retained for symmetry with the store slice but is not part of the derivation.
 
+### IN-03: `createDraft` on a null / non-object body surfaces a raw `TypeError` as the 400 body (carried forward)
+
+**File:** `packages/service/src/hono-adapter.ts:357-373`, `packages/service/src/operator-cohorts.ts:264-268`
+**Issue:** The route parses JSON then calls `operatorCohorts.createDraft(body as DraftInput)` inside a try/catch that returns `err.message` as the 400 body. `validateDraft` destructures `const { beaconType, size, threshold } = input;` before any shape check, so a JSON `null` or a non-object body throws `Cannot destructure property 'beaconType' of ... as it is null`, returned verbatim. Operator-authenticated and not sensitive, but the message is an internal detail rather than the intended user-facing validation copy. Unchanged since the prior review.
 **Fix:** Guard the body shape first: `if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('expected a JSON object { beaconType, size, threshold }');` before destructuring.
 
-### IN-04: `join()` fast-path re-sets the `join` step to `active` after `cohort-joined` already completed it
+### IN-04: `join()` fast-path re-sets the `join` step to `active` after `cohort-joined` already completed it (carried forward)
 
-**File:** `packages/web/src/stores/participant.ts:1139-1155`
+**File:** `packages/web/src/stores/participant.ts:1197-1205`
+**Issue:** On a fast (hermetic / in-process) path, `cohort-joined` can fire DURING `participant.start()`, setting `steps.join = 'done'` and `steps.submit = 'active'` and `optedIn = true`. The post-`start()` re-check only short-circuits on seated / complete / failed; for an opted-in-but-not-yet-seated round it falls through and runs `setStep('join', 'active')`, regressing `join` from `done` back to `active`. `deriveStage` reads only `steps.submit`, so the regression is cosmetically invisible today, but it is a real state inconsistency (and `failActiveStep` would then treat `join` as the mid-flight step on a later failure). Unchanged since the prior review.
+**Fix:** Include `get().optedIn` in the early-return guard, or only set `join` active when it is not already `done`.
 
-**Issue:** On a fast (hermetic / in-process) path, `cohort-joined` can fire DURING `participant.start()`, setting `steps.join = 'done'` and `steps.submit = 'active'`. The post-`start()` re-check (`:1146-1153`) only short-circuits when seated / complete / failed; for an opted-in-but-not-yet-seated round it falls through and runs `setStep('join', 'active')` at `:1154`, regressing `join` from `done` back to `active`. Because `deriveStage` reads only `steps.submit` (not `steps.join`), the regression is cosmetically invisible today, but it is a real state inconsistency (and `failActiveStep` would then treat `join` as the mid-flight step on a later failure).
+### IN-05: `Expander` collapsible is duplicated across three cohort-page render sites
 
-**Fix:** Include `get().optedIn` in the early-return guard, or only set `join` active when it is not already `done`:
-
-```ts
-if (live !== participant || get().optedIn || get().seated || get().status === 'complete' || get().status === 'failed') {
-  return;
-}
-```
+**File:** `packages/web/src/components/cohort/CohortPage.tsx:54-78`, `packages/web/src/components/cohort/CompletionSummary.tsx:33-48`, `packages/web/src/components/cohort/SubmitPanel.tsx:114-130`
+**Issue:** Two near-identical `Expander` components (same markup, same `max-h-80 overflow-auto` body, same uppercase header button) are defined independently in `CohortPage` and `CompletionSummary`, and `SubmitPanel` inlines a third copy of the same collapsible pattern. Low-risk duplication that invites drift: the `CompletionSummary` variant already lacks the `defaultOpen` prop the `CohortPage` one carries.
+**Fix:** Extract a single shared `Expander` primitive (e.g. into `ui/primitives`) and import it in all three sites.
 
 ---
 
-_Reviewed: 2026-07-17_
+_Reviewed: 2026-07-17T22:33:57Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: deep_
