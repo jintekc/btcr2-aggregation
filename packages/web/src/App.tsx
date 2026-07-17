@@ -1,14 +1,21 @@
 import { useEffect, useState } from 'react';
 import { resolveNetwork } from '@btcr2-aggregation/shared';
 import { BrowseView } from './components/browse/BrowseView';
+import { STAGE_LABEL } from './components/cohort/StageTimeline';
 import { OperatorConsole } from './components/operator/OperatorConsole';
-import { useParticipant } from './stores/participant';
+import { StatusDot } from './ui/primitives';
+import { deriveStage, useParticipant } from './stores/participant';
 
 /**
  * App shell over one same-origin service. The route decides the experience: `/operator`
  * is the login-gated operator console (the server session middleware is the real
  * boundary, D-04), and every other path is the anonymous participant experience. The
  * runtime network config (GET /v1/config) and the network badge are shared by both.
+ *
+ * The shell also owns the participant view toggle (cohort vs browse) so a single persistent
+ * "Your cohort · {stage}" link (D-03/D-10) lives in the header while a cohort lifecycle is
+ * active: it returns to the live cohort page from anywhere in the browse surface, and its
+ * stage label + StatusDot update live from the same store facts the timeline derives from.
  */
 export function App() {
   const baseUrl = window.location.origin;
@@ -33,7 +40,31 @@ export function App() {
     void loadConfig(baseUrl);
   }, [loadConfig, baseUrl]);
 
+  // The participant cohort lifecycle + its derived stage, for the header "Your cohort" link.
+  const status = useParticipant((s) => s.status);
+  const optedIn = useParticipant((s) => s.optedIn);
+  const seated = useParticipant((s) => s.seated);
+  const pendingSubmit = useParticipant((s) => s.pendingSubmit);
+  const steps = useParticipant((s) => s.steps);
+  const anchor = useParticipant((s) => s.anchor);
+  const resolveStatus = useParticipant((s) => s.resolveStatus);
+  const lifecycleActive = status === 'connecting' || status === 'live' || status === 'complete';
+  const stage = deriveStage({ status, optedIn, seated, pendingSubmit, steps, anchor, resolveStatus });
+
+  // The one participant view toggle, owned here so the header link and BrowseView agree.
+  const [participantView, setParticipantView] = useState<'cohort' | 'browse'>('cohort');
+  // When a lifecycle ends (leave / terminal reset), snap the default view back to cohort so a
+  // fresh join opens on the cohort page rather than a stale browse view.
+  useEffect(() => {
+    if (!lifecycleActive) {
+      setParticipantView('cohort');
+    }
+  }, [lifecycleActive]);
+
   const isOperator = pathname === '/operator';
+  const showCohortLink = !isOperator && lifecycleActive;
+  // The active-stage dot pulses; a settled stage (signed and beyond) reads good-tone.
+  const stageSettled = stage === 'signed' || stage === 'anchored' || stage === 'resolved';
 
   return (
     <div className="mx-auto flex min-h-full max-w-6xl flex-col px-4 py-6 sm:px-6">
@@ -49,15 +80,27 @@ export function App() {
                 : "Browse this service's open cohorts and pick one to join and co-sign."}
             </p>
           </div>
-          <span
-            className={
-              isMainnet
-                ? 'rounded-full border border-bad/50 bg-bad/10 px-3 py-1 text-xs font-semibold text-bad'
-                : 'rounded-full border border-edge bg-surface px-3 py-1 text-xs text-faint'
-            }
-          >
-            {isMainnet ? `${netLabel} · REAL FUNDS` : `${netLabel} · key-path Taproot`}
-          </span>
+          <div className="flex flex-wrap items-center gap-2">
+            {showCohortLink ? (
+              <button
+                type="button"
+                onClick={() => setParticipantView('cohort')}
+                className="inline-flex items-center gap-2 rounded-full border border-edge bg-surface px-3 py-1 text-xs text-muted hover:bg-surface-2"
+              >
+                <StatusDot tone={stageSettled ? 'good' : 'accent'} pulse={!stageSettled} label="cohort stage" />
+                Your cohort · {STAGE_LABEL[stage]}
+              </button>
+            ) : null}
+            <span
+              className={
+                isMainnet
+                  ? 'rounded-full border border-bad/50 bg-bad/10 px-3 py-1 text-xs font-semibold text-bad'
+                  : 'rounded-full border border-edge bg-surface px-3 py-1 text-xs text-faint'
+              }
+            >
+              {isMainnet ? `${netLabel} · REAL FUNDS` : `${netLabel} · key-path Taproot`}
+            </span>
+          </div>
         </div>
       </header>
 
@@ -65,7 +108,7 @@ export function App() {
         {isOperator ? (
           <OperatorConsole baseUrl={baseUrl} />
         ) : (
-          <BrowseView baseUrl={baseUrl} />
+          <BrowseView baseUrl={baseUrl} view={participantView} onView={setParticipantView} />
         )}
       </main>
 

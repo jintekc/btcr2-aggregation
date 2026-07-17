@@ -57,9 +57,16 @@ export async function fetchDirectoryState(
 export function DirectoryList({
   baseUrl,
   onPick,
+  onView,
 }: {
   baseUrl: string;
   onPick?: (row: DirectoryCohortDTO) => void;
+  /**
+   * Navigate back to the live cohort page (D-04). Supplied only while a cohort lifecycle is
+   * active: it lets the seated row's "View cohort" action return to the cohort view. Omitting
+   * `onPick` at the same time disables Join on every row (one cohort at a time).
+   */
+  onView?: () => void;
 }) {
   const [rows, setRows] = useState<DirectoryCohortDTO[] | undefined>(undefined);
   const [reachable, setReachable] = useState(true);
@@ -120,7 +127,7 @@ export function DirectoryList({
       <SectionTitle>Open cohorts</SectionTitle>
       <div className="space-y-3">
         {ordered.map((row) => (
-          <CohortRow key={row.cohortId} row={row} onPick={onPick} />
+          <CohortRow key={row.cohortId} row={row} onPick={onPick} onView={onView} />
         ))}
       </div>
     </div>

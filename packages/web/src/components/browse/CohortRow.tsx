@@ -1,4 +1,5 @@
 import { resolveNetwork } from '@btcr2-aggregation/shared';
+import { useParticipant } from '../../stores/participant';
 import { Badge, Button, Card, CopyField } from '../../ui/primitives';
 import {
   beaconGloss,
@@ -28,12 +29,28 @@ function MetricLabel({ children }: { children: string }) {
  * BrowseView (plan 04) supplies `onPick` to light it up on joinable rows and receives the
  * whole picked row so the inline identity step and the seated confirmation can read its live
  * seats/status. Accent stays scarce: only the Open Badge and the single Join button may carry it.
+ *
+ * One cohort at a time (D-04): while the store is seated in THIS row's cohort the row shows a
+ * "You're in this cohort" state with a "View cohort" action (via `onView`) instead of Join, and
+ * every other row's Join is disabled (BrowseView omits `onPick` for the whole list while active).
  */
-export function CohortRow({ row, onPick }: { row: DirectoryCohortDTO; onPick?: (row: DirectoryCohortDTO) => void }) {
+export function CohortRow({
+  row,
+  onPick,
+  onView,
+}: {
+  row: DirectoryCohortDTO;
+  onPick?: (row: DirectoryCohortDTO) => void;
+  onView?: () => void;
+}) {
+  const seated = useParticipant((s) => s.seated);
+  const pickedCohortId = useParticipant((s) => s.pickedCohortId);
   const net = resolveNetwork(row.network);
   const full = row.joined >= row.capacity;
   const openSeats = row.capacity - row.joined;
   const joinable = isJoinable(row) && Boolean(onPick);
+  // Seated in THIS row's cohort: show the joined affordance instead of Join (D-04).
+  const seatedHere = seated && pickedCohortId === row.cohortId;
 
   return (
     <Card className="space-y-3 p-4">
@@ -51,13 +68,18 @@ export function CohortRow({ row, onPick }: { row: DirectoryCohortDTO; onPick?: (
             {net.isMainnet ? `${net.label} · REAL FUNDS` : net.label}
           </span>
         </div>
-        <Button
-          variant="primary"
-          disabled={!joinable}
-          onClick={onPick ? () => onPick(row) : undefined}
-        >
-          Join
-        </Button>
+        {seatedHere && onView ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone="good">You&apos;re in this cohort</Badge>
+            <Button variant="primary" onClick={onView}>
+              View cohort
+            </Button>
+          </div>
+        ) : (
+          <Button variant="primary" disabled={!joinable} onClick={onPick ? () => onPick(row) : undefined}>
+            Join
+          </Button>
+        )}
       </div>
 
       <div className="flex flex-wrap gap-6">

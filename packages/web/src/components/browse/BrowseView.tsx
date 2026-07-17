@@ -1,51 +1,77 @@
-import { useState } from 'react';
-import { useParticipant } from '../../stores/participant';
-import { Button, Card } from '../../ui/primitives';
+import { useEffect, useRef, useState } from 'react';
+import { deriveStage, useParticipant } from '../../stores/participant';
+import { Button, Card, StatusDot } from '../../ui/primitives';
 import type { DirectoryCohortDTO } from '../../lib/directory';
-import { PublishPanel } from '../participant/PublishPanel';
-import { RegisterPanel } from '../participant/RegisterPanel';
-import { ResolvePanel } from '../participant/ResolvePanel';
-import { ResultCard } from '../participant/ResultCard';
+import { CohortPage } from '../cohort/CohortPage';
+import { STAGE_LABEL } from '../cohort/StageTimeline';
 import { DirectoryList } from './DirectoryList';
 import { JoinIdentityStep } from './JoinIdentityStep';
 import { ServiceIdentityHeader } from './ServiceIdentityHeader';
 
 /**
- * The participant landing composition (D-13) and the browse-and-pick loop (PART-02,
- * criterion 3): the service-identity header above the polled directory, then a single
- * pick region driven off the participant store's lifecycle. A participant picks an open
- * cohort, confirms an identity inline, joins by choice, sees a seated confirmation, and
- * the existing submit/co-sign/resolve tail keeps working unchanged (D-11).
+ * The participant landing composition (D-13) and the browse-and-pick loop (PART-02/PART-03).
+ * The directory is the ONLY entry path (D-31, criterion 4): the standalone stepper is gone.
+ * A participant browses the polled directory, picks an open cohort, confirms an identity inline
+ * (JoinIdentityStep), joins by choice, and from the moment the join is in flight the whole
+ * lifecycle renders on the one continuous {@link CohortPage} (internal SPA view, no route, D-11).
  *
- * The participant store is the single lifecycle owner (02-RESEARCH Pitfall 4): BrowseView
- * only holds the locally-picked directory row and reads store slices / calls join+leave. It
- * never duplicates join/leave/seated logic. The four tail components
- * (ResultCard/PublishPanel/RegisterPanel/ResolvePanel) are reused verbatim below the seated
- * confirmation via the same `hasResult` gate ParticipantView used; Phase 3 owns that tail.
+ * The App shell owns the view toggle: `view === 'cohort'` shows the live cohort page, while
+ * `view === 'browse'` shows the directory again (so a seated participant can look around) with a
+ * persistent "Your cohort · {stage}" link back. Only one cohort at a time (D-04): while a
+ * lifecycle is active the directory rows offer no Join, and the seated row shows "You're in this
+ * cohort" + View cohort. The participant store is the single lifecycle owner (02-RESEARCH Pitfall
+ * 4): BrowseView holds only the locally-picked row and the view, and reads store slices.
  */
-export function BrowseView({ baseUrl }: { baseUrl: string }) {
-  // The directory row the participant tapped Join on (only an isJoinable row can set it).
-  // Held locally as the snapshot the inline identity step + seated confirmation read from;
-  // the store owns the actual join lifecycle keyed on the same cohort id.
+export function BrowseView({
+  baseUrl,
+  view,
+  onView,
+}: {
+  baseUrl: string;
+  view: 'cohort' | 'browse';
+  onView: (view: 'cohort' | 'browse') => void;
+}) {
+  // The directory row the participant tapped Join on (only an isJoinable row can set it). Held
+  // locally as the snapshot the inline identity step reads from; the store owns the lifecycle.
   const [pickedRow, setPickedRow] = useState<DirectoryCohortDTO | null>(null);
 
   const status = useParticipant((s) => s.status);
+  const optedIn = useParticipant((s) => s.optedIn);
   const seated = useParticipant((s) => s.seated);
+  const pendingSubmit = useParticipant((s) => s.pendingSubmit);
+  const steps = useParticipant((s) => s.steps);
+  const anchor = useParticipant((s) => s.anchor);
+  const resolveStatus = useParticipant((s) => s.resolveStatus);
   const joinClosed = useParticipant((s) => s.joinClosed);
   const error = useParticipant((s) => s.error);
-  const hasResult = useParticipant((s) => s.result !== null);
   const leave = useParticipant((s) => s.leave);
 
-  // Return to the directory: clear the local pick and reset the store lifecycle (leave()
-  // also clears seated/joinClosed). No confirmation dialog - a not-yet-full seat is benign
-  // and reclaimed by the service's TTL (D-15).
+  // A joined cohort lifecycle is active from the moment the join is in flight through completion.
+  // Terminal failures (joinClosed / general failed) are handled by their own cards below and are
+  // NOT lifecycleActive; the full degraded/terminal cohort-page states land in 03-06.
+  const lifecycleActive = status === 'connecting' || status === 'live' || status === 'complete';
+  const stage = deriveStage({ status, optedIn, seated, pendingSubmit, steps, anchor, resolveStatus });
+
+  // Clear the local pick once a lifecycle that actually started has ended (leave / terminal), so
+  // we return to the directory rather than re-showing the identity step for the finished cohort.
+  const ranLifecycle = useRef(false);
+  useEffect(() => {
+    if (lifecycleActive) {
+      ranLifecycle.current = true;
+    } else if (ranLifecycle.current) {
+      ranLifecycle.current = false;
+      setPickedRow(null);
+    }
+  }, [lifecycleActive]);
+
+  // Return to the directory from a terminal card: reset the store lifecycle and the local pick.
   function backToDirectory() {
     leave();
     setPickedRow(null);
   }
 
-  // The picked cohort just filled or closed before we were seated (D-06/D-12): surface the
-  // store's deterministic message and offer a return to browse. Never a dead spinner.
+  // The picked cohort filled or closed before we were seated (D-06/D-12): the store's
+  // deterministic message + a return to browse. Never a dead spinner.
   if (joinClosed) {
     return (
       <div className="space-y-8">
@@ -62,11 +88,8 @@ export function BrowseView({ baseUrl }: { baseUrl: string }) {
     );
   }
 
-  // A general join failure that is NOT a filled-or-closed close (WR-01): a post-seat
-  // failure (cohort-failed / mid-signing error keeps seated true, joinClosed false) or a
-  // pre-seat connect/runtime failure (seated + joinClosed both false). Both were previously
-  // invisible - the former showed a false "seated" success card, the latter silently
-  // re-enabled Join with no feedback. Surface the reason and offer a return to the directory.
+  // A general join failure that is NOT a filled-or-closed close (WR-01): surface the reason and
+  // offer a return to the directory. (03-06 folds these into the cohort page's D-24/D-25 states.)
   if (status === 'failed' && !joinClosed) {
     return (
       <div className="space-y-8">
@@ -84,46 +107,32 @@ export function BrowseView({ baseUrl }: { baseUrl: string }) {
     );
   }
 
-  // Seated: the definitive seat (cohort-ready). Show the resting confirmation and, once the
-  // cohort anchors, the reused tail. Leave returns to the directory (D-11/D-15).
-  if (seated) {
-    const shortCohortId = pickedRow ? pickedRow.cohortId.slice(0, 8) : '';
-    // Seated (cohort-ready) means the cohort LOCKED with every seat filled (min == max == n),
-    // so the pick-time directory snapshot (its joined/Open figures) is always stale here and
-    // must not be rendered (UAT Test 3 finding). State the truth for the current phase instead.
-    const seatedLine = pickedRow
-      ? hasResult
-        ? `All ${pickedRow.capacity} seats filled and the cohort co-signed; your results are below.`
-        : `All ${pickedRow.capacity} seats are filled; the cohort is co-signing your update. Results appear below when it completes.`
-      : hasResult
-        ? 'The cohort co-signed; your results are below.'
-        : 'The cohort is co-signing your update. Results appear below when it completes.';
-    return (
-      <div className="space-y-8">
-        <ServiceIdentityHeader baseUrl={baseUrl} />
-        <Card className="space-y-3 p-5">
-          <h2 className="text-xl font-bold tracking-tight text-ink">
-            You&apos;re seated in cohort {shortCohortId}
-          </h2>
-          <p className="text-sm text-muted">{seatedLine}</p>
-          <Button variant="ghost" onClick={backToDirectory}>
-            Leave cohort
-          </Button>
-        </Card>
-        {hasResult && (
-          <div className="space-y-5">
-            <ResultCard />
-            <PublishPanel baseUrl={baseUrl} />
-            <RegisterPanel baseUrl={baseUrl} />
-            <ResolvePanel baseUrl={baseUrl} />
-          </div>
-        )}
-      </div>
-    );
+  // Active lifecycle: the one continuous cohort page, or (view === 'browse') the directory with a
+  // persistent link back. One cohort at a time - the directory offers no Join while active (D-04).
+  if (lifecycleActive) {
+    if (view === 'browse') {
+      const stageSettled = stage === 'signed' || stage === 'anchored' || stage === 'resolved';
+      return (
+        <div className="space-y-8">
+          <ServiceIdentityHeader baseUrl={baseUrl} />
+          <button
+            type="button"
+            onClick={() => onView('cohort')}
+            className="inline-flex items-center gap-2 rounded-lg border border-edge-strong bg-surface-2 px-3 py-2 text-sm text-ink hover:bg-surface"
+          >
+            <StatusDot tone={stageSettled ? 'good' : 'accent'} pulse={!stageSettled} label="cohort stage" />
+            Your cohort · {STAGE_LABEL[stage]}
+          </button>
+          {/* No onPick while a lifecycle is active: Join is disabled on every row (D-04). The
+              seated row surfaces "You're in this cohort" + View cohort via onView. */}
+          <DirectoryList baseUrl={baseUrl} onView={() => onView('cohort')} />
+        </div>
+      );
+    }
+    return <CohortPage baseUrl={baseUrl} onBrowse={() => onView('browse')} />;
   }
 
-  // Picked but not yet seated: reveal the inline identity step (it drives its own
-  // "Joining" state off the store status). Cancel returns to the directory, minting nothing.
+  // Picked but not yet joining: the inline identity step. Cancel returns to the directory.
   if (pickedRow) {
     return (
       <div className="space-y-8">
