@@ -5,8 +5,10 @@ import { fetchAnchor, type AnchorDTO } from '../lib/anchor';
 import {
   deriveStage,
   pickedCohortClosed,
+  postSeatCohortGone,
   preSeatFitWarning,
   roundTripOutcome,
+  shouldAutoResolve,
   useParticipant,
   type StageInput,
 } from './participant';
@@ -426,5 +428,184 @@ describe('participant store - preSeatFitWarning (D-19, warn-only, pre-seat compu
   it('warns on a network mismatch (row network differs from the participant network)', () => {
     const signetRow = { ...dirRow('abc', 'Advertised'), network: 'signet' };
     expect(preSeatFitWarning(k1, signetRow, 'mutinynet')).toMatch(/network|signet|mutinynet/i);
+  });
+});
+
+// Post-seat cohort-gone (D-24/D-25, Pitfall 6): distinct from the pre-seat predicate. A
+// seated cohort legitimately leaves Advertised but stays LISTED as an in-flight row (D-26),
+// so "gone" means absent from the directory entirely.
+
+describe('participant store - postSeatCohortGone (pure)', () => {
+  it('is false while the picked cohort is still listed in any phase (D-26 in-flight)', () => {
+    expect(postSeatCohortGone([dirRow('abc', 'SigningStarted')], 'abc')).toBe(false);
+    expect(postSeatCohortGone([dirRow('abc', 'Advertised')], 'abc')).toBe(false);
+  });
+
+  it('is true when the picked cohort is absent from the directory entirely (gone dark)', () => {
+    expect(postSeatCohortGone([dirRow('other', 'Advertised')], 'abc')).toBe(true);
+    expect(postSeatCohortGone([], 'abc')).toBe(true);
+  });
+});
+
+describe('participant store - handlePostSeatSnapshot (post-seat cohort-gone)', () => {
+  beforeEach(() => {
+    useParticipant.setState({
+      status: 'live',
+      seated: true,
+      pickedCohortId: 'abc',
+      unreachable: false,
+      error: null,
+      log: [],
+      steps: { join: 'done', submit: 'done', sign: 'active', anchored: 'idle' },
+    });
+  });
+
+  afterEach(() => {
+    useParticipant.getState().leave();
+  });
+
+  it('lands the honest D-25 fallback terminal when the cohort vanishes mid-round (Finding 2)', () => {
+    useParticipant.getState().handlePostSeatSnapshot([]);
+    const s = useParticipant.getState();
+    expect(s.status).toBe('failed');
+    expect(s.error).toMatch(/didn't say why/i);
+  });
+
+  it('is a no-op while the cohort is still listed in a signing phase (D-26 in-flight row)', () => {
+    useParticipant.getState().handlePostSeatSnapshot([dirRow('abc', 'SigningStarted')]);
+    expect(useParticipant.getState().status).toBe('live');
+  });
+
+  it('clears a transient unreachable signal on a successful present read', () => {
+    useParticipant.setState({ unreachable: true });
+    useParticipant.getState().handlePostSeatSnapshot([dirRow('abc', 'SigningStarted')]);
+    expect(useParticipant.getState().unreachable).toBe(false);
+  });
+
+  it('is a no-op before seating (the pre-seat join poll owns that window, never handleDirectorySnapshot)', () => {
+    useParticipant.setState({ seated: false });
+    useParticipant.getState().handlePostSeatSnapshot([]);
+    expect(useParticipant.getState().status).toBe('live');
+  });
+});
+
+// Auto-resolve gating (D-28, Finding 7): a hermetic service resolves after one read; a
+// live service only once confirmed. The lag retry is gated on enabled (source).
+
+describe('participant store - shouldAutoResolve (D-28 gating)', () => {
+  it('is false before the first anchor read', () => {
+    expect(shouldAutoResolve(null)).toBe(false);
+  });
+
+  it('is true on a hermetic (no-broadcast) service after one read', () => {
+    expect(shouldAutoResolve({ enabled: false, state: 'none' })).toBe(true);
+  });
+
+  it('is false on a live service until confirmed (broadcast is not yet resolvable)', () => {
+    expect(shouldAutoResolve({ enabled: true, state: 'broadcast', txid: 'a' })).toBe(false);
+  });
+
+  it('is true on a live service once the beacon tx is confirmed', () => {
+    expect(shouldAutoResolve({ enabled: true, state: 'confirmed', txid: 'a' })).toBe(true);
+  });
+});
+
+// Anchor poll (PART-04, D-22/D-24): epoch-guarded, freezes at confirmed, raises the
+// unreachable signal on consecutive failures WITHOUT going terminal.
+
+describe('participant store - trackAnchor poll', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    // did: null so the auto-resolve side effect (resolve()) short-circuits at the
+    // no-identity guard - these tests pin the poll mechanics, not resolution.
+    useParticipant.setState({
+      did: null,
+      status: 'complete',
+      anchor: null,
+      unreachable: false,
+      resolveStatus: 'idle',
+      resolution: null,
+      log: [],
+    });
+  });
+
+  afterEach(() => {
+    useParticipant.getState().leave();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('freezes at confirmed and stops polling (D-22)', async () => {
+    let body: AnchorDTO = { enabled: true, state: 'broadcast', txid: 'ab' };
+    vi.stubGlobal('fetch', () =>
+      Promise.resolve(new Response(JSON.stringify(body), { status: 200 })),
+    );
+    useParticipant.getState().trackAnchor('http://127.0.0.1:8080', 'c1');
+    await vi.advanceTimersByTimeAsync(1); // immediate read
+    expect(useParticipant.getState().anchor?.state).toBe('broadcast');
+    // The service confirms; the next tick records it and freezes the poll.
+    body = { enabled: true, state: 'confirmed', txid: 'ab' };
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(useParticipant.getState().anchor?.state).toBe('confirmed');
+    // Frozen: a later state change must NOT be picked up (the interval is cleared).
+    body = { enabled: true, state: 'failed', txid: 'ab', reason: 'x' };
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(useParticipant.getState().anchor?.state).toBe('confirmed');
+  });
+
+  it('stops after one read on a hermetic service (enabled:false)', async () => {
+    vi.stubGlobal('fetch', () =>
+      Promise.resolve(new Response(JSON.stringify({ enabled: false, state: 'none' }), { status: 200 })),
+    );
+    useParticipant.getState().trackAnchor('http://127.0.0.1:8080', 'c1');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(useParticipant.getState().anchor).toEqual({ enabled: false, state: 'none' });
+    // No further polling: status stays complete, never terminal.
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(useParticipant.getState().status).toBe('complete');
+  });
+
+  it('raises unreachable after consecutive failures without a terminal transition (D-24)', async () => {
+    vi.stubGlobal('fetch', () => Promise.reject(new Error('down')));
+    useParticipant.getState().trackAnchor('http://127.0.0.1:8080', 'c1');
+    await vi.advanceTimersByTimeAsync(1); // failure 1 (immediate)
+    await vi.advanceTimersByTimeAsync(5000); // failure 2
+    expect(useParticipant.getState().unreachable).toBe(false); // threshold not yet reached
+    await vi.advanceTimersByTimeAsync(5000); // failure 3 -> unreachable
+    const s = useParticipant.getState();
+    expect(s.unreachable).toBe(true);
+    expect(s.status).toBe('complete'); // NEVER a terminal by itself
+  });
+});
+
+// Start over (D-10): clears the round record AND the in-memory identity.
+
+describe('participant store - startOver (identity wipe)', () => {
+  afterEach(() => {
+    useParticipant.getState().leave();
+  });
+
+  it('clears the round record and erases the in-memory identity (state -> no-identity)', () => {
+    useParticipant.setState({
+      identity: { did: 'did:btcr2:k1example', keys: {} as Identity['keys'] },
+      did: 'did:btcr2:k1example',
+      status: 'complete',
+      seated: true,
+      result: {
+        cohortId: 'c1',
+        beaconAddress: 'bc1qx',
+        beaconType: 'CASBeacon',
+        included: true,
+        announcementEntries: 0,
+        updateHashHex: 'ab',
+      },
+    });
+    useParticipant.getState().startOver();
+    const s = useParticipant.getState();
+    expect(s.status).toBe('no-identity');
+    expect(s.identity).toBeNull();
+    expect(s.did).toBeNull();
+    expect(s.result).toBeNull();
+    expect(s.seated).toBe(false);
   });
 });

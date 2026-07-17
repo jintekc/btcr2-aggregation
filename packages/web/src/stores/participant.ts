@@ -25,7 +25,7 @@ import {
   type NetworkName,
   type PublishableArtifactKind,
 } from '@btcr2-aggregation/shared';
-import { type AnchorDTO } from '../lib/anchor';
+import { fetchAnchor, type AnchorDTO } from '../lib/anchor';
 import { elapsed } from '../lib/clock';
 import { fetchNetworkConfig } from '../lib/config';
 import { fetchDirectory, type DirectoryCohortDTO } from '../lib/operator';
@@ -161,6 +161,21 @@ interface ParticipantState {
    * by every teardown path - the teardown clears WITHOUT settling the deferred (Pitfall 2).
    */
   pendingSubmit: boolean;
+  /**
+   * Last-known anchor state for the joined cohort (PART-04, D-20/D-22), fetched by the
+   * epoch-guarded post-sign anchor poll from the PUBLIC `GET /v1/anchor/:cohortId`. Null
+   * until the first read. `enabled: false` is the hermetic (no-broadcast) mode bit that
+   * keeps the timeline mode-honest (D-07): signed/complete, never a claimed on-chain anchor.
+   */
+  anchor: AnchorDTO | null;
+  /**
+   * True when consecutive anchor-poll (or post-seat directory-poll) reads fail past a
+   * small threshold (D-24, closes 02-09 WR-02): a distinct "can't reach this service"
+   * signal with quiet auto-retry. NEVER a terminal by itself - stages freeze and a
+   * success clears it; a terminal failure lands only via a runner error or a cohort-gone
+   * reconnect (D-25).
+   */
+  unreachable: boolean;
   result: ParticipantResult | null;
   /** The controller's downloadable, sovereign resolution sidecar (once included). */
   sidecar: Sidecar | null;
@@ -220,6 +235,29 @@ interface ParticipantState {
    * window and is a no-op (mirrors the register()/publishIpfs() re-entrancy guards).
    */
   submitUpdate(): void;
+  /**
+   * Start the epoch-guarded post-sign anchor poll (PART-04, D-20/D-22) for a joined
+   * cohort against the PUBLIC `GET /v1/anchor/:cohortId`. Runs on the ~5s cadence and
+   * FREEZES (stops) once the anchor is `confirmed`/`failed` or the service is hermetic
+   * (`enabled: false`) - a no-broadcast service is confirmed signed after one read. Drives
+   * auto-resolve (D-28) once the stage completes, and raises the D-24 unreachable signal on
+   * consecutive read failures WITHOUT going terminal. Called from the cohort-complete handler.
+   */
+  trackAnchor(baseUrl: string, cohortId: string): void;
+  /**
+   * Post-seat cohort-gone detection (D-24/D-25), a NEW concern with its OWN predicate that
+   * NEVER routes through {@link handleDirectorySnapshot} (Pitfall 6). After seating, a picked
+   * cohort absent from the directory entirely (any phase) while the round is still live is a
+   * candidate "cohort ended" -> a terminal fail with a best-effort D-25 reason. A row present
+   * in a signing phase is normal (D-26 in-flight rows). Driven by the post-seat directory poll.
+   */
+  handlePostSeatSnapshot(rows: DirectoryCohortDTO[]): void;
+  /**
+   * Start over from any terminal state (D-10): clear the round record AND erase the
+   * in-memory identity (returning to no-identity), tearing down every poll/deferred. The
+   * explicit key-custody warning is the UI's (03-06); this store action does the wipe.
+   */
+  startOver(): void;
   /** Tear down the live participant and return to a fresh-but-identified state. */
   leave(): void;
   /**
@@ -353,6 +391,67 @@ const JOIN_SEAT_GRACE_MS = 90000;
 // window out from under itself. Reset whenever the grace window is cleared.
 let joinGraceLogged = false;
 
+// The post-sign anchor poll (PART-04, D-20/D-22). Started once a cohort completes; reads
+// the PUBLIC anchor state every ~5s until it FREEZES (confirmed/failed, or hermetic
+// enabled:false after one read). Module scope like `directoryPoll`: a long-lived handle,
+// not a render value. Epoch-guarded so a stale in-flight read from a prior round is dropped
+// (WR-01 class). Cleared on leave/fail/re-join/complete-teardown.
+let anchorPoll: ReturnType<typeof setInterval> | null = null;
+let anchorEpoch = 0;
+const ANCHOR_POLL_MS = 5000;
+// Consecutive anchor-read failures. Past UNREACHABLE_THRESHOLD the store raises the D-24
+// unreachable signal (quiet auto-retry, never a terminal by itself); any success resets it.
+let anchorFailures = 0;
+const UNREACHABLE_THRESHOLD = 3;
+// One-shot per round so auto-resolve (D-28) fires exactly once when the anchor stage
+// completes. Reset when a fresh anchor poll starts.
+let autoResolved = false;
+
+function clearAnchorPoll(): void {
+  if (anchorPoll !== null) {
+    clearInterval(anchorPoll);
+    anchorPoll = null;
+  }
+  // Invalidate any fetchAnchor still in flight (mirrors clearDirectoryPoll / WR-01) and
+  // reset the failure counter so a new round starts clean.
+  anchorEpoch += 1;
+  anchorFailures = 0;
+}
+
+// The resolver-lag retry (D-28), gated on a LIVE (enabled:true) anchor: on the fixture
+// path the resolve answer is immediate and stable, so retries are pointless (Finding 7).
+// Module scope + bounded so it never leaks past a teardown.
+let resolveLagRetry: ReturnType<typeof setInterval> | null = null;
+const RESOLVE_LAG_RETRY_MS = 5000;
+const RESOLVE_LAG_MAX_ATTEMPTS = 3;
+
+function clearResolveLagRetry(): void {
+  if (resolveLagRetry !== null) {
+    clearInterval(resolveLagRetry);
+    resolveLagRetry = null;
+  }
+}
+
+// The post-seat directory poll (D-24/D-25), a NEW concern separate from the pre-seat
+// join poll: after seating it watches for the picked cohort vanishing from the directory
+// (a stalled/ended cohort goes dark, Finding 2). Its own predicate + epoch; it NEVER
+// routes through handleDirectorySnapshot (Pitfall 6). Cleared on complete/fail/leave/re-join.
+let postSeatPoll: ReturnType<typeof setInterval> | null = null;
+let postSeatEpoch = 0;
+const POST_SEAT_POLL_MS = 5000;
+// Consecutive post-seat directory-read failures (the only poll running during co-signing).
+// Past UNREACHABLE_THRESHOLD it raises the same D-24 unreachable signal; a success resets it.
+let postSeatFailures = 0;
+
+function clearPostSeatPoll(): void {
+  if (postSeatPoll !== null) {
+    clearInterval(postSeatPoll);
+    postSeatPoll = null;
+  }
+  postSeatEpoch += 1;
+  postSeatFailures = 0;
+}
+
 /**
  * Stop and forget the live participant. Critical after a cohort completes/fails or
  * closes: under browse-and-pick the runner opts into only the picked cohort, but a
@@ -375,6 +474,12 @@ function teardownLive(): void {
   // settling it (Pitfall 2). The `pendingSubmit: false` state projection is set by the
   // caller's own set() block (leave/fail/join/cohort-complete).
   clearPendingSubmit();
+  // The post-seat directory poll and the resolver-lag retry both belong to this round;
+  // the anchor poll is (re)started explicitly by trackAnchor after cohort-complete calls
+  // teardownLive, so clearing it here is the correct round boundary too.
+  clearPostSeatPoll();
+  clearResolveLagRetry();
+  clearAnchorPoll();
 }
 
 function clearDirectoryPoll(): void {
@@ -406,6 +511,18 @@ function clearJoinGrace(): void {
  */
 export function pickedCohortClosed(rows: DirectoryCohortDTO[], pickedId: string): boolean {
   return !rows.some((row) => row.cohortId === pickedId && row.phase === 'Advertised');
+}
+
+/**
+ * Pure POST-SEAT cohort-gone predicate (D-24/D-25, Pitfall 6). Distinct from
+ * {@link pickedCohortClosed}: after seating, a cohort in a signing phase LEGITIMATELY
+ * leaves the Advertised set but stays LISTED in the widened directory as an in-flight row
+ * (D-26). So "gone" here means absent from the directory ENTIRELY (any phase) - a stalled
+ * or ended cohort goes dark (Finding 2). This must never reuse the "left Advertised =
+ * closed" logic, which would falsely fail a legitimately signing cohort.
+ */
+export function postSeatCohortGone(rows: DirectoryCohortDTO[], pickedId: string): boolean {
+  return !rows.some((row) => row.cohortId === pickedId);
 }
 
 /**
@@ -498,6 +615,23 @@ export function roundTripOutcome(input: { beaconPresent: boolean; anchorEnabled:
   return 'not-reflected';
 }
 
+/**
+ * Pure auto-resolve trigger (D-28): should the anchor stage be treated as complete enough
+ * to auto-resolve? A hermetic (no-broadcast) service is signed-complete after one anchor
+ * read (`enabled: false`, resolve returns the genesis - the expected fixture outcome); a
+ * live service auto-resolves only once its beacon tx is `confirmed`. A live `broadcast`
+ * (accepted, not yet mined) is NOT yet resolvable. The caller fires resolve() at most once.
+ */
+export function shouldAutoResolve(anchor: AnchorDTO | null): boolean {
+  if (!anchor) {
+    return false;
+  }
+  if (!anchor.enabled) {
+    return true;
+  }
+  return anchor.state === 'confirmed';
+}
+
 /** The baked aggregate-beacon service types present in a genesis document (x1 only). */
 function bakedAggregateBeaconTypes(genesisDocument: Record<string, unknown>): string[] {
   const service = genesisDocument.service;
@@ -562,6 +696,8 @@ const INITIAL_STEPS: Record<StepKey, StepStatus> = {
 const INITIAL_OUTCOME = {
   result: null,
   sidecar: null,
+  anchor: null as AnchorDTO | null,
+  unreachable: false,
   regStatus: 'idle' as RegistrationStatus,
   regTxid: null,
   regError: null,
@@ -614,7 +750,9 @@ export const useParticipant = create<ParticipantState>((set, get) => {
     failActiveStep();
     // pendingSubmit: false projects the submit-window close; teardownLive() (below) drops
     // the module-scope deferred WITHOUT settling it (Pitfall 2 - never reject on failure).
-    set({ status: 'failed', error: reason, awaitingSeats: null, pendingSubmit: false });
+    // unreachable: false: a terminal failure with a reason supersedes the transient D-24
+    // "can't reach this service" signal (the poll is being torn down anyway).
+    set({ status: 'failed', error: reason, awaitingSeats: null, pendingSubmit: false, unreachable: false });
     clearDirectoryPoll();
     clearJoinGrace();
     teardownLive();
@@ -646,6 +784,27 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       beaconRegAddress: genesisP2trBeaconAddress(identity.keys, resolveNetwork(get().network)),
       ...INITIAL_OUTCOME,
     });
+  }
+
+  /**
+   * Resolver-lag retry (D-28), started ONLY on a live (enabled:true) anchor by trackAnchor:
+   * on esplora-indexed paths the first auto-resolve can predate the beacon's discovery, so
+   * re-resolve on a bounded cadence until the appended beacon is reflected or the attempt
+   * cap is hit. Pointless on the hermetic path (immediate, stable answer), hence the gate.
+   */
+  function startResolveLagRetry(baseUrl: string): void {
+    clearResolveLagRetry();
+    let attempts = 0;
+    resolveLagRetry = setInterval(() => {
+      attempts += 1;
+      const { resolution, did } = get();
+      const reflected = Boolean(resolution && did && findAppendedBeacon(resolution.didDocument, did));
+      if (reflected || attempts >= RESOLVE_LAG_MAX_ATTEMPTS) {
+        clearResolveLagRetry();
+        return;
+      }
+      void get().resolve(baseUrl);
+    }, RESOLVE_LAG_RETRY_MS);
   }
 
   return {
@@ -802,6 +961,37 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         clearDirectoryPoll();
         clearJoinGrace();
         append('info', `cohort ${cohortId} keygen complete; beacon ${beaconAddress}`);
+        // Post-seat cohort-gone watch (D-24/D-25): the pre-seat join poll has stood down,
+        // so start a NEW poll that detects the picked cohort vanishing from the directory
+        // ENTIRELY (a stalled/ended cohort goes dark, Finding 2). It uses its own predicate
+        // via handlePostSeatSnapshot and NEVER the pre-seat handleDirectorySnapshot (Pitfall
+        // 6). A fetch error is "unreachable" (D-24), never "cohort gone". Epoch-guarded like
+        // the join poll; cleared at cohort-complete/fail/leave/re-join (teardownLive).
+        clearPostSeatPoll();
+        const seatEpoch = postSeatEpoch;
+        postSeatPoll = setInterval(() => {
+          fetchDirectory(baseUrl).then(
+            (rows) => {
+              if (seatEpoch !== postSeatEpoch) {
+                return;
+              }
+              postSeatFailures = 0;
+              get().handlePostSeatSnapshot(rows);
+            },
+            () => {
+              // A directory fetch error is "can't reach this service", not "cohort gone"
+              // (D-24). Count consecutive failures toward the unreachable signal; NEVER a
+              // terminal by itself (the next tick retries and a success clears it).
+              if (seatEpoch !== postSeatEpoch) {
+                return;
+              }
+              postSeatFailures += 1;
+              if (postSeatFailures >= UNREACHABLE_THRESHOLD) {
+                set({ unreachable: true });
+              }
+            },
+          );
+        }, POST_SEAT_POLL_MS);
       });
       r.on('update-submitted', ({ cohortId }) => {
         setStep('submit', 'done');
@@ -873,6 +1063,12 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         clearDirectoryPoll();
         clearJoinGrace();
         teardownLive();
+        // Now that the cohort is signed-complete, start the post-sign anchor poll (D-20/
+        // D-22): it reads the PUBLIC anchor state to learn the service's mode (enabled) and
+        // walk Signed -> Broadcast -> Confirmed on a live service, freezing at first
+        // confirmation. On the hermetic default it confirms enabled:false in one read and
+        // stops. It also drives auto-resolve (D-28) once the stage completes.
+        get().trackAnchor(baseUrl, info.cohortId);
       });
       r.on('cohort-failed', ({ cohortId, reason }) => {
         append('bad', `cohort ${cohortId} failed: ${reason}`);
@@ -1017,6 +1213,112 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         append('good', 'submitting your DID update to the cohort');
         pending.resolve();
       }
+    },
+
+    trackAnchor(baseUrl, cohortId) {
+      // Fresh round: clear any prior anchor poll / lag retry (bumps anchorEpoch, resets the
+      // failure + auto-resolve one-shots), then poll the PUBLIC anchor read.
+      clearAnchorPoll();
+      clearResolveLagRetry();
+      autoResolved = false;
+      const epoch = anchorEpoch;
+      const tick = (): void => {
+        fetchAnchor(baseUrl, cohortId).then(
+          (dto) => {
+            // Drop a stale in-flight read from a prior round (WR-01 class).
+            if (epoch !== anchorEpoch) {
+              return;
+            }
+            anchorFailures = 0;
+            set({ anchor: dto, unreachable: false });
+            // Auto-resolve exactly once when the stage completes (D-28): hermetic signed
+            // (enabled:false) OR live confirmed. resolve() is a read, so automation is safe.
+            if (!autoResolved && shouldAutoResolve(dto)) {
+              autoResolved = true;
+              void get().resolve(baseUrl);
+              // Resolver-lag retry ONLY on a live service (Finding 7): the fixture answer is
+              // immediate + stable, so retrying there is pointless.
+              if (dto.enabled) {
+                startResolveLagRetry(baseUrl);
+              }
+            }
+            // Freeze (D-22): a hermetic service is confirmed signed after one read and must
+            // never poll further; a live service freezes at first confirmation/failure.
+            if (!dto.enabled || dto.state === 'confirmed' || dto.state === 'failed') {
+              clearAnchorPoll();
+            }
+          },
+          () => {
+            if (epoch !== anchorEpoch) {
+              return;
+            }
+            // A read error is "can't reach this service" (D-24), never a terminal by itself.
+            anchorFailures += 1;
+            if (anchorFailures >= UNREACHABLE_THRESHOLD) {
+              set({ unreachable: true });
+            }
+          },
+        );
+      };
+      // Immediate first read (so a hermetic service resolves its mode without a full
+      // cadence), then the ~5s interval.
+      tick();
+      anchorPoll = setInterval(tick, ANCHOR_POLL_MS);
+    },
+
+    handlePostSeatSnapshot(rows) {
+      const { status, seated, pickedCohortId } = get();
+      // Only meaningful while seated in a still-live round for a picked cohort. Before
+      // seating the pre-seat join poll owns the window; once complete/failed there is
+      // nothing to watch. NEVER routes through handleDirectorySnapshot (Pitfall 6).
+      if (!seated || pickedCohortId === null || status !== 'live') {
+        return;
+      }
+      if (postSeatCohortGone(rows, pickedCohortId)) {
+        // The picked cohort vanished from the directory ENTIRELY mid-round: a stalled or
+        // ended cohort goes dark and the runner emits no cohort-expired event to members
+        // (Finding 2). Land the honest D-25 fallback reason - best-effort, no invented
+        // certainty about why.
+        append('warn', `cohort ${pickedCohortId} left the directory before completing`);
+        fail("The cohort ended and this service didn't say why.");
+        return;
+      }
+      // Present (a signing-phase in-flight row is normal, D-26): we reached the service, so
+      // any prior transient unreachable signal clears.
+      if (get().unreachable) {
+        set({ unreachable: false });
+      }
+    },
+
+    startOver() {
+      // D-10: clear the round record AND erase the in-memory identity (the explicit
+      // key-custody warning is the UI's, 03-06). Tear every poll/deferred/node down and
+      // return to no-identity - the browse landing is the only way back in.
+      clearDirectoryPoll();
+      clearJoinGrace();
+      teardownLive();
+      teardownIpfs();
+      clearCaptured();
+      set({
+        identity: null,
+        did: null,
+        idType: 'KEY',
+        secret: null,
+        status: 'no-identity',
+        steps: { ...INITIAL_STEPS },
+        cohortId: null,
+        beaconAddress: null,
+        seated: false,
+        optedIn: false,
+        joinClosed: false,
+        awaitingSeats: null,
+        pendingSubmit: false,
+        pickedCohortId: null,
+        beaconRegAddress: null,
+        error: null,
+        ...INITIAL_OUTCOME,
+      });
+      append('info', 'started over: cleared the cohort result and erased the in-memory identity');
     },
 
     leave() {
