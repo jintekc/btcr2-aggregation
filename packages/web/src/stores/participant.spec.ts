@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DirectoryCohortDTO } from '../lib/operator';
+import { fetchAnchor } from '../lib/anchor';
 import { pickedCohortClosed, useParticipant } from './participant';
 
 // The join-seat grace window (participant.ts JOIN_SEAT_GRACE_MS). Mirrored here as a
@@ -241,5 +242,75 @@ describe('participant store - browse-and-pick join outcome', () => {
       useParticipant.getState().leave();
       expect(useParticipant.getState().awaitingSeats).toBeNull();
     });
+  });
+});
+
+// Public anchor client (PART-04, D-20/D-21). Mode-honest last-known anchor read; the
+// store polls it only in post-sign stages. Anonymous by construction (credentials
+// omitted); an unknown cohort is a normal { state: 'none' } answer, not an error.
+
+describe('lib/anchor fetchAnchor', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('GETs the public anchor read with the operator cookie omitted', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    vi.stubGlobal('fetch', (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return Promise.resolve(
+        new Response(JSON.stringify({ enabled: true, state: 'confirmed', txid: 'ab12' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    });
+    const dto = await fetchAnchor('http://127.0.0.1:8080/', 'cohort-1');
+    expect(dto).toEqual({ enabled: true, state: 'confirmed', txid: 'ab12' });
+    // Public read: the anonymous surface must never send the operator session cookie.
+    expect(calls[0]?.init.credentials).toBe('omit');
+    expect(calls[0]?.url).toContain('/v1/anchor/cohort-1');
+  });
+
+  it('throws on a non-2xx response (the poll caller counts it as unreachable, D-24)', async () => {
+    vi.stubGlobal('fetch', () =>
+      Promise.resolve(new Response('nope', { status: 502 })),
+    );
+    await expect(fetchAnchor('http://127.0.0.1:8080', 'cohort-1')).rejects.toThrow(/502/);
+  });
+});
+
+// Explicit-submit window (PART-03, D-12). The deferred onProvideUpdate is exercised
+// end to end by the browser capstone (03-06); here we pin the store-owned projection
+// and the teardown-safety contract: submitUpdate() closes the window idempotently, and
+// every teardown path clears it WITHOUT settling the deferred (Pitfall 2).
+
+describe('participant store - explicit submit window (PART-03, D-12)', () => {
+  beforeEach(() => {
+    useParticipant.setState({ status: 'live', pendingSubmit: false, error: null, log: [] });
+  });
+
+  afterEach(() => {
+    // leave() tears down module-scope state so nothing leaks across tests.
+    useParticipant.getState().leave();
+  });
+
+  it('submitUpdate() closes an open submit window', () => {
+    useParticipant.setState({ pendingSubmit: true });
+    useParticipant.getState().submitUpdate();
+    expect(useParticipant.getState().pendingSubmit).toBe(false);
+  });
+
+  it('submitUpdate() is idempotent - a repeated click is a no-op', () => {
+    useParticipant.setState({ pendingSubmit: true });
+    useParticipant.getState().submitUpdate();
+    expect(() => useParticipant.getState().submitUpdate()).not.toThrow();
+    expect(useParticipant.getState().pendingSubmit).toBe(false);
+  });
+
+  it('leave() clears an open submit window without stalling the cohort (Pitfall 2)', () => {
+    useParticipant.setState({ pendingSubmit: true });
+    useParticipant.getState().leave();
+    expect(useParticipant.getState().pendingSubmit).toBe(false);
   });
 });

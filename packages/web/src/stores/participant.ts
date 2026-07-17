@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import {
   createParticipant,
   type Participant,
+  type SubmittedUpdate,
 } from '@btcr2-aggregation/participant';
 import {
   buildPublishPlan,
@@ -148,6 +149,16 @@ interface ParticipantState {
   awaitingSeats: { joined: number; capacity: number } | null;
   /** The cohort id the participant picked to join (browse-and-pick, D-14); null when idle. */
   pickedCohortId: string | null;
+  /**
+   * True while the explicit-submit window is open (PART-03, D-12): the runner has asked
+   * this participant to provide its update and is awaiting the user's click. A
+   * serializable projection of the module-scope `pendingSubmit` deferred (the built body
+   * + its resolver live at module scope, like `live`/`captured`). `deriveStage` reads
+   * this flag to enter the `submit-window` stage. Set true by the `onSubmitGate` passed
+   * into `createParticipant`; cleared (false) by `submitUpdate()` on the user's click and
+   * by every teardown path - the teardown clears WITHOUT settling the deferred (Pitfall 2).
+   */
+  pendingSubmit: boolean;
   result: ParticipantResult | null;
   /** The controller's downloadable, sovereign resolution sidecar (once included). */
   sidecar: Sidecar | null;
@@ -199,6 +210,14 @@ interface ParticipantState {
    * `createParticipant` so the runner opts into that cohort alone.
    */
   join(baseUrl: string, cohortId: string): Promise<void>;
+  /**
+   * Resolve the open explicit-submit window (PART-03, D-12): the user clicked "Submit
+   * my DID update", so settle the module-scope deferred with the exact body that was
+   * built when the window opened (the previewed body IS the submitted body, D-29). The
+   * runner then records and submits it. Idempotent - a repeated click finds no pending
+   * window and is a no-op (mirrors the register()/publishIpfs() re-entrancy guards).
+   */
+  submitUpdate(): void;
   /** Tear down the live participant and return to a fresh-but-identified state. */
   leave(): void;
   /**
@@ -245,6 +264,27 @@ interface Captured {
   updateHashBytes: Uint8Array;
 }
 let captured: Captured | null = null;
+
+// The open explicit-submit deferred (PART-03, D-12). Held at module scope (like `live`
+// and `captured`), NOT in reactive state: it carries a resolver function and a raw
+// signed body, neither of which React should diff. The runner's `onProvideUpdate`
+// builds the update EXACTLY ONCE when the window opens (BIP340 signing is
+// non-deterministic, so a rebuild would change the canonical hash and break the D-29
+// round-trip check), stashes it here with the promise's `resolve`, and awaits. The user
+// clicking "Submit my DID update" resolves the deferred with that exact body via
+// submitUpdate(); the state carries only the serializable `pendingSubmit: boolean`
+// projection. TEARDOWN RULE (Pitfall 2): clearPendingSubmit() drops this WITHOUT
+// settling - never resolve it on teardown (a resolve-null would declare an unchosen
+// cooperative non-inclusion) and never reject it (a reject inside onProvideUpdate sends
+// neither a submit nor a decline and stalls the whole n-of-n cohort). The runner is
+// being stopped on every teardown anyway, so the unsettled promise is simply abandoned.
+let pendingSubmit: { cohortId: string; update: SubmittedUpdate; resolve: () => void } | null = null;
+
+// Drop the open submit deferred WITHOUT settling it (Pitfall 2). Called from every
+// teardown path (leave / fail / re-join / cohort-complete / teardownLive-adjacent).
+function clearPendingSubmit(): void {
+  pendingSubmit = null;
+}
 
 // The in-browser IPFS node (heavy, lazily created on first publish). Module
 // scope like `live`: a long-lived object with sockets, not a value React should
@@ -329,6 +369,10 @@ function teardownLive(): void {
   }
   // The seat is meaningless without a live runner: tear the grace timer down with it.
   clearJoinGrace();
+  // A submit window is meaningless once the runner is gone: drop the deferred WITHOUT
+  // settling it (Pitfall 2). The `pendingSubmit: false` state projection is set by the
+  // caller's own set() block (leave/fail/join/cohort-complete).
+  clearPendingSubmit();
 }
 
 function clearDirectoryPoll(): void {
@@ -423,7 +467,9 @@ export const useParticipant = create<ParticipantState>((set, get) => {
   /** Move to a terminal failed state, surface the reason, and stop listening. */
   function fail(reason: string): void {
     failActiveStep();
-    set({ status: 'failed', error: reason, awaitingSeats: null });
+    // pendingSubmit: false projects the submit-window close; teardownLive() (below) drops
+    // the module-scope deferred WITHOUT settling it (Pitfall 2 - never reject on failure).
+    set({ status: 'failed', error: reason, awaitingSeats: null, pendingSubmit: false });
     clearDirectoryPoll();
     clearJoinGrace();
     teardownLive();
@@ -445,6 +491,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       optedIn: false,
       joinClosed: false,
       awaitingSeats: null,
+      pendingSubmit: false,
       pickedCohortId: null,
       error: null,
       // The first-update SingletonBeacon address to fund is the key's genesis P2TR
@@ -471,6 +518,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
     optedIn: false,
     joinClosed: false,
     awaitingSeats: null,
+    pendingSubmit: false,
     pickedCohortId: null,
     error: null,
     log: [],
@@ -545,6 +593,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         optedIn: false,
         joinClosed: false,
         awaitingSeats: null,
+        pendingSubmit: false,
         pickedCohortId: cohortId,
         ...INITIAL_OUTCOME,
       });
@@ -553,7 +602,25 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       // Browse-and-pick (PART-02/D-14): the picked cohortId is threaded into the
       // runner so `shouldJoin` opts into that cohort alone and ignores every other
       // advert on the public transport.
-      const participant = createParticipant({ identity, baseUrl, cohortId });
+      //
+      // Explicit-submit gate (PART-03, D-12), STRICTLY OPT-IN: only the web store passes
+      // `onSubmitGate`; the headless e2e peers and in-process FILLERS omit it and keep the
+      // byte-identical auto-submit (Pitfall 1). When the runner asks this participant to
+      // provide its update, the participant package has ALREADY built and signed it once
+      // (the previewed body is the submitted body, D-29); we stash that body + the promise
+      // resolver at module scope and flip the submit-window projection on. submitUpdate()
+      // settles it on the user's click. This callback never rejects or resolves-null - the
+      // deferred is dropped WITHOUT settling on teardown (clearPendingSubmit, Pitfall 2).
+      const participant = createParticipant({
+        identity,
+        baseUrl,
+        cohortId,
+        onSubmitGate: (info) =>
+          new Promise<void>((resolve) => {
+            pendingSubmit = { cohortId: info.cohortId, update: info.update, resolve };
+            set({ pendingSubmit: true });
+          }),
+      });
       live = participant;
       const r = participant.runner;
 
@@ -643,7 +710,11 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         // awaitingSeats: null for symmetry with every sibling terminal (fail/adopt/join/
         // leave/cohort-ready). Benign in practice - cohort-ready nulls it first and the UI
         // hides the line off 'joining' - but a complete parity reset in case ordering drifts (IN-02).
-        set({ result, sidecar, status: 'complete', beaconAddress: info.beaconAddress, awaitingSeats: null });
+        // pendingSubmit: false: the window is long closed by cohort-complete (the update
+        // was submitted and co-signed). teardownLive() (below) drops the module-scope
+        // deferred WITHOUT settling it - a resolved deferred here would be a redundant no-op
+        // since submitUpdate() already nulled it, but the reset keeps state/module in step.
+        set({ result, sidecar, status: 'complete', beaconAddress: info.beaconAddress, awaitingSeats: null, pendingSubmit: false });
         append('good', `cohort ${info.cohortId} anchored; your update was ${info.included ? 'included' : 'not included'}`);
         // Refresh the IPFS availability just as the publish panel appears: the
         // page-load probe may predate a coordinator restart that enabled (or
@@ -787,6 +858,22 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       }
     },
 
+    submitUpdate() {
+      // The user clicked "Submit my DID update". Capture and null the module-scope deferred
+      // FIRST so a repeated click is a no-op (idempotent, mirroring register()/publishIpfs()),
+      // and always close the submit-window projection. Then resolve the captured deferred
+      // with the EXACT body built when the window opened (the previewed body is the submitted
+      // body, D-29) - no rebuild, BIP340 signing is non-deterministic. The runner records +
+      // submits that body; `update-submitted` advances the timeline.
+      const pending = pendingSubmit;
+      pendingSubmit = null;
+      set({ pendingSubmit: false });
+      if (pending) {
+        append('good', 'submitting your DID update to the cohort');
+        pending.resolve();
+      }
+    },
+
     leave() {
       clearDirectoryPoll();
       clearJoinGrace();
@@ -803,6 +890,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         optedIn: false,
         joinClosed: false,
         awaitingSeats: null,
+        pendingSubmit: false,
         pickedCohortId: null,
         error: null,
         ...INITIAL_OUTCOME,
