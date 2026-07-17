@@ -70,6 +70,14 @@ export function BrowseView({
     setPickedRow(null);
   }
 
+  // A POST-SEAT terminal failure (D-24/D-25) lands ON the cohort page, not a browse-directory
+  // error card: the participant was seated, so the honest degraded/terminal states + Start over
+  // belong on the one continuous surface (03-06). Pre-seat closes (joinClosed) and pre-seat join
+  // failures stay directory cards below.
+  if (status === 'failed' && seated) {
+    return <CohortPage baseUrl={baseUrl} onBrowse={() => onView('browse')} />;
+  }
+
   // The picked cohort filled or closed before we were seated (D-06/D-12): the store's
   // deterministic message + a return to browse. Never a dead spinner.
   if (joinClosed) {

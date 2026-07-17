@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { deriveStage, useParticipant } from '../../stores/participant';
 import { fmtElapsed } from '../../lib/clock';
-import type { LogLevel } from '../../lib/types';
+import type { LogLevel, StepKey, StepStatus } from '../../lib/types';
 import { Badge, Button, Card, CopyField, SectionTitle } from '../../ui/primitives';
 import { StageTimeline } from './StageTimeline';
 import { SubmitPanel } from './SubmitPanel';
@@ -14,6 +14,42 @@ const LEVEL_CLASS: Record<LogLevel, string> = {
   warn: 'text-warn',
   bad: 'text-bad',
 };
+
+/**
+ * Best-effort terminal reason (D-25, UI-SPEC terminal copy). Maps the store's `error` to a
+ * specific, honest sentence where the cause is recognizable, and falls back to the honest
+ * "didn't say why" when it is not (never inventing a cause). The one POSITIVE stall signal
+ * (Finding 2): if this participant's own update is in (`submit` done) but co-signing never
+ * completed and was not rescued by the k-of-n fallback, the round provably stalled collecting
+ * the remaining members' updates, so the dedicated stall copy is honest rather than invented.
+ */
+function terminalReason(error: string | null, steps: Record<StepKey, StepStatus>): string {
+  const raw = (error ?? '').trim();
+  const e = raw.toLowerCase();
+  const submittedButUnsigned = steps.submit === 'done' && steps.sign !== 'done';
+  if (
+    /stalled|collectingupdates|waiting for all members/.test(e) ||
+    (submittedButUnsigned && (!raw || /didn.t say why/.test(e)))
+  ) {
+    return 'The cohort ended. It stalled waiting for all members to submit their updates.';
+  }
+  if (/tim(e|ed)\s?out|timeout/.test(e)) {
+    return 'The cohort ended: phase timed out.';
+  }
+  if (/no longer available|not available|vanished|no longer exists|left the directory/.test(e)) {
+    return 'The cohort ended: the cohort is no longer available.';
+  }
+  if (/sign/.test(e) && /error|fail/.test(e)) {
+    return 'The cohort ended: the signing round errored.';
+  }
+  if (/seat/.test(e)) {
+    return 'The cohort ended: your seat was lost.';
+  }
+  if (!raw || /didn.t say why/.test(e)) {
+    return "The cohort ended and this service didn't say why.";
+  }
+  return `The cohort ended: ${raw}`;
+}
 
 /** A collapsed-by-default detail section that scrolls its overflow rather than growing the card. */
 function Expander({
@@ -70,6 +106,9 @@ export function CohortPage({ baseUrl: _baseUrl, onBrowse }: { baseUrl: string; o
   const beaconAddress = useParticipant((s) => s.beaconAddress);
   const log = useParticipant((s) => s.log);
   const leave = useParticipant((s) => s.leave);
+  const unreachable = useParticipant((s) => s.unreachable);
+  const error = useParticipant((s) => s.error);
+  const startOver = useParticipant((s) => s.startOver);
 
   const stage = deriveStage({ status, optedIn, seated, pendingSubmit, steps, anchor, resolveStatus });
   const failed = status === 'failed';
@@ -96,6 +135,9 @@ export function CohortPage({ baseUrl: _baseUrl, onBrowse }: { baseUrl: string; o
   // Confirmation for Leave (D-09): only offered while waiting for seats; once co-signing starts
   // the seat is committed through anchoring and Leave is hidden.
   const [confirmLeave, setConfirmLeave] = useState(false);
+  // Confirmation for Start over (D-10): the identity wipe is irreversible, so it sits behind an
+  // explicit danger-variant key-custody confirmation. Offered only from a terminal state.
+  const [confirmStartOver, setConfirmStartOver] = useState(false);
 
   if (!hasCohort) {
     // Empty state (E1/E9): the timeline renders only for a joined cohort.
@@ -131,6 +173,35 @@ export function CohortPage({ baseUrl: _baseUrl, onBrowse }: { baseUrl: string; o
         <SubmitPanel baseUrl={_baseUrl} cohortId={cohortId} />
       ) : null}
 
+      {/* Transient "can't reach this service" banner (D-24, E7): quiet auto-retry, the timeline
+          above stays frozen, and this is NEVER a terminal by itself (a successful poll clears it). */}
+      {unreachable && !failed ? (
+        <Card className="space-y-1 border-warn/40 bg-warn/10 p-5">
+          <p className="text-sm text-warn">Can&apos;t reach this service</p>
+          <p className="text-sm text-warn/80">
+            We&apos;ll keep trying to reconnect. Your place in the cohort is unaffected as long as this tab
+            stays open.
+          </p>
+        </Card>
+      ) : null}
+
+      {/* Terminal failure (D-25, E7): a best-effort specific reason with the honest fallback,
+          landed ON the cohort page (not a browse-directory error card). */}
+      {failed ? (
+        <Card className="space-y-3 border-bad/40 bg-bad/10 p-5">
+          <p className="text-sm text-bad">{terminalReason(error, steps)}</p>
+          <Button
+            variant="ghost"
+            onClick={() => {
+              leave();
+              onBrowse();
+            }}
+          >
+            Back to cohorts
+          </Button>
+        </Card>
+      ) : null}
+
       {status === 'complete' ? <CompletionSummary baseUrl={_baseUrl} onBrowse={onBrowse} /> : null}
 
       <Card className="space-y-3 p-5">
@@ -145,9 +216,11 @@ export function CohortPage({ baseUrl: _baseUrl, onBrowse }: { baseUrl: string; o
         </p>
       </Card>
 
-      <p className="text-xs text-faint">
-        Keep this tab open. Refreshing loses your seat, and this service does not save your session yet.
-      </p>
+      {!failed && status !== 'complete' ? (
+        <p className="text-xs text-faint">
+          Keep this tab open. Refreshing loses your seat, and this service does not save your session yet.
+        </p>
+      ) : null}
 
       <Expander title="Technical detail">
         <div className="space-y-3">
@@ -199,6 +272,31 @@ export function CohortPage({ baseUrl: _baseUrl, onBrowse }: { baseUrl: string; o
         ) : (
           <Button variant="ghost" onClick={() => setConfirmLeave(true)}>
             Leave
+          </Button>
+        )
+      ) : null}
+
+      {/* Start over from any terminal state (D-10, E8): wipe the in-memory DID key behind an
+          explicit danger-variant key-custody confirmation, after the sidecar export offer above. */}
+      {status === 'complete' || failed ? (
+        confirmStartOver ? (
+          <Card className="space-y-3 border-bad/40 bg-bad/10 p-5">
+            <p className="text-sm text-bad">
+              This clears this cohort&apos;s result and erases the DID key held in your browser. This key
+              cannot be recovered. Export the sidecar first if you need it. Continue?
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="danger" onClick={() => startOver()}>
+                Start over
+              </Button>
+              <Button variant="ghost" onClick={() => setConfirmStartOver(false)}>
+                Cancel
+              </Button>
+            </div>
+          </Card>
+        ) : (
+          <Button variant="danger" onClick={() => setConfirmStartOver(true)}>
+            Start over
           </Button>
         )
       ) : null}

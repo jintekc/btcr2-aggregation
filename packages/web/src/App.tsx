@@ -49,6 +49,9 @@ export function App() {
   const anchor = useParticipant((s) => s.anchor);
   const resolveStatus = useParticipant((s) => s.resolveStatus);
   const lifecycleActive = status === 'connecting' || status === 'live' || status === 'complete';
+  // A post-seat terminal failure keeps the chip visible with the frozen terminal stage label
+  // (E10/D-25): it never invents a state the cohort page does not show.
+  const terminalSeated = status === 'failed' && seated;
   const stage = deriveStage({ status, optedIn, seated, pendingSubmit, steps, anchor, resolveStatus });
 
   // The one participant view toggle, owned here so the header link and BrowseView agree.
@@ -62,9 +65,11 @@ export function App() {
   }, [lifecycleActive]);
 
   const isOperator = pathname === '/operator';
-  const showCohortLink = !isOperator && lifecycleActive;
-  // The active-stage dot pulses; a settled stage (signed and beyond) reads good-tone.
+  const showCohortLink = !isOperator && (lifecycleActive || terminalSeated);
+  // The active-stage dot pulses; a settled stage (signed and beyond) reads good-tone; a terminal
+  // failure freezes bad-tone with no pulse (D-25).
   const stageSettled = stage === 'signed' || stage === 'anchored' || stage === 'resolved';
+  const chipTone = terminalSeated ? 'bad' : stageSettled ? 'good' : 'accent';
 
   return (
     <div className="mx-auto flex min-h-full max-w-6xl flex-col px-4 py-6 sm:px-6">
@@ -87,7 +92,7 @@ export function App() {
                 onClick={() => setParticipantView('cohort')}
                 className="inline-flex items-center gap-2 rounded-full border border-edge bg-surface px-3 py-1 text-xs text-muted hover:bg-surface-2"
               >
-                <StatusDot tone={stageSettled ? 'good' : 'accent'} pulse={!stageSettled} label="cohort stage" />
+                <StatusDot tone={chipTone} pulse={!stageSettled && !terminalSeated} label="cohort stage" />
                 Your cohort · {STAGE_LABEL[stage]}
               </button>
             ) : null}
