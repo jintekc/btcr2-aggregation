@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { resolveNetwork } from '@btcr2-aggregation/shared';
 import { deriveStage, useParticipant } from '../../stores/participant';
 import { fmtElapsed } from '../../lib/clock';
 import type { LogLevel } from '../../lib/types';
 import { Badge, Button, Card, CopyField, SectionTitle } from '../../ui/primitives';
 import { StageTimeline } from './StageTimeline';
 import { SubmitPanel } from './SubmitPanel';
+import { CompletionSummary } from './CompletionSummary';
 
 /** Log-line tone -> text color for the activity log inside the technical-detail expander. */
 const LEVEL_CLASS: Record<LogLevel, string> = {
@@ -68,8 +68,6 @@ export function CohortPage({ baseUrl: _baseUrl, onBrowse }: { baseUrl: string; o
   const secret = useParticipant((s) => s.secret);
   const cohortId = useParticipant((s) => s.cohortId);
   const beaconAddress = useParticipant((s) => s.beaconAddress);
-  const network = useParticipant((s) => s.network);
-  const result = useParticipant((s) => s.result);
   const log = useParticipant((s) => s.log);
   const leave = useParticipant((s) => s.leave);
 
@@ -112,9 +110,6 @@ export function CohortPage({ baseUrl: _baseUrl, onBrowse }: { baseUrl: string; o
     );
   }
 
-  const netLabel = resolveNetwork(network).label;
-  const anchored = Boolean(anchor?.enabled && (anchor.state === 'confirmed' || anchor.state === 'broadcast'));
-
   return (
     <div className="space-y-6">
       <Card className="space-y-4 p-5">
@@ -128,31 +123,15 @@ export function CohortPage({ baseUrl: _baseUrl, onBrowse }: { baseUrl: string; o
           stage={stage}
           failed={failed}
           activeElapsedMs={now - stageEnteredAt}
+          anchor={anchor}
         />
       </Card>
 
-      {stage === 'submit-window' && cohortId ? <SubmitPanel baseUrl={_baseUrl} cohortId={cohortId} /> : null}
-
-      {status === 'complete' ? (
-        <Card className="space-y-2 border-good/40 bg-good/10 p-5">
-          {anchored ? (
-            <>
-              <p className="text-sm text-ink">Signed and anchored on {netLabel}.</p>
-              {anchor?.txid ? <CopyField label="anchor txid" value={anchor.txid} /> : null}
-            </>
-          ) : (
-            <p className="text-sm text-ink">
-              Signed. This no-broadcast service does not publish to Bitcoin, so there is no on-chain anchor to
-              show.
-            </p>
-          )}
-          {result ? (
-            <p className="text-sm text-muted">
-              {result.included ? 'Your update was included in this cohort.' : 'Your update was not included.'}
-            </p>
-          ) : null}
-        </Card>
+      {!failed && stage === 'submit-window' && cohortId ? (
+        <SubmitPanel baseUrl={_baseUrl} cohortId={cohortId} />
       ) : null}
+
+      {status === 'complete' ? <CompletionSummary baseUrl={_baseUrl} onBrowse={onBrowse} /> : null}
 
       <Card className="space-y-3 p-5">
         <SectionTitle>Your identity</SectionTitle>

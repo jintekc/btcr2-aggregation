@@ -181,7 +181,10 @@ export function JoinIdentityStep({
             </p>
           )}
           <div className="flex flex-wrap items-center gap-2 pt-1">
-            <Button onClick={() => join(baseUrl, cohortId)} disabled={joining}>
+            <Button
+              onClick={() => join(baseUrl, cohortId, { threshold: row.threshold, capacity: row.capacity })}
+              disabled={joining}
+            >
               {joining ? 'Joining…' : 'Join cohort'}
             </Button>
             <Button variant="ghost" onClick={() => setWantDifferent(true)} disabled={joining}>

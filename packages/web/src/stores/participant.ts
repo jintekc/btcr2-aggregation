@@ -176,6 +176,25 @@ interface ParticipantState {
    * reconnect (D-25).
    */
   unreachable: boolean;
+  /**
+   * True once this participant observed the runner's `fallback-requested` event (D-23):
+   * the n-of-n key-path stalled and the cohort co-signed the ADR-042 k-of-n script-path
+   * fallback instead. Drives the explicit k-of-n fallback completion outcome; reset per round.
+   */
+  fallbackObserved: boolean;
+  /**
+   * The cooperative non-inclusion reason (D-10), captured from the participant at
+   * cohort-complete when this DID declined to submit (a baked beacon-type mismatch). Null
+   * when the update was included. A NON-error outcome: the cohort still anchored around us.
+   */
+  nonInclusionReason: string | null;
+  /**
+   * The picked cohort's co-sign shape, threaded in from the directory row at join (D-23):
+   * `cohortThreshold` = k (the ADR-042 signing floor), `cohortCapacity` = n (the seat count).
+   * Null until a join carries them; used only by the k-of-n fallback outcome copy.
+   */
+  cohortThreshold: number | null;
+  cohortCapacity: number | null;
   result: ParticipantResult | null;
   /** The controller's downloadable, sovereign resolution sidecar (once included). */
   sidecar: Sidecar | null;
@@ -224,9 +243,11 @@ interface ParticipantState {
   /**
    * The one explicit user gate: connect to the service and join the PICKED cohort
    * (browse-and-pick, PART-02/D-14). The chosen `cohortId` is threaded into
-   * `createParticipant` so the runner opts into that cohort alone.
+   * `createParticipant` so the runner opts into that cohort alone. `sizing` carries the
+   * picked directory row's k (threshold) / n (capacity) so the k-of-n fallback outcome
+   * copy (D-23) can name them at completion; omitting it is safe (headless callers).
    */
-  join(baseUrl: string, cohortId: string): Promise<void>;
+  join(baseUrl: string, cohortId: string, sizing?: { threshold: number; capacity: number }): Promise<void>;
   /**
    * Resolve the open explicit-submit window (PART-03, D-12): the user clicked "Submit
    * my DID update", so settle the module-scope deferred with the exact body that was
@@ -712,6 +733,10 @@ const INITIAL_OUTCOME = {
   sidecar: null,
   anchor: null as AnchorDTO | null,
   unreachable: false,
+  fallbackObserved: false,
+  nonInclusionReason: null as string | null,
+  cohortThreshold: null as number | null,
+  cohortCapacity: null as number | null,
   regStatus: 'idle' as RegistrationStatus,
   regTxid: null,
   regError: null,
@@ -889,7 +914,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       }
     },
 
-    async join(baseUrl, cohortId) {
+    async join(baseUrl, cohortId, sizing) {
       const { identity, status } = get();
       if (!identity || status === 'connecting' || status === 'live') {
         return;
@@ -914,6 +939,10 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         pendingSubmit: false,
         pickedCohortId: cohortId,
         ...INITIAL_OUTCOME,
+        // Carry the picked row's k/n AFTER the outcome reset so the k-of-n fallback
+        // outcome (D-23) can name them at completion. Absent for headless callers.
+        cohortThreshold: sizing?.threshold ?? null,
+        cohortCapacity: sizing?.capacity ?? null,
       });
       append('info', `connecting to ${baseUrl} to join cohort ${cohortId}`);
 
@@ -1023,6 +1052,9 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         append('info', 'co-signing: contributing MuSig2 nonce + partial signature');
       });
       r.on('fallback-requested', () => {
+        // D-23: record that the n-of-n key path stalled and the cohort fell back to the
+        // ADR-042 k-of-n script path, so the completion outcome can state it explicitly.
+        set({ fallbackObserved: true });
         append('warn', 'key path stalled; co-signing the k-of-n script-path fallback');
       });
       r.on('cohort-complete', (info) => {
@@ -1033,6 +1065,10 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         // runner never re-emits it and it cannot be rebuilt to the same canonical
         // hash (BIP340 signing is non-deterministic). Only present when included.
         const body = info.included ? live?.getSubmittedUpdate(info.cohortId) : undefined;
+        // Cooperative non-inclusion reason (D-10): captured BEFORE teardown from the same
+        // live participant, so the non-error outcome can state WHY the update was not
+        // submitted (a baked beacon-type mismatch) while still reporting the anchor result.
+        const declineReason = info.included ? null : (live?.getDeclineReason(info.cohortId) ?? null);
         let updateHex: string | null = null;
         let sidecar: Sidecar | null = null;
         if (body) {
@@ -1063,7 +1099,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         // was submitted and co-signed). teardownLive() (below) drops the module-scope
         // deferred WITHOUT settling it - a resolved deferred here would be a redundant no-op
         // since submitUpdate() already nulled it, but the reset keeps state/module in step.
-        set({ result, sidecar, status: 'complete', beaconAddress: info.beaconAddress, awaitingSeats: null, pendingSubmit: false });
+        set({ result, sidecar, status: 'complete', beaconAddress: info.beaconAddress, awaitingSeats: null, pendingSubmit: false, nonInclusionReason: declineReason });
         append('good', `cohort ${info.cohortId} anchored; your update was ${info.included ? 'included' : 'not included'}`);
         // Refresh the IPFS availability just as the publish panel appears: the
         // page-load probe may predate a coordinator restart that enabled (or
