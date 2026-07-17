@@ -134,3 +134,12 @@ None - no external service configuration required. Zero-install plan (no new pac
 ---
 *Phase: 03-participant-submit-co-sign-track-and-resolve*
 *Completed: 2026-07-17*
+
+## Self-Check: PASSED
+
+- FOUND: `packages/participant/src/index.ts`
+- FOUND: `packages/participant/src/index.spec.ts`
+- FOUND: `.planning/phases/03-participant-submit-co-sign-track-and-resolve/03-01-SUMMARY.md`
+- FOUND commit `fe5ffcf` (Task 1, feat)
+- FOUND commit `b18545a` (Task 2, test)
+- FOUND commit `da465cc` (plan metadata, docs)
