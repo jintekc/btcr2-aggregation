@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 03
 current_phase_name: participant-submit-co-sign-track-and-resolve
 status: executing
-stopped_at: Completed 03-04-PLAN.md
-last_updated: "2026-07-17T19:51:56.388Z"
+stopped_at: Completed 03-05-PLAN.md
+last_updated: "2026-07-17T20:13:09.081Z"
 last_activity: 2026-07-17
 last_activity_desc: Phase 03 execution started
 progress:
   total_phases: 3
   completed_phases: 2
   total_plans: 19
-  completed_plans: 17
+  completed_plans: 18
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-16)
 ## Current Position
 
 Phase: 03 (participant-submit-co-sign-track-and-resolve) — EXECUTING
-Plan: 5 of 6
+Plan: 6 of 6
 Status: Ready to execute
 Last activity: 2026-07-17 — Phase 03 execution started
 
-Progress: [█████████░] 89% (Phase 2 of 6 complete)
+Progress: [██████████] 95% (Phase 2 of 6 complete)
 
 ## Performance Metrics
 
@@ -76,6 +76,7 @@ Progress: [█████████░] 89% (Phase 2 of 6 complete)
 | Phase 03 P02 | 6min | 2 tasks | 4 files |
 | Phase 03 P03 | 9min | 2 tasks | 2 files |
 | Phase 03 P04 | 24 min | 3 tasks | 6 files |
+| Phase 03 P05 | 21min | 3 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -95,6 +96,7 @@ Recent decisions affecting current work (Phase 2):
 - [Phase ?]: [Phase 03] 03-04: participant store restructured into the D-01 stage model - deriveStage(state) is the single pure render authority (no parallel enum, Pattern 3); explicit-submit is a module-scope deferred (onSubmitGate opt-in) flipped to a serializable pendingSubmit projection; submitUpdate() resolves-then-nulls it and every teardown clears WITHOUT settling (Pitfall 2). All ADDED around the byte-untouched Phase-2 join-through-seat block.
 - [Phase ?]: [Phase 03] 03-04: anchor tracking is an epoch-guarded post-sign poll over the public GET /v1/anchor read that freezes at confirmed/failed and stops after one read on a hermetic enabled:false service (D-22); auto-resolve (D-28) gates on pure shouldAutoResolve (hermetic-signed OR live-confirmed) with the resolver-lag retry gated on anchor.enabled (Finding 7); post-seat cohort-gone uses a NEW postSeatCohortGone predicate (absent entirely) never handleDirectorySnapshot, landing the honest D-25 fallback, and a post-seat directory poll raises the D-24 unreachable signal (closes 02-09 WR-02) without going terminal.
 - [Phase ?]: [Phase 03] 03-04: removing FLOW_STEPS/FlowStep from lib/types.ts forced deleting the now-dead FlowStepper.tsx + ParticipantView.tsx (already unreachable from App) to keep the web build green; KeyGenPanel + the BrowseView/CohortPage rewire stay in 03-05 (Rule 3 blocking-fix, partial pull-forward of the stepper retirement).
+- [Phase ?]: [Phase 03] 03-05: the live cohort page is one continuous surface routed by the pure deriveStage authority (StageTimeline + CohortPage). Active lifecycle (connecting/live/complete) mounts CohortPage; terminal failures keep the shipped Phase-2 error cards (full D-24/D-25 cohort-page absorption is 03-06). SubmitPanel probes the public GET /v1/anchor enabled bit for the mode-honest consent line before the post-sign poll runs. statusLabel maps in-flight signing phases to 'In progress' before Full (D-26). KeyGenPanel deleted: the directory is the only entry path (D-31).
 
 ### Pending Todos
 
@@ -123,7 +125,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-17T19:51:18.055Z
-Stopped at: Completed 03-04-PLAN.md
+Last session: 2026-07-17T20:12:52.744Z
+Stopped at: Completed 03-05-PLAN.md
 Resume file: None
 Next command: /gsd-discuss-phase 3
