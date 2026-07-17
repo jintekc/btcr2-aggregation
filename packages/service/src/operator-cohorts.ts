@@ -14,11 +14,15 @@
  * existence on an explicit operator action.
  *
  * The public read surface is derived, never duplicated (D-15): {@link
- * OperatorCohorts.directory} lists the open/joinable cohorts straight from the live
+ * OperatorCohorts.directory} lists the public rows straight from the live
  * `runner.session.cohorts` (filtered by phase), enriched from a small `advertised`
- * config map keyed by the live cohort id; {@link OperatorCohorts.status} reuses
- * `directory().length` for its open-count so the public count and the directory can
- * never drift (D-09). On completion the enrichment entry is settled: a cohort that
+ * config map keyed by the live cohort id. The DISPLAY set is widened to list in-flight
+ * (mid-signing) cohorts as honest non-joinable "In progress" rows so a busy service
+ * looks alive to a stranger (D-26); the JOIN gate stays Advertised-tier only.
+ * {@link OperatorCohorts.status} derives its open-count from the SAME `directory()`
+ * derivation but narrows it back to the joinable {@link OPEN_PHASES} tier, so the public
+ * count and the directory share one source yet the widened DISPLAY never inflates the
+ * open count (D-09/D-26, Pitfall 3). On completion the enrichment entry is settled: a cohort that
  * completes successfully is pruned (it legitimately leaves the open set), while a
  * cohort whose completion REJECTS (stall / TTL / stop) is moved into a bounded
  * `terminal` record set and surfaced to the operator as `state: 'expired'` with a
@@ -69,6 +73,27 @@ const KNOWN_BEACON_TYPES = new Set<string>(['CASBeacon', 'SMTBeacon']);
  * library's enum value shape.
  */
 const OPEN_PHASES = new Set<string>(['Advertised', 'CohortSet', 'CollectingUpdates']);
+
+/**
+ * The in-flight (mid-signing) phases the public directory DISPLAYS as honest,
+ * non-joinable "In progress" rows (D-26, RESEARCH Finding 5), so a service with a
+ * cohort mid-signing still looks alive to a stranger browsing by choice. These are
+ * strictly display-only: they widen {@link directory} but are DELIBERATELY kept out of
+ * {@link OPEN_PHASES} so they never enter the join gate or the public open count.
+ * Kept as string members so this file does not depend on the library's enum value shape.
+ */
+const IN_FLIGHT_PHASES = new Set<string>(['SigningStarted', 'NoncesCollected', 'AwaitingPartialSigs']);
+
+/**
+ * The DISPLAY set for the public directory: the joinable pre-signing {@link OPEN_PHASES}
+ * PLUS the in-flight {@link IN_FLIGHT_PHASES}. `directory()` filters on THIS union so
+ * in-flight cohorts are listed (D-26), while the joinable gate ({@link OPEN_PHASES}, and
+ * the web `isJoinable`/`pickedCohortClosed`) stays Advertised-tier only. Widening the
+ * DISPLAY set here must never widen the open COUNT: `status().openCohorts` narrows back to
+ * the {@link OPEN_PHASES} tier so the public open count stays exactly the joinable set
+ * (D-09/D-26, RESEARCH Pitfall 3).
+ */
+const DISPLAY_PHASES = new Set<string>([...OPEN_PHASES, ...IN_FLIGHT_PHASES]);
 
 /**
  * The exact UI-SPEC validation string for the single cohort-size floor; the browser
@@ -149,7 +174,12 @@ export interface DirectoryCohortDTO {
   capacity: number;
   /** Number of participants accepted into the cohort so far. */
   joined: number;
-  /** Current cohort phase (one of {@link OPEN_PHASES} for a listed entry). */
+  /**
+   * Current cohort phase (one of {@link DISPLAY_PHASES} for a listed entry: a joinable
+   * {@link OPEN_PHASES} row or an in-flight {@link IN_FLIGHT_PHASES} "In progress" row,
+   * D-26). The client renders the plain-language label off this raw string; an unknown
+   * phase falls back to the raw value, so this is display copy, not logic risk.
+   */
   phase: string;
 }
 
@@ -333,10 +363,16 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
   }
 
   /**
-   * The open/joinable cohorts, derived from the live set. Membership is
-   * `runner.session.cohorts` (the single source of truth), narrowed to the pre-signing
-   * {@link OPEN_PHASES} and to cohorts we still hold an enrichment config for (a
-   * belt-and-suspenders alignment with the completion prune). Never reads a parallel
+   * The public directory rows, derived from the live set. Membership is
+   * `runner.session.cohorts` (the single source of truth), narrowed to the DISPLAY set
+   * {@link DISPLAY_PHASES} (the joinable pre-signing tier PLUS the in-flight signing
+   * phases, D-26) and to cohorts we still hold an enrichment config for (a
+   * belt-and-suspenders alignment with the completion prune, so a settled/pruned cohort
+   * drops out even before it leaves `runner.session.cohorts`). Widening the DISPLAY here
+   * lists in-flight cohorts as honest "In progress" rows so the service looks alive to a
+   * stranger; the JOIN gate and the open COUNT stay Advertised-tier only (`isJoinable`
+   * client-side, {@link openCount} for `status()`), so this widens what is SHOWN without
+   * widening what is joinable or counted (D-09/D-26, Pitfall 3). Never reads a parallel
    * operator-written list as the source of truth (D-15).
    */
   function directory(): DirectoryCohortDTO[] {
@@ -347,7 +383,7 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
         continue;
       }
       const phase = runner.session.getCohortPhase(cohort.id);
-      if (!phase || !OPEN_PHASES.has(phase)) {
+      if (!phase || !DISPLAY_PHASES.has(phase)) {
         continue;
       }
       entries.push({
@@ -364,6 +400,18 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
       });
     }
     return entries;
+  }
+
+  /**
+   * The public OPEN count: the joinable Advertised-tier rows ONLY (Pitfall 3). Reuses
+   * {@link directory} for the single derivation (membership + enrichment guard) then
+   * narrows to {@link OPEN_PHASES}, so the widened DISPLAY set (which now includes the
+   * in-flight signing phases per D-26) can never silently inflate the public open count
+   * the way `directory().length` over the widened set would (D-09 drift). This keeps the
+   * "open" number honest: it counts exactly the cohorts a participant could still join.
+   */
+  function openCount(): number {
+    return directory().filter((row) => OPEN_PHASES.has(row.phase)).length;
   }
 
   return {
@@ -489,9 +537,12 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
     directory,
 
     status(): ServiceStatusDTO {
-      // Reuse `directory()` for the open-count so the public number and the directory
-      // are the SAME source and cannot drift (D-09).
-      return { up: true, network: activeNetwork, openCohorts: directory().length };
+      // Reuse the SAME live derivation as `directory()` for the open-count (via `openCount`,
+      // which calls `directory()` then narrows to OPEN_PHASES), so the public number and the
+      // directory can never drift (D-09). The count is Advertised-tier ONLY: the directory
+      // DISPLAY widened to in-flight rows (D-26), but the open count stays exactly the
+      // joinable set so widening what is shown never inflates what is reported open (Pitfall 3).
+      return { up: true, network: activeNetwork, openCohorts: openCount() };
     },
   };
 }
