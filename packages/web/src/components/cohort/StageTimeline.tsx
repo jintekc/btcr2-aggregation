@@ -1,5 +1,5 @@
 import { StatusDot } from '../../ui/primitives';
-import type { Stage } from '../../stores/participant';
+import { anchorSummaryState, type Stage } from '../../stores/participant';
 import type { AnchorDTO } from '../../lib/anchor';
 
 /**
@@ -120,14 +120,22 @@ export function StageTimeline({
   /** Milliseconds the active stage has been running, for the quiet elapsed indicator (D-05). */
   activeElapsedMs?: number;
   /**
-   * The last-known anchor read (D-22). On a broadcasting service (`enabled`) the final step
-   * relabels to "Anchored" and expands into the Signed/Broadcast/Confirmed sub-steps; on the
-   * hermetic path it stays a single "Signed" line (mode honesty, D-07).
+   * The last-known anchor read (D-22). The final step relabels to "Anchored" ONLY when the
+   * anchor is actually anchored (`anchorSummaryState(anchor) === 'anchored'`), so a broadcasting
+   * or failed live service, and the pre-first-read window, keep the honest "Signed" header while
+   * still expanding into the Signed/Broadcast/Confirmed sub-steps for any enabled service; the
+   * hermetic path stays a single "Signed" line (mode honesty, D-07; 03-VERIFICATION.md Truth 7 /
+   * 03-REVIEW.md WR-02).
    */
   anchor?: AnchorDTO | null;
 }) {
   const activeIdx = STAGE_ORDER.indexOf(stage);
+  // `liveAnchor` gates ONLY the sub-steps: they render for every enabled service (broadcasting,
+  // failed, and anchored alike). The final-row LABEL is driven by the four-way anchor state the
+  // CompletionSummary uses, so the header never claims "Anchored" while merely broadcasting or
+  // after a failed broadcast (Defect A; 03-VERIFICATION.md Truth 7 / 03-REVIEW.md WR-02, D-07).
   const liveAnchor = anchor?.enabled === true;
+  const summary = anchorSummaryState(anchor);
 
   return (
     <ol className="space-y-3">
@@ -148,8 +156,11 @@ export function StageTimeline({
             : position === 'complete'
               ? 'text-sm text-muted'
               : 'text-sm text-faint';
-        // The final row relabels to "Anchored" on a broadcasting service (UI-SPEC stage labels).
-        const label = item.key === 'signed' && liveAnchor ? 'Anchored' : item.label;
+        // The final row relabels to "Anchored" ONLY when the anchor is actually anchored
+        // (anchorSummaryState === 'anchored'); a broadcasting or failed live service, and the
+        // pre-first-read checking window, keep the "Signed" header (UI-SPEC stage labels; D-07;
+        // 03-VERIFICATION.md Truth 7 / 03-REVIEW.md WR-02).
+        const label = item.key === 'signed' && summary === 'anchored' ? 'Anchored' : item.label;
         // Expand the anchor sub-steps under the final row once it is reached, live only (D-22).
         const showSubSteps = item.key === 'signed' && liveAnchor && position !== 'pending';
         return (
