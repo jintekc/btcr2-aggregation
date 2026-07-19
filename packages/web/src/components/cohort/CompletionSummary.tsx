@@ -102,6 +102,12 @@ export function CompletionSummary({ baseUrl, onBrowse }: { baseUrl: string; onBr
             Signed. The beacon broadcast to {netLabel} failed, so there is no confirmed anchor. Your co-signed
             update is in the sidecar below; resolve to check the current state.
           </p>
+        ) : anchorNarration === 'checking' ? (
+          // Pre-first-read window (null anchor): the read has not landed yet, so we must not
+          // presume live OR hermetic. Neutral confirming copy, mirroring SubmitPanel's
+          // enabled === undefined handling; the no-broadcast copy renders only for a confirmed
+          // hermetic read below (D-07 mode honesty; 03-VERIFICATION.md Truth 7 / 03-REVIEW.md WR-01).
+          <p className="text-sm text-ink">Confirming this service&apos;s broadcast mode.</p>
         ) : (
           <p className="text-sm text-ink">
             Signed. This no-broadcast service does not publish to Bitcoin, so there is no on-chain anchor to
@@ -131,10 +137,14 @@ export function CompletionSummary({ baseUrl, onBrowse }: { baseUrl: string; onBr
       <Card className="space-y-3 p-5">
         <SectionTitle>Resolve round-trip</SectionTitle>
         {resolveStatus === 'idle' || (resolving && !resolution) ? (
-          anchorEnabled ? (
-            <p className="text-sm text-muted">Resolving your updated DID...</p>
-          ) : (
+          // The genesis-document line presumes hermetic, so it is gated on a CONFIRMED hermetic
+          // read (anchorNarration === 'hermetic'), not the enabled bit alone: during the
+          // pre-first-read checking window we show the neutral "Resolving your updated DID..."
+          // line instead (D-07 mode honesty; 03-VERIFICATION.md Truth 7 / 03-REVIEW.md WR-01).
+          anchorNarration === 'hermetic' ? (
             <p className="text-sm text-muted">Resolving to the genesis document...</p>
+          ) : (
+            <p className="text-sm text-muted">Resolving your updated DID...</p>
           )
         ) : resolveStatus === 'failed' ? (
           <p className="rounded-md border border-bad/40 bg-bad/10 px-3 py-2 text-xs text-bad">
