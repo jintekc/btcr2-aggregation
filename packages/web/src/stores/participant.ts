@@ -668,14 +668,20 @@ export function roundTripOutcome(input: { beaconPresent: boolean; anchorEnabled:
 }
 
 /**
- * Pure mode-honest anchor narration selector (WR-01, D-07/D-22). Maps every anchor read to
- * exactly one of four honest completion-summary states, replacing the two-way anchored-or-
- * hermetic collapse WR-01 flagged (which mis-narrated a broadcasting or failed live service
- * as a hermetic no-broadcast service, claiming it "does not publish to Bitcoin" when it
- * merely had a pending or failed beacon tx):
+ * Pure mode-honest anchor narration selector (WR-01, D-07/D-22; 03-VERIFICATION.md Truth 7 /
+ * 03-REVIEW.md WR-01). Maps every anchor read to exactly one of five honest completion-summary
+ * states, replacing the two-way anchored-or-hermetic collapse WR-01 flagged (which mis-narrated
+ * a broadcasting or failed live service as a hermetic no-broadcast service, claiming it "does
+ * not publish to Bitcoin" when it merely had a pending or failed beacon tx):
  *
- * - `hermetic`: the service does not broadcast (`!anchor?.enabled`, the D-07 mode bit). The
- *   only state that may narrate the no-broadcast copy.
+ * - `checking`: the pre-first-read window (`anchor === null`) - the anchor read has not landed
+ *   yet, so the summary must presume neither live nor hermetic. Distinct from a confirmed
+ *   no-broadcast service so a live service that reaches status `complete` synchronously (before
+ *   trackAnchor's first fetchAnchor read resolves) never narrates the no-broadcast copy during
+ *   that brief window. Mirrors the codebase's existing SubmitPanel `enabled === undefined`
+ *   "Checking this service's broadcast mode" neutral handling (D-07 mode honesty).
+ * - `hermetic`: a real read shows the service does not broadcast (`!anchor?.enabled`, the D-07
+ *   mode bit). The only state that may narrate the no-broadcast copy.
  * - `anchored`: enabled AND a real beacon tx exists (`state` is `broadcast` or `confirmed`),
  *   matching the existing `anchored` boolean and StageTimeline's "Anchored" relabel.
  * - `broadcast-failed`: enabled AND `state === 'failed'` - the beacon broadcast terminally
@@ -685,7 +691,10 @@ export function roundTripOutcome(input: { beaconPresent: boolean; anchorEnabled:
  */
 export function anchorSummaryState(
   anchor: AnchorDTO | null,
-): 'anchored' | 'broadcasting' | 'broadcast-failed' | 'hermetic' {
+): 'checking' | 'anchored' | 'broadcasting' | 'broadcast-failed' | 'hermetic' {
+  if (anchor === null) {
+    return 'checking';
+  }
   if (!anchor?.enabled) {
     return 'hermetic';
   }

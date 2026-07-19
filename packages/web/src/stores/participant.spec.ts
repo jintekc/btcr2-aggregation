@@ -535,13 +535,14 @@ describe('participant store - shouldAutoResolve (D-28 gating)', () => {
   });
 });
 
-// Mode-honest anchor narration (WR-01, D-07/D-22): maps every anchor read to one of four
-// honest completion-summary states, so a broadcasting/failed live service is never narrated
-// as a hermetic no-broadcast service.
+// Mode-honest anchor narration (WR-01, D-07/D-22; 03-VERIFICATION.md Truth 7): maps every
+// anchor read to one of five honest completion-summary states, so a broadcasting/failed live
+// service is never narrated as a hermetic no-broadcast service, and the pre-first-read window
+// (null) is its own neutral 'checking' state rather than being collapsed into 'hermetic'.
 
 describe('participant store - anchorSummaryState (mode-honest, WR-01)', () => {
-  it('is hermetic before any read', () => {
-    expect(anchorSummaryState(null)).toBe('hermetic');
+  it('is checking before the first read, distinct from a confirmed no-broadcast service', () => {
+    expect(anchorSummaryState(null)).toBe('checking');
   });
 
   it('is hermetic on a no-broadcast service', () => {
