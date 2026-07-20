@@ -69,9 +69,15 @@ export function CompletionSummary({ baseUrl, onBrowse }: { baseUrl: string; onBr
   }
 
   const netLabel = resolveNetwork(network).label;
-  const anchored = Boolean(anchor?.enabled && (anchor.state === 'confirmed' || anchor.state === 'broadcast'));
+  // Confirmed-only heading boolean (Truth 8, D-07; 03-VERIFICATION.md Truth 8 / 03-REVIEW.md
+  // WR-02): the heading reads "Anchored" only once the beacon tx is mined (state === 'confirmed'),
+  // never while it is broadcast-but-unconfirmed. This matches the anchorNarration paragraph below
+  // (which reads the honest 'broadcasting' copy for the broadcast state) and AnchorSubSteps'
+  // independent `state === 'confirmed'` check, so no completion-view surface claims "Anchored"
+  // while another shows "Confirmed: pending".
+  const anchored = Boolean(anchor?.enabled && anchor.state === 'confirmed');
   const anchorEnabled = Boolean(anchor?.enabled);
-  // Mode-honest Signed-line narration (WR-01, D-07): map the anchor read to one of four honest
+  // Mode-honest Signed-line narration (WR-01, D-07): map the anchor read to one of five honest
   // states so a broadcasting or failed live anchor is never described as a no-broadcast service.
   const anchorNarration = anchorSummaryState(anchor);
   const doc = resolution?.didDocument;
