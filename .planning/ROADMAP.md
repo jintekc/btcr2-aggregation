@@ -104,12 +104,12 @@ Plans:
   3. Once the beacon is anchored, the participant resolves the updated DID and sees the new DID document.
   4. The participant reaches submit/co-sign only via a cohort discovered and joined from the directory; the standalone linear KeyGen -> Register -> Publish -> Resolve stepper is no longer the entry path.
 
-**Plans**: 8/9 plans executed
+**Plans**: 9/9 plans executed
 Plans:
 
 - [x] 03-07-PLAN.md
 - [x] 03-08-PLAN.md - Mode-honest anchor narration consistency: StageTimeline final-row label driven by anchorSummaryState + neutral null-anchor 'checking' state in CompletionSummary (Truth 7 gap closure, PART-04, Wave 6)
-- [ ] 03-09-PLAN.md - Reserve 'anchored' for a confirmed tx only: route broadcast-but-unconfirmed into 'broadcasting'/'signed' across anchorSummaryState, deriveStage, and the CompletionSummary anchored boolean, re-pinning the spec cases (Truth 8 gap closure, PART-04, Wave 7)
+- [x] 03-09-PLAN.md - Reserve 'anchored' for a confirmed tx only: route broadcast-but-unconfirmed into 'broadcasting'/'signed' across anchorSummaryState, deriveStage, and the CompletionSummary anchored boolean, re-pinning the spec cases (Truth 8 gap closure, PART-04, Wave 7)
 
 **Wave 1** *(parallel foundations)*
 
@@ -186,7 +186,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 |-------|----------------|--------|-----------|
 | 1. Authenticated Operator Console + On-Demand Cohort Creation | 4/4 | Complete    | 2026-07-08 |
 | 2. Participant Discovery + Browse-and-Pick Join | 9/9 | Complete    | 2026-07-16 |
-| 3. Participant Submit, Co-Sign, Track, and Resolve | 8/8 | In Progress|  |
+| 3. Participant Submit, Co-Sign, Track, and Resolve | 9/9 | In Progress|  |
 | 4. Operator Cohort Monitoring | 0/TBD | Not started | - |
 | 5. Operator Cohort Lifecycle Control | 0/TBD | Not started | - |
 | 6. Two-Stranger End-to-End + Real-Aggregator Framing | 0/TBD | Not started | - |
