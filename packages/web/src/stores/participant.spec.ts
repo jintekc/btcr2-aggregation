@@ -368,14 +368,17 @@ describe('participant store - deriveStage (pure render authority)', () => {
   it('is signed on a hermetic complete (no broadcast: anchor disabled or null)', () => {
     expect(deriveStage(stageInput({ status: 'complete', anchor: { enabled: false, state: 'none' } }))).toBe('signed');
     expect(deriveStage(stageInput({ status: 'complete', anchor: null }))).toBe('signed');
-  });
-
-  it('is anchored on a live complete with a broadcast/confirmed anchor', () => {
-    expect(
-      deriveStage(stageInput({ status: 'complete', anchor: { enabled: true, state: 'confirmed', txid: 'ab' } })),
-    ).toBe('anchored');
+    // A broadcast-but-unconfirmed anchor is NOT yet 'anchored' (mode honesty, Truth 8): the
+    // beacon tx is accepted but not yet mined, so the stage stays 'signed' and the persistent
+    // "Your cohort" chip never claims "Anchored" while AnchorSubSteps reads "Confirmed: pending".
     expect(
       deriveStage(stageInput({ status: 'complete', anchor: { enabled: true, state: 'broadcast', txid: 'ab' } })),
+    ).toBe('signed');
+  });
+
+  it('is anchored on a live complete only once the beacon tx is confirmed (mined on-chain)', () => {
+    expect(
+      deriveStage(stageInput({ status: 'complete', anchor: { enabled: true, state: 'confirmed', txid: 'ab' } })),
     ).toBe('anchored');
   });
 
@@ -553,11 +556,13 @@ describe('participant store - anchorSummaryState (mode-honest, WR-01)', () => {
     expect(anchorSummaryState({ enabled: true, state: 'none' })).toBe('broadcasting');
   });
 
-  it('is anchored on an enabled service with a broadcast beacon tx', () => {
-    expect(anchorSummaryState({ enabled: true, state: 'broadcast', txid: 'ab' })).toBe('anchored');
+  it('is broadcasting (not anchored) while the beacon tx is broadcast but not yet confirmed', () => {
+    // Truth 8 / WR-02: an accepted-but-unmined tx must not narrate as 'anchored' while
+    // AnchorSubSteps reads "Confirmed: pending"; 'anchored' is reserved for state 'confirmed'.
+    expect(anchorSummaryState({ enabled: true, state: 'broadcast', txid: 'ab' })).toBe('broadcasting');
   });
 
-  it('is anchored on an enabled service with a confirmed beacon tx', () => {
+  it('is anchored on an enabled service only once the beacon tx is confirmed', () => {
     expect(anchorSummaryState({ enabled: true, state: 'confirmed', txid: 'ab' })).toBe('anchored');
   });
 

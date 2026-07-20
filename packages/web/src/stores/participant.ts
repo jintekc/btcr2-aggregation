@@ -610,9 +610,13 @@ export interface StageInput {
  * milestone wins:
  *
  * - `resolved` once resolution lands (a read, so it is the true end of the journey).
- * - On a completed cohort, `anchored` only when the anchor read is `enabled` AND carries a
- *   broadcast/confirmed txid (D-07 mode honesty: never claim an anchor on the hermetic
- *   no-broadcast path); otherwise `signed`.
+ * - On a completed cohort, `anchored` only when the anchor read is `enabled` AND
+ *   `state === 'confirmed'` (the beacon tx is mined on-chain). A broadcast-but-unconfirmed
+ *   anchor (`state === 'broadcast'`) stays `signed`, so the timeline row position and the
+ *   persistent "Your cohort" chip never claim "Anchored" while the tx is unconfirmed
+ *   (D-07 mode honesty: never claim an anchor on the hermetic no-broadcast path, and never
+ *   claim a mined anchor before the tx confirms; 03-VERIFICATION.md Truth 8 / 03-REVIEW.md
+ *   WR-02); otherwise `signed`.
  * - `submit-window` while the explicit-submit deferred is open (dominates `seated`: the
  *   runner is awaiting the update right now, D-12/D-13 urgency).
  * - `co-signing` once the update was submitted (`steps.submit === 'done'`).
@@ -625,7 +629,7 @@ export function deriveStage(state: StageInput): Stage {
   }
   if (state.status === 'complete') {
     const a = state.anchor;
-    if (a?.enabled && (a.state === 'confirmed' || a.state === 'broadcast')) {
+    if (a?.enabled && a.state === 'confirmed') {
       return 'anchored';
     }
     return 'signed';
@@ -682,12 +686,17 @@ export function roundTripOutcome(input: { beaconPresent: boolean; anchorEnabled:
  *   "Checking this service's broadcast mode" neutral handling (D-07 mode honesty).
  * - `hermetic`: a real read shows the service does not broadcast (`!anchor?.enabled`, the D-07
  *   mode bit). The only state that may narrate the no-broadcast copy.
- * - `anchored`: enabled AND a real beacon tx exists (`state` is `broadcast` or `confirmed`),
- *   matching the existing `anchored` boolean and StageTimeline's "Anchored" relabel.
+ * - `anchored`: enabled AND `state === 'confirmed'` (the beacon tx is mined/anchored on-chain),
+ *   matching the confirmed-only `anchored` boolean and StageTimeline's "Anchored" relabel. A
+ *   broadcast-but-unconfirmed anchor is NOT yet anchored: it narrates as `broadcasting` below,
+ *   agreeing with AnchorSubSteps' independent `state === 'confirmed'` check so no surface claims
+ *   "Anchored" while another shows "Confirmed: pending" (D-07 mode honesty; 03-VERIFICATION.md
+ *   Truth 8 / 03-REVIEW.md WR-02).
  * - `broadcast-failed`: enabled AND `state === 'failed'` - the beacon broadcast terminally
  *   failed, so there is no confirmed anchor (a distinct honest state, not hermetic).
- * - `broadcasting`: otherwise (enabled AND `state === 'none'`) - the beacon tx has not posted
- *   yet, so the summary honestly says it is broadcasting rather than claiming no broadcast.
+ * - `broadcasting`: enabled AND (`state === 'broadcast'`, the tx is accepted but not yet mined)
+ *   OR (`state === 'none'`, the tx has not posted yet) - in both cases the summary honestly says
+ *   it is broadcasting rather than claiming a mined anchor or no broadcast.
  */
 export function anchorSummaryState(
   anchor: AnchorDTO | null,
@@ -698,7 +707,7 @@ export function anchorSummaryState(
   if (!anchor?.enabled) {
     return 'hermetic';
   }
-  if (anchor.state === 'confirmed' || anchor.state === 'broadcast') {
+  if (anchor.state === 'confirmed') {
     return 'anchored';
   }
   if (anchor.state === 'failed') {
