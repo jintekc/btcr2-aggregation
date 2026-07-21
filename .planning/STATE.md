@@ -113,7 +113,8 @@ Recent decisions affecting current work (Phase 2):
 
 [From .planning/todos/pending/ - ideas captured during sessions]
 
-5 pending (captured 2026-07-21 from Phase 3 UAT product-direction feedback; none block Phase 3):
+6 pending (captured 2026-07-21 from Phase 3 UAT product-direction feedback and live testing; none block Phase 3):
+- Handle unconfirmed beacon signals during resolution (upstream Invalid-date throw in @did-btcr2/method when a signal tx is mempool-resident; hit live during UAT)
 - Let participants supply their own esplora endpoint (trust minimization; proxy stays the default)
 - Add operator UI flow to fund cohort beacon address (live path is e2e-only today)
 - Surface live beacon broadcast in the UI (demo-server never passes live/broadcast to createService; also blocks UAT Test 1 live half + Test 4)
