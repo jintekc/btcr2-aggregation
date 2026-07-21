@@ -113,7 +113,12 @@ Recent decisions affecting current work (Phase 2):
 
 [From .planning/todos/pending/ - ideas captured during sessions]
 
-None yet.
+5 pending (captured 2026-07-21 from Phase 3 UAT product-direction feedback; none block Phase 3):
+- Let participants supply their own esplora endpoint (trust minimization; proxy stays the default)
+- Add operator UI flow to fund cohort beacon address (live path is e2e-only today)
+- Surface live beacon broadcast in the UI (demo-server never passes live/broadcast to createService; also blocks UAT Test 1 live half + Test 4)
+- Support external signers instead of pasted private keys (MuSig2 leg needs upstream signer interface; PSBT for registration leg sooner)
+- Scope ToS, contracts, payments, and participant notifications (new milestone-level scope)
 
 ### Blockers/Concerns
 
