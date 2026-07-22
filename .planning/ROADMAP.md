@@ -15,7 +15,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Authenticated Operator Console + On-Demand Cohort Creation** - Operator logs in and creates/configures/advertises a cohort on demand, replacing the auto-advertise loop (completed 2026-07-08)
 - [x] **Phase 2: Participant Discovery + Browse-and-Pick Join** - Participant points at a service URL, browses its open cohorts, and joins one by choice (completed 2026-07-16)
-- [ ] **Phase 3: Participant Submit, Co-Sign, Track, and Resolve** - From a chosen cohort, participant submits a DID update, co-signs, tracks the anchor, and resolves
+- [x] **Phase 3: Participant Submit, Co-Sign, Track, and Resolve** - From a chosen cohort, participant submits a DID update, co-signs, tracks the anchor, and resolves (completed 2026-07-22)
 - [ ] **Phase 4: Operator Cohort Monitoring** - Operator watches members, submissions, co-sign progress, and anchor status live on the protected console
 - [ ] **Phase 5: Operator Cohort Lifecycle Control** - Operator runs open->close->finalize and pauses/cancels/reconfigures advertising without restarting
 - [ ] **Phase 6: Two-Stranger End-to-End + Real-Aggregator Framing** - Automated stranger-to-stranger loop passes in CI and the booth/attendee framing is retired
@@ -186,7 +186,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 |-------|----------------|--------|-----------|
 | 1. Authenticated Operator Console + On-Demand Cohort Creation | 4/4 | Complete    | 2026-07-08 |
 | 2. Participant Discovery + Browse-and-Pick Join | 9/9 | Complete    | 2026-07-16 |
-| 3. Participant Submit, Co-Sign, Track, and Resolve | 9/9 | In Progress|  |
+| 3. Participant Submit, Co-Sign, Track, and Resolve | 9/9 | Complete    | 2026-07-22 |
 | 4. Operator Cohort Monitoring | 0/TBD | Not started | - |
 | 5. Operator Cohort Lifecycle Control | 0/TBD | Not started | - |
 | 6. Two-Stranger End-to-End + Real-Aggregator Framing | 0/TBD | Not started | - |

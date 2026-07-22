@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 03
-current_phase_name: participant-submit-co-sign-track-and-resolve
-status: executing
+current_phase: 4
+current_phase_name: Operator Cohort Monitoring
+status: planning
 stopped_at: Completed 03-09-PLAN.md
-last_updated: "2026-07-20T14:08:00.278Z"
-last_activity: 2026-07-20
-last_activity_desc: Phase 03 execution started
+last_updated: "2026-07-22T15:28:07.235Z"
+last_activity: 2026-07-22
+last_activity_desc: Phase 3 complete, transitioned to Phase 4
 progress:
   total_phases: 3
   completed_phases: 3
@@ -20,25 +20,25 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-07-16)
+See: .planning/PROJECT.md (updated 2026-07-22)
 
 **Core value:** A stranger can self-host a real aggregation service that advertises cohorts, and another stranger can point a participant at that service's URL, browse its cohorts, join, co-sign, and resolve - a genuinely two-sided, self-hostable product, not a demo.
-**Current focus:** Phase 03 — participant-submit-co-sign-track-and-resolve
+**Current focus:** Phase 4 — Operator Cohort Monitoring
 
 ## Current Position
 
-Phase: 03 (participant-submit-co-sign-track-and-resolve) — EXECUTING
-Plan: 2 of 9
-Status: Ready to execute
-Last activity: 2026-07-20 — Phase 03 execution started
+Phase: 4 — Operator Cohort Monitoring
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-07-22 — Phase 3 complete, transitioned to Phase 4
 
-Progress: [██████████] 100% (Phase 2 of 6 complete)
+Progress: [██████████░░░░░░░░░░] 3 of 6 phases complete (22/22 planned-to-date plans executed)
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 13
+- Total plans completed: 22
 - Average duration: - min
 - Total execution time: 0 hours
 
@@ -48,6 +48,7 @@ Progress: [██████████] 100% (Phase 2 of 6 complete)
 |-------|-------|-------|----------|
 | 1 | 4 | - | - |
 | 02 | 9 | - | - |
+| 3 | 9 | - | - |
 
 **Recent Trend:**
 
@@ -114,6 +115,7 @@ Recent decisions affecting current work (Phase 2):
 [From .planning/todos/pending/ - ideas captured during sessions]
 
 7 pending (captured 2026-07-21/22 from Phase 3 UAT product-direction feedback and live testing; none block Phase 3):
+
 - Fix terminalReason misattributed stall copy (CohortPage narrates any unexplained signing-window death as a submit stall; confirmed user-visible in live UAT)
 - Handle unconfirmed beacon signals during resolution (upstream Invalid-date throw in @did-btcr2/method when a signal tx is mempool-resident; hit live during UAT)
 - Let participants supply their own esplora endpoint (trust minimization; proxy stays the default)
@@ -128,7 +130,7 @@ Recent decisions affecting current work (Phase 2):
 
 - ✓ [Phase 1] Operator authentication shipped (ADR 0015) - the control plane is no longer unauthenticated; this must stay green in every later phase. Non-blocking follow-up before public-internet deploy: T-01-06 login-throttle-per-proxy + WR-02 NaN-TTL hardening (see 01-SECURITY.md / 01-REVIEW.md).
 - Cohort state is single-process and in-memory; durability/crash-recovery is deferred to v2 (DUR-01). The boot-time auto-advertise loop that used to drive cohorts was removed in Phase 1 - cohorts now exist only on operator action.
-- [Phase 2] No distinct participant feedback when the service goes down mid-join (a directory-poll failure looks like a slow directory) - 02-09 review WR-02, non-blocking; candidate to fold into Phase 3's status/tracking surface.
+- [Phase 3 UAT] Live-path operability gaps found over a real regtest chain (Polar): the product boot path cannot enable broadcast, cohort-beacon funding has no UI, resolution fails on unconfirmed signals (upstream @did-btcr2/method), and the stall copy misattributes signing failures - all captured as pending todos; fold into Phase 4/5 planning. (The Phase 2 WR-02 mid-join-feedback concern was RESOLVED by Phase 3's D-24/D-25 states.)
 
 ## Deferred Items
 
@@ -143,7 +145,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-20T14:08:00.272Z
-Stopped at: Completed 03-09-PLAN.md
+Last session: 2026-07-22
+Stopped at: Phase 3 complete (UAT 4/4 passed, security 31/31 closed), ready to plan Phase 4
 Resume file: None
-Next command: /gsd-execute-phase 3
+Next command: /gsd-discuss-phase 4
