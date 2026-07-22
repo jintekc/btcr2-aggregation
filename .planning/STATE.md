@@ -113,7 +113,8 @@ Recent decisions affecting current work (Phase 2):
 
 [From .planning/todos/pending/ - ideas captured during sessions]
 
-6 pending (captured 2026-07-21 from Phase 3 UAT product-direction feedback and live testing; none block Phase 3):
+7 pending (captured 2026-07-21/22 from Phase 3 UAT product-direction feedback and live testing; none block Phase 3):
+- Fix terminalReason misattributed stall copy (CohortPage narrates any unexplained signing-window death as a submit stall; confirmed user-visible in live UAT)
 - Handle unconfirmed beacon signals during resolution (upstream Invalid-date throw in @did-btcr2/method when a signal tx is mempool-resident; hit live during UAT)
 - Let participants supply their own esplora endpoint (trust minimization; proxy stays the default)
 - Add operator UI flow to fund cohort beacon address (live path is e2e-only today)
