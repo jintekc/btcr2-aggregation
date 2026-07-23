@@ -5,12 +5,12 @@ milestone_name: milestone
 current_phase: 4
 current_phase_name: Operator Cohort Monitoring
 status: planning
-stopped_at: Completed 03-09-PLAN.md
-last_updated: "2026-07-22T15:28:07.235Z"
+stopped_at: Phase 4 context gathered (incl. 2 ultracode audit rounds)
+last_updated: "2026-07-23T16:49:27.005Z"
 last_activity: 2026-07-22
 last_activity_desc: Phase 3 complete, transitioned to Phase 4
 progress:
-  total_phases: 3
+  total_phases: 4
   completed_phases: 3
   total_plans: 22
   completed_plans: 22
@@ -145,7 +145,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-22
-Stopped at: Phase 3 complete (UAT 4/4 passed, security 31/31 closed), ready to plan Phase 4
-Resume file: None
+Last session: 2026-07-23T16:49:26.995Z
+Stopped at: Phase 4 context gathered (incl. 2 ultracode audit rounds)
+Resume file: .planning/phases/04-operator-cohort-monitoring/04-CONTEXT.md
 Next command: /gsd-discuss-phase 4
