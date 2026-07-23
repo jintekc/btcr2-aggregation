@@ -1,10 +1,11 @@
 ---
 phase: 4
 slug: operator-cohort-monitoring
-status: draft
+status: approved
 shadcn_initialized: false
 preset: none
 created: 2026-07-23
+reviewed_at: 2026-07-23
 ---
 
 # Phase 4: UI Design Contract
@@ -262,24 +263,75 @@ Full string set for this phase (all em-dash-free):
 
 ## UI Considerations
 
-> Shape-rooted UI state coverage for the Phase 4 surfaces (empty / loading / error / populated / partial / overflow / zero-one-many / long-text). Empty-state and error-state COPY live in `## Copywriting Contract` above; this table covers state coverage and references those rows.
+> Shape-rooted UI state coverage for the Phase 4 surfaces, computed by the ui-consideration-probe engine over the 12 described surfaces below and resolved post-verification (2026-07-23). Empty-state and error-state COPY live in `## Copywriting Contract` above; this section covers STATE coverage and references those rows rather than restating them.
 
-Applicable state considerations resolved: 9 covered, 2 backstop, 1 unresolved.
+**Probed surfaces:** E1 cohort list (list-first shell), E2 health strip, E3 metrics row, E4 drill-down shell (back link, title, stage timeline), E5 members section, E6 submissions section, E7 co-sign progress, E8 anchor detail, E9 funding stage, E10 activity log, E11 export card, E12 failure/session/create-form surfaces.
 
-| Category | Element(s) | Status | Resolution / Reason |
-|----------|------------|--------|---------------------|
-| empty | cohort list | ✅ covered | Zero cohorts renders the `No cohorts yet` heading + in-memory-clears body (Copywriting Contract, D-24). |
-| empty | members / submissions / activity log | ✅ covered | Each concern section renders its documented empty line (`No one has joined yet`, `not yet submitted`, `No activity yet`). |
-| loading | first poll before data lands | ✅ covered | Health strip freshness dot starts neutral/checking; sections render their empty line until the first read lands (no spinner invention, mirrors participant `checking` window). |
-| error | unreachable service | ✅ covered | Consecutive poll failures raise the bad-tone `Can't reach this service` banner; displayed state freezes honestly, quiet auto-retry (D-25). |
-| error | session expired mid-monitoring | ✅ covered | 401 discrimination triggers the honest re-login copy and redirect to the login panel (D-16); network/5xx does NOT redirect, it freezes. |
-| populated | drill-down with members/submissions/anchor | ✅ covered | Full concern sections plus stage timeline; per-member round-state chips answer "who is holding this cohort up" (D-31). |
-| partial | some members submitted, some not; co-sign mid-round | ✅ covered | Submissions list splits submitted vs not-yet; co-sign shows `{k} of {n} nonces received`; partial-sig leg shows the honest awaiting line with NO invented count (D-32). |
-| zero-one-many | 0 / 1 / many cohorts across the four list groups | ✅ covered | Groups (`Needs attention`, `Active`, `Drafts`, `Ended`) render only when non-empty; ended group bounded at the 24-cap (D-23). |
-| overflow | long DID / pubkey / txid / beacon address | ✅ covered | Shortened display plus `CopyField` copy-full and `Mono` truncation; raw JSON and pubkeys sit in a scroll-capped `Expander` (`max-h-80 overflow-auto`), never grow the card. |
-| overflow | activity log ring buffer, many entries | 🧪 backstop | `LogPanel` scrolls internally at a fixed height and auto-follows; the server ring is bounded (D-21). Held-out visual-state check: a full ring renders without page growth. |
-| long-text | funding disclosure stacking (mainnet + throwaway key + truncated window + observation gap simultaneously) | 🧪 backstop | Multiple funding disclosure lines can co-occur; they stack as separate short paragraphs inside the funding `Card`. Held-out visual check: worst-case stack stays readable and does not overflow. |
-| overflow | many concurrent cohorts in the summary list on one screen | ⚠ unresolved | No virtualization planned (single-box, in-memory, modest cohort counts). Planner treats "large cohort counts render acceptably without virtualization" as an assumption; revisit if it bites. |
+**Engine coverage:** 60 applicable considerations. 49 covered (explicit truth), 3 backstop (held-out visual check), 7 dismissed with reasons, 1 unresolved (planner assumption).
+
+### Covered (truth strings)
+
+| Category | Element(s) | Truth |
+|----------|------------|-------|
+| empty | E1 cohort list | Zero cohorts renders the `No cohorts yet` heading plus the in-memory-clears-on-restart body (Copywriting Contract, D-24). |
+| empty | E3 metrics row | With zero cohorts every counter renders 0; counts derive from the live set plus retained records and are never absent. |
+| empty | E5 members | Advertised with none joined renders `No one has joined yet. Seats: {joined}/{capacity}.` |
+| empty | E6 submissions | With no submissions every member renders `{shortDid}: not yet submitted`; the section has no blank state. |
+| empty | E10 activity log | The documented `No activity yet.` empty line renders. |
+| empty | E12 restart | Process restart renders the empty-state body carrying the in-memory-clears-on-restart line (D-24). |
+| loading | E1, E3, E4, E5, E6, E10 (first poll) | Until the first read lands, sections render their documented empty lines and the freshness dot starts in a checking state; no spinner or skeleton is invented (mirrors the participant checking window). |
+| loading | E8 anchor | Sub-steps derive from observed events only; unobserved steps render pending-dim, and "Anchored" narration is reserved for `state === 'confirmed'` (D-18). |
+| loading | E12 forms | Login and create-form submits reuse the shipped Phase 1 in-flight button treatment, inherited unchanged this phase. |
+| error | E1, E3, E4, E5, E6, E10 (unreachable) | Consecutive poll failures raise the bad-tone `Can't reach this service` banner; displayed state freezes honestly with quiet retry; counts, members, and log entries are never invented (D-25). |
+| error | E8 anchor | A failed broadcast marks the reached-but-unconfirmed step bad; hermetic services render the no-broadcast explanation instead of an empty panel. |
+| error | E12 session | 401 discrimination shows the honest session-expired re-login copy and returns to login (D-16); network/5xx freezes with the unreachable banner and does NOT redirect. |
+| populated | E1 cohort list | Rows group under `Needs attention`, `Active`, `Drafts`, `Ended` with the fixed status-chip tone map; groups render only when non-empty. |
+| populated | E3 metrics row | Four tabular-nums counters at Body-size 600 with `SectionTitle`-style captions. |
+| populated | E5 members | Seated rows show shortened DID plus copy-full, onboarding model badge, and per-member round-state chips (D-31). |
+| populated | E6 submissions | Rows show `{shortDid} submitted at {time}` with server wall-clock stamps (D-30). |
+| populated | E10 activity log | Entries render server wall-clock time plus event text with tone by level (D-21, D-22). |
+| partial | E1 cohort list | A mid-lifecycle cohort shows its live chip (`Filling` / `Co-signing` with pulse) and seats joined/capacity; per-member partial state lives in the drill-down. |
+| partial | E5 members | Pending opt-ins render a distinct `Pending` badge with `Joining, not yet seated.` (D-29), separate from seated rows. |
+| partial | E6 submissions | The simultaneous split of submitted vs not-yet-submitted rows IS the partial state (D-30); both halves always render. The co-sign partial-sig leg shows the honest awaiting line with NO invented count (D-32). |
+| partial | E12 drafts | A configured-but-not-advertised cohort persists as a `Draft` row (D-09) with the inherited Discard/Keep confirmation; no half-created cohort is silently lost before restart. |
+| overflow | E2 health strip | The strip is `flex-wrap` at `gap-2`, so chips wrap to a second line on narrow widths instead of clipping. |
+| overflow | E3 metrics row | Counts are small integers bounded by the in-memory set and the 24-record cap; `tabular-nums` keeps digits aligned; no truncation path. |
+| overflow | E4 drill-down | The cohort title uses shortId with `CopyField` copy-full; the operator timeline is a fixed six-stage row that fits without scroll. |
+| overflow | E5 / E6 / E8 raw detail | Pubkeys, raw signed-update JSON, and txids sit behind shortened `Mono` display or the scroll-capped `Expander` (`max-h-80 overflow-auto`); they never grow the card. |
+| overflow | E12 banners | Banners are single-line bad-tone Cards whose text wraps; no clipping path. |
+| zero-one-many | E1 cohort list | Groups render only when non-empty; the `Ended` group is bounded at the 24-record retention cap (D-23). |
+| zero-one-many | E3 metrics row | Captions are count-neutral (`{n} open`), so the row reads correctly at 0, 1, and many without singular/plural rewrites. |
+| zero-one-many | E5 / E6 member rows | Seats counter `{joined}/{capacity}` and submission rows read correctly at 0, 1, and many; both are bounded by cohort capacity. |
+| zero-one-many | E10 activity log | Empty line at zero; entries list at one or many inside the fixed-height scroll; the ring bound caps many. |
+| long-text | E1 controls | Control labels are fixed short contract strings (`New cohort`, `Advertise cohort`, `Cancel`); no user-supplied text reaches a control label. |
+| long-text | E4 / E6 / E8 / E9 dynamic values | Cohort ids, DIDs, txids, and the beacon address render shortened through `Mono`/`CopyField`; raw JSON lives in the scroll-capped expander; all other strings are fixed contract copy. |
+| long-text | E12 banners | Banner, session, and restart strings are fixed contract copy; no user text renders in these surfaces. |
+
+### Backstops (held-out visual-state checks)
+
+| Category | Element | { statement, verification: backstop } |
+|----------|---------|----------------------------------------|
+| long-text | E2 health strip | `SERVICE_NAME` (D-51) is operator-supplied and unbounded. Backstop: a long service name wraps within the strip without pushing chips off-screen. |
+| overflow | E9 funding stage | Funding disclosures (mainnet, recovery key, truncated window, observation gap) can co-occur and stack as separate short paragraphs inside the funding `Card`. Backstop: the worst-case stack stays readable without overflow. |
+| overflow | E10 activity log | `LogPanel` scrolls internally at a fixed height with auto-follow; the server ring is bounded (D-21). Backstop: a full ring renders without page growth. |
+
+### Dismissed (with reasons)
+
+| Category | Element | Reason |
+|----------|---------|--------|
+| partial | E3 metrics row | Counters are atomic aggregates; there is no partially-populated variant distinct from the normal state. |
+| long-text | E3 metrics row | All caption strings are fixed short labels from the copy contract; no dynamic text renders in this row. |
+| overflow | E7 co-sign progress | The leg renders at most two fixed lines (D-32); content cannot exceed the container. |
+| long-text | E7 co-sign progress | Both strings are fixed contract copy with only small integer substitutions (D-32); no unbounded text. |
+| overflow | E11 export card | The card holds one fixed button and two fixed help sentences; nothing dynamic renders in it. |
+| long-text | E11 export card | Button and help strings are fixed contract copy; the downloaded JSON opens outside the UI. |
+| partial | E10 activity log | A log is append-only; there is no partial variant distinct from the populated state. |
+
+### Unresolved
+
+| Category | Element | Status |
+|----------|---------|--------|
+| overflow | E1 many concurrent cohorts on one screen | ⚠ unresolved, planner must treat as assumption: no virtualization planned (single-box, in-memory, modest cohort counts). The assumption is "large cohort counts render acceptably without virtualization"; revisit if it bites. |
 
 ---
 
@@ -296,11 +348,11 @@ No component registries are used this phase. All UI is built from the existing i
 
 ## Checker Sign-Off
 
-- [ ] Dimension 1 Copywriting: PASS
-- [ ] Dimension 2 Visuals: PASS
-- [ ] Dimension 3 Color: PASS
-- [ ] Dimension 4 Typography: PASS
-- [ ] Dimension 5 Spacing: PASS
-- [ ] Dimension 6 Registry Safety: PASS
+- [x] Dimension 1 Copywriting: PASS
+- [x] Dimension 2 Visuals: PASS
+- [x] Dimension 3 Color: PASS
+- [x] Dimension 4 Typography: PASS
+- [x] Dimension 5 Spacing: PASS
+- [x] Dimension 6 Registry Safety: PASS
 
-**Approval:** pending
+**Approval:** approved (gsd-ui-checker, 2026-07-23, revision 1)
