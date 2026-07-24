@@ -365,7 +365,16 @@ export function createHonoApp(
           }
         },
       );
-      app.get('/v1/operator/cohorts', (c) => c.json({ cohorts: operatorCohorts.listCohorts() }));
+      // The operator cohort-list read. `cohorts` is byte-identical to before (existing
+      // consumers keep working); a NEW `monitoring` sibling key carries the summary chip
+      // rows + service-level metrics from the fold (SVC-03, D-06), present only when a
+      // monitor is wired. The public directory/status/anchor DTOs are untouched (D-26).
+      app.get('/v1/operator/cohorts', (c) =>
+        c.json({
+          cohorts: operatorCohorts.listCohorts(),
+          monitoring: monitor ? { rows: monitor.summary(), metrics: monitor.serviceMetrics() } : undefined,
+        }),
+      );
       app.delete('/v1/operator/cohorts/:id', (c) => {
         const ok = operatorCohorts.discardDraft(c.req.param('id'));
         return ok ? c.json({ ok: true }) : c.json({ error: 'unknown draft' }, 404);
