@@ -20,6 +20,7 @@ import { createHonoApp } from './hono-adapter.js';
 import { createLoginThrottle, createSessionStore } from './operator-auth.js';
 import { createOperatorCohorts } from './operator-cohorts.js';
 import { createAnchorState } from './anchor-state.js';
+import { createCohortMonitor } from './monitor.js';
 import { makeProvideTxData, type LiveTxConfig } from './tx.js';
 import { persistCohortArtifacts } from './persist.js';
 import { GenesisStagingCache, persistMemberGenesis } from './genesis-capture.js';
@@ -58,6 +59,13 @@ export {
   type DraftInput,
 } from './operator-cohorts.js';
 export { createAnchorState, type AnchorState, type AnchorReadDTO } from './anchor-state.js';
+export {
+  createCohortMonitor,
+  type CohortMonitor,
+  type CohortDetailDTO,
+  type CohortMemberDTO,
+  type MemberStatus,
+} from './monitor.js';
 export { makeProvideTxData, MIN_LIVE_FUNDING_SATS, type LiveTxConfig } from './tx.js';
 export { bridgeRunnerToSse, type DashboardExtras } from './dashboard-sse.js';
 export {
@@ -542,6 +550,16 @@ export function createService(opts: CreateServiceOptions): Service {
   // above), so the explorer URL derives from the resolved live network.
   const anchorState = broadcaster ? createAnchorState(broadcaster, netConfig) : undefined;
 
+  // Per-service cohort monitoring fold (SVC-03, D-19). Constructed unconditionally right
+  // after the runner: it subscribes to the runner's membership events on construction and
+  // is mode-agnostic (the fixture path folds members/seats exactly like a live one). It is
+  // threaded into createHonoApp, but the gated detail read it backs is mounted ONLY inside
+  // the operatorAuth block, so a fail-closed boot (no operator password) exposes no
+  // monitoring surface even though the fold still runs harmlessly. Fire-and-forget by
+  // construction: its listeners catch their own errors so a monitoring failure never
+  // disturbs the protocol (matching the persist/broadcast listeners above).
+  const monitor = createCohortMonitor(runner);
+
   // Operator on-demand cohort drafts (SVC-01). Constructed per-createService like the
   // auth closures above, and ONLY when the operator surface is enabled - fail-closed
   // (D-07): no operator password, no cohort routes. The active network is the service's
@@ -584,6 +602,10 @@ export function createService(opts: CreateServiceOptions): Service {
     // Present only when the service broadcasts (mode honesty); the public anchor read
     // is mounted either way (fail-open) and does not weaken the operator gating.
     anchorState,
+    // The monitoring fold backing the gated per-cohort detail read (SVC-03). Always
+    // threaded; the route only mounts inside the operatorAuth block, so it stays
+    // operator-only (D-26).
+    monitor,
   });
   let server: ServerType | undefined;
 

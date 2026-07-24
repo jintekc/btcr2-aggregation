@@ -29,6 +29,7 @@ import {
 } from './operator-auth.js';
 import type { DraftInput, OperatorCohorts } from './operator-cohorts.js';
 import type { AnchorState } from './anchor-state.js';
+import type { CohortMonitor } from './monitor.js';
 import { mountStaticSite } from './static-site.js';
 import { mountArtifactRoutes, type ArtifactStore } from './store.js';
 import { resolveBtcr2 } from './resolve.js';
@@ -180,6 +181,14 @@ export interface HonoAppOptions {
    * operator-auth block beside `/v1/directory` and `/v1/ipfs`.
    */
   anchorState?: AnchorState;
+  /**
+   * Per-service cohort monitoring fold backing the GATED `GET /v1/operator/cohorts/:id`
+   * detail read (SVC-03, D-19/D-26). Present alongside {@link operatorCohorts}; the route
+   * is registered INSIDE the operatorAuth block after `requireOperator`, so an anonymous
+   * caller is rejected with 401 BEFORE any cohort-id lookup (no existence oracle,
+   * T-04-01-01). Absent, the route answers the non-oracle `{ exists: false }` default.
+   */
+  monitor?: CohortMonitor;
 }
 
 /**
@@ -210,6 +219,7 @@ export function createHonoApp(
     operatorAuth,
     operatorCohorts,
     anchorState,
+    monitor,
   } = opts;
   const app = new Hono<Env>();
 
@@ -394,6 +404,24 @@ export function createHonoApp(
       app.post('/v1/operator/cohorts/:id/readvertise', (c) => {
         const dto = operatorCohorts.readvertiseExpired(c.req.param('id'));
         return dto ? c.json(dto) : c.json({ error: 'unknown expired cohort' }, 404);
+      });
+      // Gated per-cohort monitoring detail read (SVC-03, D-19/D-26). Registered AFTER the
+      // requireSameOrigin + requireOperator prefix guards above, so an anonymous caller is
+      // rejected with 401 BEFORE this handler runs (no existence oracle, T-04-01-01). Guard
+      // the `:id` shape with the same cheap 400 as the public anchor read BEFORE any lookup,
+      // then return the monitor's pure projection. When no monitor is wired, answer the
+      // non-oracle `{ exists: false }` default rather than 500 (mirrors /v1/anchor fail-open).
+      // A GET, so it inherits the operator gate but not the CSRF check on mutating verbs.
+      app.get('/v1/operator/cohorts/:id', (c) => {
+        const id = c.req.param('id');
+        if (!/^[0-9a-zA-Z-]{1,64}$/.test(id)) {
+          return c.json({ error: 'invalid cohort id' }, 400);
+        }
+        return c.json(
+          monitor
+            ? monitor.detail(id)
+            : { exists: false, members: [], seatsJoined: 0, capacity: 0, phase: 'unknown' },
+        );
       });
     }
   }
