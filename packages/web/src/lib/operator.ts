@@ -354,6 +354,44 @@ export async function fetchOperatorCohorts(baseUrl: string): Promise<FetchResult
   }
 }
 
+/**
+ * Download the gated per-cohort monitoring export as a JSON file (SVC-03, D-34). Fetches the
+ * gated route with the session cookie (`credentials: 'same-origin'`, the read is
+ * operator-gated), then turns the response into a blob and triggers a client download named
+ * from the cohort id. Returns whether the export was served (a 401/unreachable returns false,
+ * so the caller can leave the drill-down untouched rather than downloading an error body). The
+ * server sets the authoritative `Content-Disposition` filename; the client `download` name is
+ * a best-effort mirror built from the same id.
+ */
+export async function downloadExport(baseUrl: string, id: string): Promise<boolean> {
+  let res: Response;
+  try {
+    res = await fetch(endpoint(baseUrl, `/v1/operator/cohorts/${encodeURIComponent(id)}/export`), {
+      headers: { accept: 'application/json' },
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+  } catch {
+    return false;
+  }
+  if (!res.ok) {
+    return false;
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `cohort-${id}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+  return true;
+}
+
 /** DELETE (discard) an un-advertised draft by id. */
 export async function discardDraft(baseUrl: string, id: string): Promise<void> {
   await fetch(endpoint(baseUrl, `/v1/operator/cohorts/${encodeURIComponent(id)}`), {

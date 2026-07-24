@@ -425,7 +425,53 @@ export function createHonoApp(
         return c.json(
           monitor
             ? monitor.detail(id)
-            : { exists: false, members: [], seatsJoined: 0, capacity: 0, phase: 'unknown' },
+            : {
+                exists: false,
+                members: [],
+                seatsJoined: 0,
+                capacity: 0,
+                phase: 'unknown',
+                submissions: [],
+                coSign: { noncesReceived: 0, total: 0, awaitingPartialSigs: false },
+                anchor: { enabled: false, state: 'none' },
+                fallback: { used: false },
+                activity: [],
+              },
+        );
+      });
+      // Gated per-cohort monitoring JSON export (SVC-03, D-34). A sibling of the detail read,
+      // registered AFTER the same requireSameOrigin + requireOperator prefix guards, so an
+      // anonymous caller is rejected with 401 BEFORE this handler runs (no existence oracle,
+      // V5). It carries a two-segment path (`:id/export`), so it never collides with the
+      // single-segment detail route above. Guard the `:id` shape with the same cheap 400
+      // BEFORE any lookup, then stream the monitor's exportRecord (the same projection the
+      // drill-down shows plus the activity ring; off-chain artifacts stay referenced by hash).
+      // The Content-Disposition filename is built ONLY from the already-shape-validated id, so
+      // there is no user-controlled header content (T-04-04-02). A plain gated GET, no new
+      // auth surface (D-34).
+      app.get('/v1/operator/cohorts/:id/export', (c) => {
+        const id = c.req.param('id');
+        if (!/^[0-9a-zA-Z-]{1,64}$/.test(id)) {
+          return c.json({ error: 'invalid cohort id' }, 400);
+        }
+        c.header('content-disposition', `attachment; filename="cohort-${id}.json"`);
+        return c.json(
+          monitor
+            ? monitor.exportRecord(id)
+            : {
+                cohortId: id,
+                exportedAt: Date.now(),
+                exists: false,
+                members: [],
+                seatsJoined: 0,
+                capacity: 0,
+                phase: 'unknown',
+                submissions: [],
+                coSign: { noncesReceived: 0, total: 0, awaitingPartialSigs: false },
+                anchor: { enabled: false, state: 'none' },
+                fallback: { used: false },
+                activity: [],
+              },
         );
       });
     }

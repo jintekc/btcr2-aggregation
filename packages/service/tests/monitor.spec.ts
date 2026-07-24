@@ -563,6 +563,58 @@ describe('GET /v1/operator/cohorts/:id monitoring route', () => {
     }
   });
 
+  it('rejects an anonymous export with 401 BEFORE any cohort-id lookup (no existence oracle, D-34)', async () => {
+    const { app, runner } = monitorApp();
+    try {
+      const res = await app.request('/v1/operator/cohorts/some-cohort/export');
+      expect(res.status).toBe(401);
+    } finally {
+      runner.stop();
+    }
+  });
+
+  it('returns 400 for an export id failing the shape guard, even with a valid session', async () => {
+    const { app, runner } = monitorApp();
+    try {
+      const cookie = await login(app);
+      const res = await app.request('/v1/operator/cohorts/has_underscore/export', { headers: { cookie } });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'invalid cohort id' });
+    } finally {
+      runner.stop();
+    }
+  });
+
+  it('serves the export record + a safe Content-Disposition to an authenticated operator (D-34)', async () => {
+    const { app, runner } = monitorApp();
+    try {
+      const cookie = await login(app);
+      runner.emit('opt-in-received', {
+        cohortId: 'cohort-1',
+        participantDid: 'did:example:alice',
+        participantPk: new Uint8Array([1]),
+        communicationPk: new Uint8Array([2]),
+      });
+      const res = await app.request('/v1/operator/cohorts/cohort-1/export', { headers: { cookie } });
+      expect(res.status).toBe(200);
+      // The filename is built only from the shape-validated id (no user-controlled header):
+      // the `cohort-` prefix + the id `cohort-1`.
+      expect(res.headers.get('content-disposition')).toBe('attachment; filename="cohort-cohort-1.json"');
+      const body = (await res.json()) as {
+        cohortId: string;
+        exportedAt: number;
+        members: { did: string }[];
+        activity: unknown[];
+      };
+      expect(body.cohortId).toBe('cohort-1');
+      expect(typeof body.exportedAt).toBe('number');
+      expect(body.members[0]).toMatchObject({ did: 'did:example:alice' });
+      expect(Array.isArray(body.activity)).toBe(true);
+    } finally {
+      runner.stop();
+    }
+  });
+
   it('freezes the public DirectoryCohortDTO + ServiceStatusDTO shapes (no monitoring leak, D-26)', () => {
     const { runner, operatorCohorts } = monitorApp();
     try {

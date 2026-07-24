@@ -3,6 +3,7 @@ import { Badge, Button, Card, CopyField, Expander, Mono, SectionTitle, StatusDot
 import { LogPanel } from '../LogPanel';
 import { OperatorStageTimeline } from './OperatorStageTimeline';
 import { useOperator } from '../../stores/operator';
+import { downloadExport } from '../../lib/operator';
 import type { AnchorDTO } from '../../lib/anchor';
 import type { CohortMemberDTO, MemberRound, SubmissionDTO } from '../../lib/operator';
 import type { LogEntry } from '../../lib/types';
@@ -321,6 +322,18 @@ export function CohortDetail({ baseUrl, cohortId }: { baseUrl: string; cohortId:
               formatTime={fmtWallClock}
               className="h-[24rem]"
             />
+          </Card>
+
+          {/* Export (D-34): a gated per-cohort JSON download of exactly this drill-down + the log. */}
+          <Card className="space-y-3 p-5">
+            <SectionTitle>Export</SectionTitle>
+            <Button variant="ghost" onClick={() => void downloadExport(baseUrl, cohortId)}>
+              Download monitoring record (JSON)
+            </Button>
+            <p className="text-sm text-muted">
+              Downloads exactly what this page shows, plus the activity log. Off-chain artifacts stay
+              referenced by hash at /cas/.
+            </p>
           </Card>
         </>
       ) : (
