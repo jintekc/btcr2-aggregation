@@ -24,10 +24,11 @@ import {
 const PASSWORD = 'correct-horse-battery-staple';
 
 /**
- * Build an operator-enabled app the way `hono-adapter.ts` will (Task 2): the PUBLIC
- * login POST (body-limited) first, then the guard on the two gated prefixes, then the
- * gated logout/session/dashboard-events routes. A stand-in `GET /dashboard/events`
- * proves the SSE feed sits behind the same guard.
+ * Build an operator-enabled app the way `hono-adapter.ts` does: the PUBLIC login POST
+ * (body-limited) first, then the guard on the `/v1/operator/*` prefix, then the gated
+ * logout/session/monitoring routes. A stand-in `GET /v1/operator/cohorts/:id` proves the
+ * gated monitoring read sits behind the same guard (the booth-era `/dashboard/events` SSE
+ * feed it used to stand in for is retired, D-02/D-19).
  */
 function operatorApp(opts: { password?: string; ttlMs?: number; throttle?: LoginThrottle } = {}) {
   const password = opts.password ?? PASSWORD;
@@ -42,10 +43,9 @@ function operatorApp(opts: { password?: string; ttlMs?: number; throttle?: Login
   );
   app.use('/v1/operator/*', requireSameOrigin());
   app.use('/v1/operator/*', requireOperator(sessions));
-  app.use('/dashboard/*', requireOperator(sessions));
   app.post('/v1/operator/logout', logoutHandler(sessions));
   app.get('/v1/operator/session', sessionProbeHandler());
-  app.get('/dashboard/events', (c) => c.text('telemetry'));
+  app.get('/v1/operator/cohorts/:id', (c) => c.text('detail'));
   return { app, sessions, throttle };
 }
 
@@ -193,12 +193,12 @@ describe('requireOperator (guard middleware)', () => {
     expect(res.status).toBe(401);
   });
 
-  it('gates GET /dashboard/events (the SSE telemetry feed) - 401 without a session', async () => {
+  it('gates GET /v1/operator/cohorts/:id (the gated monitoring read) - 401 without a session', async () => {
     const { app } = operatorApp();
-    const noCookie = await app.request('/dashboard/events');
+    const noCookie = await app.request('/v1/operator/cohorts/some-cohort');
     expect(noCookie.status).toBe(401);
     const { cookie } = await login(app, PASSWORD);
-    const withCookie = await app.request('/dashboard/events', { headers: { cookie } });
+    const withCookie = await app.request('/v1/operator/cohorts/some-cohort', { headers: { cookie } });
     expect(withCookie.status).toBe(200);
   });
 });

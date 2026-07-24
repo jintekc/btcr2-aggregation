@@ -1,7 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { bytesToHex } from '@noble/hashes/utils';
-import { resolveNetwork } from '@btcr2-aggregation/shared';
-import type { AggregationResult, AggregationServiceRunner, SseStream } from '@did-btcr2/aggregation/service';
+import type { AggregationResult, AggregationServiceRunner } from '@did-btcr2/aggregation/service';
 import type { BitcoinConnection } from '@did-btcr2/bitcoin';
 import type { Transaction } from '@scure/btc-signer';
 import { describe, expect, it } from 'vitest';
@@ -12,7 +11,6 @@ import {
   rawBeaconTxHex,
   type BeaconAnchorEvents,
 } from './broadcast.js';
-import { bridgeRunnerToSse } from './dashboard-sse.js';
 
 /** A finalized-tx stand-in: `extract()` returns fixed bytes (or throws). */
 function fakeTx(extract: () => Uint8Array): Transaction {
@@ -225,58 +223,26 @@ describe('attachBeaconBroadcast', () => {
   });
 });
 
-describe('bridgeRunnerToSse - beacon anchor frames', () => {
-  /** A capturing SseStream. */
-  function capturingStream(): { stream: SseStream; frames: Array<{ event: string; data: unknown; id?: string }> } {
-    const frames: Array<{ event: string; data: unknown; id?: string }> = [];
-    let onCloseCb: (() => void) | undefined;
-    const stream: SseStream = {
-      writeEvent: (event, data, id) => frames.push({ event, data: JSON.parse(data), id }),
-      writeComment: () => {},
-      close: () => onCloseCb?.(),
-      onClose: (cb) => {
-        onCloseCb = cb;
-      },
+describe('BeaconBroadcaster emitter', () => {
+  // Direct emitter coverage now that the retired dashboard-SSE bridge (which used to
+  // wrap this emitter) is gone (D-02/D-19). The broadcast lifecycle is observed by
+  // subscribing to the BeaconBroadcaster directly - the same push seam anchor-state.ts
+  // and monitor.ts now fold. The bridge's explorer-URL derivation moved to
+  // anchor-state.ts (covered by anchor-state.spec.ts).
+  it('delivers each typed frame to a subscriber, and stops after off()', () => {
+    const broadcaster = new BeaconBroadcaster();
+    const seen: BeaconAnchorEvents['beacon-anchored'][] = [];
+    const onAnchored = (p: BeaconAnchorEvents['beacon-anchored']): void => {
+      seen.push(p);
     };
-    return { stream, frames };
-  }
-
-  it('forwards beacon-anchored with an explorer URL derived from the network', () => {
-    const network = resolveNetwork('mutinynet');
-    const broadcaster = new BeaconBroadcaster();
-    const { runner } = fakeRunner();
-    const { stream, frames } = capturingStream();
-    const teardown = bridgeRunnerToSse(runner, stream, { broadcaster, network });
-
-    broadcaster.emit('beacon-broadcast', { cohortId: 'c1', txid: 'TXID' });
-    broadcaster.emit('beacon-anchored', { cohortId: 'c1', txid: 'TXID', confirmed: true });
-
-    const anchored = frames.find((f) => f.event === 'beacon-anchored');
-    expect(anchored?.data).toEqual({
-      event: 'beacon-anchored',
-      payload: {
-        cohortId: 'c1',
-        txid: 'TXID',
-        confirmed: true,
-        explorerUrl: 'https://mutinynet.com/tx/TXID',
-      },
-    });
-    const broadcast = frames.find((f) => f.event === 'beacon-broadcast');
-    expect((broadcast?.data as { payload: { explorerUrl: string } }).payload.explorerUrl).toBe(
-      'https://mutinynet.com/tx/TXID',
-    );
-    teardown();
-  });
-
-  it('stops forwarding broadcaster events after teardown', () => {
-    const network = resolveNetwork('mutinynet');
-    const broadcaster = new BeaconBroadcaster();
-    const { runner } = fakeRunner();
-    const { stream, frames } = capturingStream();
-    const teardown = bridgeRunnerToSse(runner, stream, { broadcaster, network });
-    teardown();
+    broadcaster.on('beacon-anchored', onAnchored);
 
     broadcaster.emit('beacon-anchored', { cohortId: 'c1', txid: 'TXID', confirmed: true });
-    expect(frames.find((f) => f.event === 'beacon-anchored')).toBeUndefined();
+    expect(seen).toEqual([{ cohortId: 'c1', txid: 'TXID', confirmed: true }]);
+
+    // off() removes the listener so a later emit delivers nothing more.
+    broadcaster.off('beacon-anchored', onAnchored);
+    broadcaster.emit('beacon-anchored', { cohortId: 'c2', txid: 'TXID2', confirmed: false });
+    expect(seen).toHaveLength(1);
   });
 });

@@ -4,20 +4,22 @@
  * This is the first server-enforced control-plane boundary in the app. The operator
  * signs in at `/operator` with the service's {@link CreateServiceOptions.operatorPassword}
  * (never baked into the image, never logged); a successful login issues an opaque,
- * server-tracked, httpOnly session cookie. Every operator/mutating route and the
- * live telemetry feed (`/dashboard/events`) sits behind {@link requireOperator}, so
- * an unauthenticated visitor cannot control the service or read its operator-only
- * telemetry (closing the CONCERNS.md top blocker "no auth anywhere in the control
- * plane").
+ * server-tracked, httpOnly session cookie. Every operator/mutating route and the gated
+ * monitoring reads sit behind {@link requireOperator}, so an unauthenticated visitor
+ * cannot control the service or read its operator-only monitoring (closing the
+ * CONCERNS.md top blocker "no auth anywhere in the control plane").
  *
  * Composed from Hono first-party helpers + Node stdlib ONLY (no new dependency):
  * `hono/factory` `createMiddleware`, `hono/cookie` set/get/delete, and
  * `node:crypto` `createHash`/`timingSafeEqual`/`randomBytes`.
  *
  * Design notes:
- * - httpOnly cookie (not a bearer token) is the ONLY scheme that gates the SSE feed:
- *   `EventSource` cannot set an `Authorization` header, it only sends same-origin
- *   cookies automatically (see ADR 0015 / RESEARCH Pitfall 1).
+ * - httpOnly cookie (not a bearer token): the browser sends it automatically as a
+ *   same-origin credential on every gated `fetch` (`credentials: 'same-origin'`), so
+ *   the operator console's polled monitoring reads authenticate with no token plumbing
+ *   in the client (see ADR 0015 / RESEARCH Pitfall 1). This originally also gated the
+ *   `EventSource` telemetry feed, which could set no `Authorization` header; that feed
+ *   is retired (D-02/D-19), but the httpOnly-cookie scheme carries over unchanged.
  * - The session store is a per-`createService` closure (mirrors `genesisStaging` /
  *   `seatedRosterKeys` in {@link file://./index.ts}), NOT a module singleton, so two
  *   services in one process (tests) never share sessions.
@@ -153,7 +155,7 @@ function clientKey(c: Context<Env>): string {
 }
 
 /**
- * Guard middleware for the `/v1/operator/*` and `/dashboard/*` prefixes. Rejects any
+ * Guard middleware for the `/v1/operator/*` prefix. Rejects any
  * request without a valid, unexpired session BEFORE the handler runs (mount it on the
  * prefix ahead of the routes - Hono matches in registration order, so a guard mounted
  * after a route would leave it exposed). The 401 body is generic; a denial is logged

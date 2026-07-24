@@ -279,7 +279,7 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
   if (!operatorPassword) {
     log('!!! OPERATOR CONSOLE DISABLED !!!');
     log('  - no OPERATOR_PASSWORD set at boot; the public participant surface still serves');
-    log('  - the operator console, mutating cohort routes, and /dashboard/events are OFF');
+    log('  - the operator console, mutating cohort routes, and gated monitoring are OFF');
     log('  - set OPERATOR_PASSWORD (and restart) to enable operator sign-in');
   }
 

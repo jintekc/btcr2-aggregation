@@ -218,7 +218,6 @@ describe('GET /v1/operator/cohorts/:id monitoring route', () => {
       operatorAuth,
       operatorCohorts,
       monitor,
-      runner,
       networkName: ACTIVE_NETWORK,
     });
     return { app, runner };

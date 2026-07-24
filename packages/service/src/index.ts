@@ -67,7 +67,6 @@ export {
   type MemberStatus,
 } from './monitor.js';
 export { makeProvideTxData, MIN_LIVE_FUNDING_SATS, type LiveTxConfig } from './tx.js';
-export { bridgeRunnerToSse, type DashboardExtras } from './dashboard-sse.js';
 export {
   BeaconBroadcaster,
   attachBeaconBroadcast,
@@ -281,12 +280,13 @@ export interface CreateServiceOptions {
   /**
    * Operator console password (HOST-01, ADR 0015). When set, this service mounts the
    * operator surface: `POST /v1/operator/login`, the session guard on
-   * `/v1/operator/*` + `/dashboard/*`, `POST /v1/operator/logout`,
-   * `GET /v1/operator/session`, and the gated `/dashboard/events` telemetry feed. When
-   * UNSET (the default), none of that mounts - fail-closed (D-07): the public
-   * participant surface still serves, but there is no operator/mutating surface and no
-   * gated telemetry. The password is compared with a constant-time check and NEVER
-   * logged; never bake it into an image (env only, M4 .env-out-of-image lesson).
+   * `/v1/operator/*`, `POST /v1/operator/logout`, `GET /v1/operator/session`, and the
+   * gated cohort + monitoring reads. When UNSET (the default), none of that mounts -
+   * fail-closed (D-07): the public participant surface still serves, but there is no
+   * operator/mutating surface and no gated monitoring. The password is compared with a
+   * constant-time check and NEVER logged; never bake it into an image (env only, M4
+   * .env-out-of-image lesson). The booth-era `/dashboard/events` SSE telemetry feed is
+   * retired (D-02/D-19).
    */
   operatorPassword?: string;
   /**
@@ -579,11 +579,8 @@ export function createService(opts: CreateServiceOptions): Service {
     : undefined;
 
   const app = createHonoApp(transport, {
-    runner,
     webDistDir: opts.webDistDir,
     store: opts.store,
-    broadcaster,
-    network: netConfig,
     // The always-present network name served on `GET /v1/config` so the browser
     // derives its addresses/DIDs at runtime. Sourced from the cohort config (the
     // single source of truth for this coordinator's chain) and validated by

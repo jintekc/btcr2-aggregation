@@ -6,8 +6,9 @@ import type { Transaction } from '@scure/btc-signer';
 
 /**
  * Payloads carried by a {@link BeaconBroadcaster}, tracking the on-chain lifecycle
- * of one cohort's aggregate beacon transaction. Every payload is JSON-serializable
- * so the dashboard SSE bridge can forward it verbatim (plus a derived explorer URL).
+ * of one cohort's aggregate beacon transaction. Every payload is JSON-serializable so
+ * a fold (anchor-state / monitor) can retain it and a poll can serve it verbatim (plus
+ * a derived explorer URL).
  */
 export interface BeaconAnchorEvents {
   /** The signed beacon tx was accepted by the network; `txid` is the broadcast id. */
@@ -30,19 +31,19 @@ export interface BeaconAnchorEvents {
 /**
  * A tiny typed event emitter for a cohort beacon tx's on-chain lifecycle
  * (broadcast -> anchored / failed). The service's broadcast handler
- * ({@link attachBeaconBroadcast}) is the sole producer; each open dashboard SSE
- * connection subscribes and unsubscribes over its own lifetime, mirroring how
- * `bridgeRunnerToSse` handles the runner's protocol events. Wrapping
- * {@link EventEmitter} keeps the public surface strictly typed to
- * {@link BeaconAnchorEvents}.
+ * ({@link attachBeaconBroadcast}) is the sole producer; the retained anchor read
+ * ({@link file://./anchor-state.ts} `createAnchorState`) and the cohort monitor
+ * ({@link file://./monitor.ts} `createCohortMonitor`) subscribe to fold the lifecycle
+ * into pollable last-known state. Wrapping {@link EventEmitter} keeps the public surface
+ * strictly typed to {@link BeaconAnchorEvents}.
  */
 export class BeaconBroadcaster {
   readonly #emitter = new EventEmitter();
 
   constructor() {
-    // One listener set is added per open dashboard SSE connection; lift the default
-    // 10-listener warning cap so many concurrent dashboards do not log a false
-    // "possible EventEmitter memory leak" warning. Listeners are removed on close.
+    // Multiple folds/consumers (anchor-state, monitor) subscribe over the service's
+    // lifetime; lift the default 10-listener warning cap so many concurrent subscribers
+    // never log a false "possible EventEmitter memory leak" warning.
     this.#emitter.setMaxListeners(0);
   }
 

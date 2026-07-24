@@ -55,7 +55,7 @@ function operatorCohortApp(autoFallbackOnStall = true) {
   // Default the stall fallback ON so a k < n draft is representable (the demo server boots
   // with AUTO_FALLBACK on). The fallback-off guard test passes `false` explicitly.
   const operatorCohorts = createOperatorCohorts({ activeNetwork: ACTIVE_NETWORK, runner, autoFallbackOnStall });
-  const app = createHonoApp(transport, { operatorAuth, operatorCohorts, runner, networkName: ACTIVE_NETWORK });
+  const app = createHonoApp(transport, { operatorAuth, operatorCohorts, networkName: ACTIVE_NETWORK });
   return { app, runner };
 }
 

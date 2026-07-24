@@ -1,33 +1,26 @@
-import { AggregationServiceRunner, HttpServerTransport } from '@did-btcr2/aggregation/service';
+import { HttpServerTransport } from '@did-btcr2/aggregation/service';
 import { resolveBtcr2SenderPk } from '@did-btcr2/method';
-import { buildCohortConfig, createIdentity } from '@btcr2-aggregation/shared';
+import { createIdentity } from '@btcr2-aggregation/shared';
 import { describe, expect, it } from 'vitest';
 import { createHonoApp, type HonoAppOptions } from './hono-adapter.js';
 import { createLoginThrottle, createSessionStore, type OperatorAuthConfig } from './operator-auth.js';
-import { makeProvideTxData } from './tx.js';
 
-// Fail-closed boot coverage (D-07): the operator surface + gated telemetry mount ONLY
+// Fail-closed boot coverage (D-07): the operator surface + gated monitoring mount ONLY
 // when operator auth is configured. Without a password the public participant surface
-// (GET /v1/config) still serves while every operator route + /dashboard/events is
-// unmounted (404). With a password set, the gated routes exist but reject an
-// unauthenticated caller (401). In-memory (createHonoApp(...).request), no port, no chain.
+// (GET /v1/config) still serves while every operator route (incl. the gated monitoring
+// read) is unmounted (404). With a password set, the gated routes exist but reject an
+// unauthenticated caller (401). The booth-era `/dashboard/events` SSE feed is retired
+// (D-02/D-19), so the negative-auth evidence lives on the gated monitoring read now.
+// In-memory (createHonoApp(...).request), no port, no chain.
 
 const PASSWORD = 'boot-test-operator-password';
 
-/** A runner-backed app; operator auth present only when `withPassword`. */
+/** A transport-backed app; operator auth present only when `withPassword`. No runner is
+ * needed: these tests exercise mount/gate presence, not a cohort lifecycle. */
 function bootApp(withPassword: boolean) {
   const { did, keys } = createIdentity();
   const transport = new HttpServerTransport({ resolveSenderPk: resolveBtcr2SenderPk, heartbeatIntervalMs: 0 });
   transport.registerActor(did, keys);
-  // The runner is never driven here (no cohort runs); onProvideTxData is required by
-  // the constructor but never invoked, so the fixture provider (read lazily) is inert.
-  const runner: AggregationServiceRunner = new AggregationServiceRunner({
-    transport,
-    did,
-    keys,
-    config: buildCohortConfig(2, 'CASBeacon'),
-    onProvideTxData: makeProvideTxData(() => runner),
-  });
   const operatorAuth: OperatorAuthConfig | undefined = withPassword
     ? {
         sessions: createSessionStore(60_000),
@@ -37,7 +30,7 @@ function bootApp(withPassword: boolean) {
         sessionTtlMs: 60_000,
       }
     : undefined;
-  const opts: HonoAppOptions = { runner, networkName: 'mutinynet', operatorAuth };
+  const opts: HonoAppOptions = { networkName: 'mutinynet', operatorAuth };
   return createHonoApp(transport, opts);
 }
 
@@ -61,8 +54,8 @@ describe('fail-closed boot: no operator password', () => {
     expect(res.status).toBe(404);
   });
 
-  it('does NOT mount the gated telemetry feed /dashboard/events (404)', async () => {
-    const res = await bootApp(false).request('/dashboard/events');
+  it('does NOT mount the gated monitoring read GET /v1/operator/cohorts/:id (404)', async () => {
+    const res = await bootApp(false).request('/v1/operator/cohorts/some-cohort');
     expect(res.status).toBe(404);
   });
 });
@@ -83,8 +76,8 @@ describe('operator surface: password configured', () => {
     expect(res.status).toBe(401);
   });
 
-  it('gates GET /dashboard/events -> 401 without a session', async () => {
-    const res = await bootApp(true).request('/dashboard/events');
+  it('gates the monitoring read GET /v1/operator/cohorts/:id -> 401 without a session', async () => {
+    const res = await bootApp(true).request('/v1/operator/cohorts/some-cohort');
     expect(res.status).toBe(401);
   });
 

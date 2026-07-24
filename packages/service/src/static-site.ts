@@ -44,7 +44,7 @@ async function readFileSafe(path: string): Promise<ServedFile | null> {
  * fragile for a workspace command run from anywhere, so we read files directly.
  *
  * Registered as a trailing `GET *` so it never shadows the protocol routes
- * (`/v1/*`, `/dashboard/*`) registered earlier; any of those that slip through
+ * (`/v1/*`, `/cas/*`, `/resolve/*`) registered earlier; any of those that slip through
  * (an unknown API path) return 404 rather than the SPA shell. Real asset paths
  * are served with the right content type and an immutable cache (Vite
  * content-hashes them); everything else falls back to `index.html` (the SPA is

@@ -4,10 +4,9 @@
  * D-20/D-21/D-22).
  *
  * The {@link BeaconBroadcaster} emits one cohort's broadcast/anchored/failed frames
- * exactly once as they happen (broadcast.ts:12-28); the dashboard SSE bridge already
- * forwards them, but only to the operator-gated `/dashboard/events` feed. A participant
- * who joined a cohort by choice needs the SAME chain facts (broadcast / confirmed /
- * failed + txid) to track their anchor - and those facts are public chain data, no
+ * exactly once as they happen (broadcast.ts:12-28). A participant who joined a cohort by
+ * choice needs those chain facts (broadcast / confirmed / failed + txid) to track their
+ * anchor - and those facts are public chain data, no
  * different from the unauthenticated `/resolve` + `/cas` reads. So this module folds the
  * fire-once frames into a bounded per-service Map keyed by cohortId and exposes a single
  * `read(cohortId)` that the browser can poll (D-21: a poll of last-known state, NOT a

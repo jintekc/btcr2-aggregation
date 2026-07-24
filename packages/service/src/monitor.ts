@@ -36,7 +36,9 @@
  * and later plans layer submissions / co-sign / anchor / funding honestly on top.
  */
 
-import type { AggregationServiceRunner } from '@did-btcr2/aggregation/service';
+import { bytesToHex } from '@noble/hashes/utils';
+import type { Transaction } from '@scure/btc-signer';
+import type { AggregationServiceEvents, AggregationServiceRunner } from '@did-btcr2/aggregation/service';
 
 /**
  * Upper bound on monitored cohort entries (mirrors the anchor-state / operator-cohorts
@@ -110,6 +112,74 @@ interface MonitorEntry {
   capacity: number;
   /** The beacon address, recorded at `keygen-complete` (D-44 funding stage seed; unused in the tracer DTO). */
   beaconAddress?: string;
+}
+
+/**
+ * Guard a payload accessor that may throw. Lifted VERBATIM from the retired
+ * `dashboard-sse.ts` (D-19) before its deletion: the fixture beacon tx throws on several
+ * `@scure/btc-signer` accessors (notably `tx.fee`, whose dummy prevout carries no amount),
+ * so every field read that shapes a tx/activity payload must be individually guarded.
+ */
+function safe<T>(fn: () => T): T | undefined {
+  try {
+    return fn();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A JSON-safe summary of a signed beacon transaction (no raw bytes). Lifted VERBATIM from
+ * the retired `dashboard-sse.ts` so the deeper drill-down plans (anchor / activity, 04-04+)
+ * keep ONE tested home for the tx-summary shape rather than re-deriving it. `tx.fee` throws
+ * when fixture inputs carry no prevout amount, so it is guarded and kept last; a missing fee
+ * must never drop the frame.
+ */
+export function summarizeTx(tx: Transaction): Record<string, unknown> {
+  return {
+    txid: safe(() => tx.id),
+    version: safe(() => tx.version),
+    inputs: safe(() => tx.inputsLength),
+    outputs: safe(() => tx.outputsLength),
+    vsize: safe(() => tx.vsize),
+    weight: safe(() => tx.weight),
+    // tx.fee throws when fixture inputs carry no prevout amount, so guard it and keep it
+    // last; a missing fee must never drop the signing-complete frame.
+    fee: safe(() => Number(tx.fee)),
+  };
+}
+
+/**
+ * Convert a runner event payload into a JSON-serializable shape (hex-encoded pubkeys,
+ * summarized tx). Lifted VERBATIM from the retired `dashboard-sse.ts` (D-19); the member /
+ * activity fold of the later drill-down plans reuses it to shape per-event payloads without
+ * leaking raw `Uint8Array` bytes to the operator wire.
+ */
+export function serialize(event: keyof AggregationServiceEvents, payload: unknown): unknown {
+  const p = payload as Record<string, unknown>;
+  switch (event) {
+    case 'opt-in-received':
+      return {
+        cohortId: p.cohortId,
+        participantDid: p.participantDid,
+        participantPk: p.participantPk ? bytesToHex(p.participantPk as Uint8Array) : undefined,
+        communicationPk: p.communicationPk ? bytesToHex(p.communicationPk as Uint8Array) : undefined,
+      };
+    case 'signing-complete': {
+      const signature = p.signature as Uint8Array | undefined;
+      return {
+        cohortId: p.cohortId,
+        path: p.path ?? 'key-path',
+        signature: signature && signature.length > 0 ? bytesToHex(signature) : '',
+        signedTx: p.signedTx ? summarizeTx(p.signedTx as Transaction) : undefined,
+      };
+    }
+    case 'error':
+      return { message: payload instanceof Error ? payload.message : String(payload) };
+    default:
+      // The remaining events carry only strings/numbers/booleans (JSON-safe).
+      return payload;
+  }
 }
 
 /**

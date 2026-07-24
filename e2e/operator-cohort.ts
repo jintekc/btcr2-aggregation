@@ -17,8 +17,10 @@ import { buildCohortConfig, createIdentity } from '@btcr2-aggregation/shared';
  *
  *  1. THE AUTH BOUNDARY (T-04-01). Before logging in it asserts the mandatory
  *     negatives: a wrong-password login is 401 with NO Set-Cookie, and an
- *     un-authenticated `GET /v1/operator/cohorts` and `GET /dashboard/events` both
- *     401. If a gated route ever regressed open, the gate fails here.
+ *     un-authenticated `GET /v1/operator/cohorts` and the gated monitoring read
+ *     `GET /v1/operator/cohorts/:id` both 401. If a gated route ever regressed open,
+ *     the gate fails here. (The booth-era `/dashboard/events` SSE feed is retired,
+ *     D-02/D-19; its negative-auth evidence moved onto the gated monitoring read.)
  *
  *  2. THE ON-DEMAND-ONLY DRIVER (T-04-02, D-17). Immediately after boot it asserts
  *     `runner.session.cohorts.length === 0`: a fresh self-hosted service advertises
@@ -188,14 +190,15 @@ export async function runOperatorCohort(options: OperatorCohortOptions = {}): Pr
     }
     await noCookieCohorts.text();
 
-    // No cookie -> the gated live telemetry feed 401s (the guard runs before the SSE
-    // stream ever opens, so this returns a normal 401 body, not a hanging stream).
-    const noCookieDashboard = await fetch(`${baseUrl}/dashboard/events`);
-    if (noCookieDashboard.status !== 401) {
-      fail(`GET /dashboard/events with no cookie should be 401, got ${noCookieDashboard.status}`);
+    // No cookie -> the gated per-cohort monitoring read 401s (the requireOperator prefix
+    // guard runs BEFORE any cohort-id lookup, so an anonymous caller is rejected with 401
+    // and never learns whether the cohort exists - no existence oracle, T-04-02-01).
+    const noCookieMonitoring = await fetch(`${baseUrl}/v1/operator/cohorts/some-cohort`);
+    if (noCookieMonitoring.status !== 401) {
+      fail(`GET /v1/operator/cohorts/:id with no cookie should be 401, got ${noCookieMonitoring.status}`);
     }
-    await noCookieDashboard.text();
-    log('[assert] negative auth: wrong-password 401 (no cookie), no-cookie /v1/operator/cohorts + /dashboard/events 401');
+    await noCookieMonitoring.text();
+    log('[assert] negative auth: wrong-password 401 (no cookie), no-cookie /v1/operator/cohorts + /v1/operator/cohorts/:id 401');
 
     /* ---- 3. Login: capture and echo the operator_session cookie. ---- */
     const loginRes = await fetch(`${baseUrl}/v1/operator/login`, {

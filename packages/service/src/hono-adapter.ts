@@ -3,7 +3,6 @@ import { RESPONSE_ALREADY_SENT } from '@hono/node-server/utils/response';
 import {
   formatSseComment,
   formatSseEvent,
-  type AggregationServiceRunner,
   type HttpRequestLike,
   type HttpServerTransport,
   type SseStream,
@@ -12,13 +11,11 @@ import {
   DEFAULT_NETWORK,
   resolveNetwork,
   toNetworkConfigDTO,
-  type NetworkConfig,
   type NetworkName,
 } from '@btcr2-aggregation/shared';
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { BitcoinConnection } from '@did-btcr2/bitcoin';
-import { bridgeRunnerToSse } from './dashboard-sse.js';
 import {
   loginHandler,
   logoutHandler,
@@ -35,7 +32,6 @@ import { mountArtifactRoutes, type ArtifactStore } from './store.js';
 import { resolveBtcr2 } from './resolve.js';
 import { validatePinRequest, type IpfsNode, type PinOutcome } from './ipfs.js';
 import type { Sidecar } from '@did-btcr2/method';
-import type { BeaconBroadcaster } from './broadcast.js';
 
 type Env = { Bindings: HttpBindings };
 
@@ -114,19 +110,10 @@ function openTransportSse(c: Context<Env>, transport: HttpServerTransport): Resp
 
 /** Optional features layered onto the protocol transport by {@link createHonoApp}. */
 export interface HonoAppOptions {
-  /** Runner whose lifecycle events stream to the read-only dashboard SSE route. */
-  runner?: AggregationServiceRunner;
   /** Absolute path to the built web SPA; serves the same-origin production topology. */
   webDistDir?: string;
   /** Content-addressed artifact store backing the read-only `GET /cas/*` routes. */
   store?: ArtifactStore;
-  /**
-   * Beacon-tx broadcast emitter (live broadcasting only). Its lifecycle events are
-   * forwarded on the dashboard SSE route so the dashboard shows "anchored on-chain".
-   */
-  broadcaster?: BeaconBroadcaster;
-  /** Network config used to derive the anchored tx's block-explorer URL. */
-  network?: NetworkConfig;
   /**
    * The Bitcoin network name this coordinator targets, served on `GET /v1/config`
    * so the browser derives its addresses/DIDs at runtime instead of from the
@@ -153,14 +140,15 @@ export interface HonoAppOptions {
   ipfs?: IpfsNode;
   /**
    * Operator authentication (HOST-01, ADR 0015). When present, the operator surface is
-   * mounted: the public `POST /v1/operator/login`, the session guard on both the
-   * `/v1/operator/*` and `/dashboard/*` prefixes, and the gated
-   * `POST /v1/operator/logout` + `GET /v1/operator/session` routes; the runner's
-   * `/dashboard/events` telemetry feed is gated too (mounted only when a runner AND
-   * operator auth are both present). When ABSENT, none of that mounts - the
-   * fail-closed default (D-07): a service booted without an operator password exposes
-   * no operator/mutating routes and no gated telemetry at all, while the public
-   * participant surface still serves.
+   * mounted: the public `POST /v1/operator/login`, the session guard on the
+   * `/v1/operator/*` prefix, and the gated `POST /v1/operator/logout` +
+   * `GET /v1/operator/session` routes (plus the gated cohort + monitoring reads when
+   * their surfaces are supplied). When ABSENT, none of that mounts - the fail-closed
+   * default (D-07): a service booted without an operator password exposes no
+   * operator/mutating routes and no gated monitoring at all, while the public
+   * participant surface still serves. The retired dashboard-SSE telemetry feed
+   * (`/dashboard/events`) is gone - the operator's live view is now the gated,
+   * polled monitoring reads (D-02/D-19).
    */
   operatorAuth?: OperatorAuthConfig;
   /**
@@ -194,25 +182,21 @@ export interface HonoAppOptions {
 /**
  * Mount {@link HttpServerTransport} under Hono. Non-SSE routes pass through
  * `handleRequest` and return a standard `Response`; the two protocol SSE GET routes
- * hijack the raw Node response and stream transport-driven events. When a `runner`
- * is supplied, a read-only `GET /dashboard/events` SSE route streams the runner's
- * lifecycle events to a browser dashboard (demo telemetry; kept out of the signed
- * protocol surface). When a `store` is supplied, read-only `GET /cas/*` routes serve
- * the off-chain resolution artifacts by hex hash. When `webDistDir` is supplied, the
- * built web SPA is served from that directory as a trailing catch-all, giving the
- * same-origin production topology (one server hosts the app, the protocol, the
- * dashboard, and the artifact store, no CORS, no Vite proxy).
+ * hijack the raw Node response and stream transport-driven events. When a `store` is
+ * supplied, read-only `GET /cas/*` routes serve the off-chain resolution artifacts by
+ * hex hash. When `webDistDir` is supplied, the built web SPA is served from that
+ * directory as a trailing catch-all, giving the same-origin production topology (one
+ * server hosts the app, the protocol, and the artifact store, no CORS, no Vite proxy).
+ * The operator's live cohort view is served by the gated, polled monitoring reads (the
+ * booth-era `/dashboard/events` SSE telemetry feed was retired, D-02/D-19).
  */
 export function createHonoApp(
   transport: HttpServerTransport,
   opts: HonoAppOptions = {},
 ): Hono<Env> {
   const {
-    runner,
     webDistDir,
     store,
-    broadcaster,
-    network,
     networkName,
     bitcoin,
     ipfs,
@@ -313,8 +297,8 @@ export function createHonoApp(
   // Public anchor read (PART-04, D-20/D-21). Mounted here in the PUBLIC block beside
   // /v1/directory + /v1/ipfs and BEFORE the `if (operatorAuth)` gate: anchor facts are
   // public chain data (like /resolve + /cas), so a participant tracks their anchor with
-  // no session, and this must NOT weaken the operator-gated telemetry (ADR 0015 - the
-  // /dashboard/* + /v1/operator/* gating below is byte-untouched). Read-only, no body.
+  // no session, and this must NOT weaken the operator-gated surface (ADR 0015 - the
+  // /v1/operator/* gating below is byte-untouched). Read-only, no body.
   // Guard the cohortId shape with a cheap 400 BEFORE any lookup, then return the retained
   // DTO. When no anchorState is wired (the hermetic default, no broadcaster) answer the
   // fail-open `{ enabled: false, state: 'none' }` - never a 500 - mirroring how
@@ -348,7 +332,6 @@ export function createHonoApp(
       loginHandler(operatorAuth),
     );
     app.use('/v1/operator/*', requireOperator(operatorAuth.sessions));
-    app.use('/dashboard/*', requireOperator(operatorAuth.sessions));
     app.post('/v1/operator/logout', logoutHandler(operatorAuth.sessions));
     app.get('/v1/operator/session', sessionProbeHandler());
 
@@ -426,20 +409,7 @@ export function createHonoApp(
     }
   }
 
-  // Live telemetry feed. Gated (D-08): mounted only when a runner AND operator auth
-  // are both present, so it inherits the `/dashboard/*` guard registered above. The
-  // browser `EventSource` sends the httpOnly session cookie automatically, so no SSE
-  // transport change is needed - the guard runs before this handler.
-  if (runner && operatorAuth) {
-    app.get('/dashboard/events', (c) => {
-      dbg('SSE open GET /dashboard/events');
-      const stream = openRawSse(c);
-      bridgeRunnerToSse(runner, stream, { broadcaster, network });
-      return RESPONSE_ALREADY_SENT;
-    });
-  }
-
-  // Read-only artifact routes after the protocol/dashboard routes, before the SPA.
+  // Read-only artifact routes after the protocol routes, before the SPA.
   if (store) {
     mountArtifactRoutes(app, store);
   }
