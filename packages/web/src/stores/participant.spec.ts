@@ -10,9 +10,11 @@ import {
   preSeatFitWarning,
   roundTripOutcome,
   shouldAutoResolve,
+  terminalReason,
   useParticipant,
   type StageInput,
 } from './participant';
+import type { StepKey, StepStatus } from '../lib/types';
 
 // The join-seat grace window (participant.ts JOIN_SEAT_GRACE_MS). Mirrored here as a
 // literal (the store keeps it module-private) so the grace-window tests can advance
@@ -670,5 +672,67 @@ describe('participant store - startOver (identity wipe)', () => {
     expect(s.did).toBeNull();
     expect(s.result).toBeNull();
     expect(s.seated).toBe(false);
+  });
+});
+
+// D-45: the stall copy must fire only on a GENUINE collecting-updates stall, keyed on the
+// `validation-requested` fact (which fires only after the service has collected ALL updates),
+// NOT on submitted-but-unsigned alone (the predicate that misfired in the Phase 3 live UAT).
+describe('participant store - terminalReason (D-45 stall copy)', () => {
+  // A participant whose own update is in but co-signing never completed (the signing-window death).
+  const submittedUnsigned: Record<StepKey, StepStatus> = {
+    join: 'done',
+    submit: 'done',
+    sign: 'active',
+    anchored: 'idle',
+  };
+  // An unexplained terminal reason (the honest "didn't say why" the runner/poll lands on a dark cohort).
+  const UNEXPLAINED = "The cohort ended and this service didn't say why.";
+
+  it('submitted + never validation-requested + signing-window death -> positive stall copy', () => {
+    expect(
+      terminalReason({ error: UNEXPLAINED, steps: submittedUnsigned, validationRequested: false }),
+    ).toBe('This service stalled while collecting updates.');
+  });
+
+  it('submitted + validation-requested + still-unsigned death -> uncertainty-honest copy', () => {
+    expect(
+      terminalReason({ error: UNEXPLAINED, steps: submittedUnsigned, validationRequested: true }),
+    ).toBe("Co-signing could not complete, and this service didn't say why.");
+  });
+
+  it('does NOT produce the stall copy from submitted-but-unsigned alone (validation-requested fired)', () => {
+    // The exact UAT misfire: the OLD predicate returned the stall copy for any submitted-but-unsigned
+    // unexplained death; once validation-requested has fired, updates WERE collected, so the stall
+    // copy is provably wrong and must never appear.
+    const copy = terminalReason({
+      error: UNEXPLAINED,
+      steps: submittedUnsigned,
+      validationRequested: true,
+    });
+    expect(copy).not.toBe('This service stalled while collecting updates.');
+  });
+
+  it('a concrete non-stall reason is never swallowed into the stall copy', () => {
+    expect(
+      terminalReason({ error: 'phase timed out', steps: submittedUnsigned, validationRequested: false }),
+    ).toBe('The cohort ended: phase timed out.');
+  });
+
+  it('an explicit stall reason still keeps the dedicated stall copy regardless of the fact', () => {
+    expect(
+      terminalReason({
+        error: 'cohort stalled waiting for all members',
+        steps: submittedUnsigned,
+        validationRequested: true,
+      }),
+    ).toBe('This service stalled while collecting updates.');
+  });
+
+  it('records the validation-requested event as a resettable store fact', () => {
+    // The fact is a per-round store value seeded false and reset by a fresh round (leave()).
+    useParticipant.setState({ validationRequested: true, identity: null });
+    useParticipant.getState().leave();
+    expect(useParticipant.getState().validationRequested).toBe(false);
   });
 });
