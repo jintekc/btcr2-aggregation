@@ -79,6 +79,13 @@ interface MockBitcoinOptions {
   broadcast?: boolean;
   /** The txid `send` returns in broadcast mode (default a fixed sentinel). */
   broadcastTxid?: string;
+  /**
+   * Number of INITIAL `getUtxos` reads that return `[]` (an unfunded address) before the mock
+   * starts returning the confirmed funded UTXO. Default 0 (funded immediately). A positive value
+   * drives the D-38 funding WAIT through its awaiting-funding -> funded transition hermetically:
+   * the operator "funds" the beacon address after N poll reads, and the wait then auto-advances.
+   */
+  emptyReadsBeforeFunded?: number;
 }
 
 /**
@@ -104,6 +111,11 @@ function mockBitcoin(network: BTC_NETWORK, valueSats = 100000, opts: MockBitcoin
       address: {
         getUtxos: async (addr: string) => {
           calls.getUtxos += 1;
+          // Stateful funding: the first N reads see an UNFUNDED address (awaiting-funding), then the
+          // address is "funded" so the wait auto-advances (D-38/D-47).
+          if (calls.getUtxos <= (opts.emptyReadsBeforeFunded ?? 0)) {
+            return [];
+          }
           const script = OutScript.encode(Address(network).decode(addr));
           const prev = new Transaction({ allowUnknownOutputs: true, allowUnknownInputs: true, version: 2 });
           prev.addOutput({ script, amount: BigInt(valueSats) });
@@ -386,17 +398,130 @@ async function runLiveBroadcastMockCohort(beaconType: BeaconType, quiet: boolean
   }
 }
 
+/**
+ * Drive one live+broadcast cohort through the D-38 funding WAIT, proving the awaiting-funding ->
+ * funded AUTO-ADVANCE hermetically (D-47). The mock's `getUtxos` returns `[]` for the first N reads
+ * (the operator has not funded the beacon address yet) and then a confirmed above-minimum UTXO, so
+ * the funding wait inside onProvideTxData polls through `waiting` and advances the moment funds
+ * appear - then the cohort signs and broadcasts on the mock exactly as the immediate-funded path
+ * does. `fundingWindowMs` ENABLES the wait (without it the live branch keeps its single-shot
+ * pre-flight, which would reject the unfunded first read outright). Returns any problems (empty = pass).
+ */
+async function runStatefulFundingMockCohort(beaconType: BeaconType, quiet: boolean): Promise<string[]> {
+  const n = 2;
+  const log = quiet ? () => {} : (msg: string) => console.log(msg);
+  const config = buildCohortConfig(n, beaconType);
+  const network = resolveNetwork(config.network).scureNetwork;
+  const broadcastTxid = 'cd'.repeat(32);
+  const emptyReadsBeforeFunded = 3;
+
+  const bitcoin = mockBitcoin(network, 100000, { broadcast: true, broadcastTxid, emptyReadsBeforeFunded });
+  const service = createService({
+    identity: createIdentity(),
+    config,
+    live: true,
+    broadcast: true,
+    bitcoin: bitcoin as never,
+    // ENABLE the funding wait with a generous window + a tiny poll interval so the awaiting-funding
+    // -> funded transition is exercised quickly and never races the (unset) cohort TTL.
+    fundingWindowMs: 30_000,
+    fundingPollIntervalMs: 20,
+    confirmPollIntervalMs: 10,
+    confirmTimeoutMs: 3000,
+  });
+
+  const broadcaster = service.broadcaster;
+  if (!broadcaster) {
+    await service.stop();
+    return ['service.broadcaster is undefined despite broadcast:true'];
+  }
+
+  let broadcastEvent: { cohortId: string; txid: string } | undefined;
+  let anchoredEvent: { cohortId: string; txid: string; confirmed: boolean } | undefined;
+  const anchored = new Promise<void>((resolve) => {
+    broadcaster.on('beacon-broadcast', (p) => {
+      broadcastEvent = p;
+    });
+    broadcaster.on('beacon-anchored', (p) => {
+      anchoredEvent = p;
+      resolve();
+    });
+  });
+
+  const { baseUrl } = await service.start(0);
+  const participantIdentities: Identity[] = Array.from({ length: n }, () => createIdentity());
+  const participants = participantIdentities.map((identity) =>
+    createParticipant({ identity, baseUrl, beaconType }),
+  );
+  const participantComplete = participants.map(
+    (participant) =>
+      new Promise<void>((resolve) => participant.runner.on('cohort-complete', () => resolve())),
+  );
+
+  try {
+    await Promise.all(participants.map((participant) => participant.start()));
+    const result = await withTimeout(service.runner.run(), 30000, `${beaconType} stateful-funding run`);
+    await withTimeout(Promise.all(participantComplete), 15000, 'participant completion');
+    await withTimeout(anchored, 15000, 'beacon anchored').catch(() => undefined);
+
+    const problems: string[] = [];
+    if (result.signature.length !== 64) {
+      problems.push(`expected a 64-byte aggregated signature, got ${result.signature.length}`);
+    }
+    if (!result.signedTx) {
+      problems.push('expected a signed beacon transaction, got none');
+      return problems;
+    }
+    // The wait must have POLLED through the unfunded window: getUtxos was called strictly more times
+    // than the empty-read count, proving the awaiting-funding -> funded auto-advance actually ran
+    // (an immediate-funded path would have fewer reads and never traverse the awaiting state).
+    if (bitcoin.calls.getUtxos <= emptyReadsBeforeFunded) {
+      problems.push(
+        `funding wait did not poll through the unfunded window (getUtxos=${bitcoin.calls.getUtxos}, ` +
+          `expected > ${emptyReadsBeforeFunded}) - the awaiting-funding -> funded transition was not exercised`,
+      );
+    }
+    // The cohort then signed + broadcast on the mock exactly once (the fixture path never sends).
+    if (bitcoin.calls.send !== 1) {
+      problems.push(`expected exactly one broadcast after funding, send was called ${bitcoin.calls.send}x`);
+    }
+    if (!broadcastEvent || broadcastEvent.txid !== broadcastTxid) {
+      problems.push('no beacon-broadcast event with the expected txid after funding auto-advance');
+    }
+    if (!anchoredEvent || anchoredEvent.confirmed !== true) {
+      problems.push('no confirmed beacon-anchored event after funding auto-advance');
+    }
+
+    if (problems.length === 0) {
+      log(
+        `[ok] ${beaconType}: funding wait advanced awaiting-funding -> funded after ` +
+          `${emptyReadsBeforeFunded} unfunded reads, then the cohort signed + broadcast (txid ${broadcastTxid})`,
+      );
+    }
+    return problems;
+  } finally {
+    for (const participant of participants) {
+      participant.stop();
+    }
+    await service.stop();
+  }
+}
+
 async function main(): Promise<number> {
   const quiet = process.argv.includes('--quiet');
   const cas = await runLiveMockCohort('CASBeacon', quiet);
   const smt = await runLiveMockCohort('SMTBeacon', quiet);
   const casBc = await runLiveBroadcastMockCohort('CASBeacon', quiet);
   const smtBc = await runLiveBroadcastMockCohort('SMTBeacon', quiet);
+  const casFund = await runStatefulFundingMockCohort('CASBeacon', quiet);
+  const smtFund = await runStatefulFundingMockCohort('SMTBeacon', quiet);
   const problems = [
     ...cas.map((p) => `CAS: ${p}`),
     ...smt.map((p) => `SMT: ${p}`),
     ...casBc.map((p) => `CAS-broadcast: ${p}`),
     ...smtBc.map((p) => `SMT-broadcast: ${p}`),
+    ...casFund.map((p) => `CAS-funding: ${p}`),
+    ...smtFund.map((p) => `SMT-funding: ${p}`),
   ];
 
   if (problems.length > 0) {
@@ -409,7 +534,8 @@ async function main(): Promise<number> {
   console.log(
     '\nLIVE-MOCK E2E PASSED: the live beacon-tx path built a real aggregation beacon tx over a ' +
       'mock-funded UTXO for both CAS and SMT cohorts (n-of-n MuSig2 -> 64-byte Taproot signature), ' +
-      'and the broadcast wiring pushed the finalized tx + emitted the anchor lifecycle (no real network).',
+      'the broadcast wiring pushed the finalized tx + emitted the anchor lifecycle, and the D-38 ' +
+      'funding wait advanced awaiting-funding -> funded before signing + broadcasting (no real network).',
   );
   return 0;
 }

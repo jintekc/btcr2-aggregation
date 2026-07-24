@@ -2,7 +2,9 @@ import { useEffect } from 'react';
 import { Badge, Button, Card, CopyField, Expander, Mono, SectionTitle, StatusDot } from '../../ui/primitives';
 import { LogPanel } from '../LogPanel';
 import { OperatorStageTimeline } from './OperatorStageTimeline';
+import { FundingStage } from './FundingStage';
 import { useOperator } from '../../stores/operator';
+import { useParticipant } from '../../stores/participant';
 import { downloadExport } from '../../lib/operator';
 import type { AnchorDTO } from '../../lib/anchor';
 import type { CohortMemberDTO, MemberRound, SubmissionDTO } from '../../lib/operator';
@@ -170,6 +172,8 @@ export function CohortDetail({ baseUrl, cohortId }: { baseUrl: string; cohortId:
   const lastUpdated = useOperator((s) => s.lastUpdated);
   const pollDetail = useOperator((s) => s.pollDetail);
   const closeCohort = useOperator((s) => s.closeCohort);
+  // The service's single active network, for the funding stage's beacon-address label (D-36).
+  const activeNetwork = useParticipant((s) => s.network);
 
   // Poll the detail read while the drill-down is open: an immediate read, then every few
   // seconds (D-19). The interval is cleared on unmount / cohort change so a closed
@@ -291,6 +295,12 @@ export function CohortDetail({ baseUrl, cohortId }: { baseUrl: string; cohortId:
               </div>
             ) : null}
           </Card>
+
+          {/* Funding stage (D-36 through D-42): live+broadcast cohorts only, inserted between
+              co-signing and anchor. Absent (no funding view) on a hermetic cohort. */}
+          {detail.funding ? (
+            <FundingStage funding={detail.funding} activeNetwork={activeNetwork} />
+          ) : null}
 
           {/* Anchor detail (D-18/D-33). */}
           <Card className="space-y-3 p-5">

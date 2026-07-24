@@ -232,11 +232,42 @@ export interface ActivityEntryDTO {
 }
 
 /**
+ * The four honest funding states (mirrors the service `FundingStateName`, D-36): `waiting` (no
+ * spendable UTXO yet), `awaiting-confirmation` (a candidate UTXO is in the mempool), `funded` (the
+ * selected confirmed UTXO meets the minimum), `dead-end` (the selected confirmed UTXO is below the
+ * minimum band, terminal).
+ */
+export type FundingStateName = 'waiting' | 'awaiting-confirmation' | 'funded' | 'dead-end';
+
+/**
+ * The operator funding view for a live+broadcast cohort (mirrors the service `FundingView`, D-36
+ * through D-43). Carries the honest funding `state`, the ONE suggested minimum (D-37), the beacon
+ * address (+ explorer URL) the operator funds, the always-shown recovery-key state (D-40), the
+ * mainnet real-money + change-routing bits (D-42), the truncated-window disclosure when the wait
+ * clamped the window (D-38), and the esplora-stale bit for an observation gap (D-43). Present ONLY
+ * for a live+broadcast cohort; absent on a hermetic cohort and before the first watch reading.
+ */
+export interface FundingView {
+  state: FundingStateName;
+  suggestedMinSats: number;
+  beaconAddress: string;
+  explorerUrl?: string;
+  recoveryKeyState: 'operator-held' | 'throwaway';
+  mainnet: boolean;
+  changeAddressRedirected: boolean;
+  truncatedWindowMin?: number;
+  esploraStale: boolean;
+  /** Terminal lapse outcome once the cohort failed for want of funding: `window-closed` (clean lapse) or `blind-lapse` (observation gap, D-38/D-39). */
+  terminal?: 'window-closed' | 'blind-lapse';
+}
+
+/**
  * The gated per-cohort monitoring detail (mirrors the service `CohortDetailDTO`, D-26).
  * The full drill-down depth: members (pending vs seated, round state, pubkeys), submissions
  * (who/when + raw), honest co-sign progress, the operator anchor view (a hermetic service
- * reads `{ enabled: false, state: 'none' }`), the fallback flag, and the bounded activity
- * ring. `exists` is false for an unknown/evicted cohort (non-oracle).
+ * reads `{ enabled: false, state: 'none' }`), the fallback flag, the bounded activity ring, and
+ * the optional funding view (live+broadcast only). `exists` is false for an unknown/evicted
+ * cohort (non-oracle).
  */
 export interface CohortDetailDTO {
   exists: boolean;
@@ -249,6 +280,8 @@ export interface CohortDetailDTO {
   anchor: AnchorDTO;
   fallback: FallbackDTO;
   activity: ActivityEntryDTO[];
+  /** The operator funding view; present ONLY for a live+broadcast cohort with a funding reading (D-36). */
+  funding?: FundingView;
 }
 
 /**

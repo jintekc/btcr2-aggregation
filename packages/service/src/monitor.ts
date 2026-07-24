@@ -252,6 +252,13 @@ export interface FundingView {
   truncatedWindowMin?: number;
   /** True when the last funding observation FAILED (esplora outage): the state below is frozen stale (D-43). */
   esploraStale: boolean;
+  /**
+   * The terminal lapse outcome, set ONLY once the cohort has failed for want of funding (D-38/D-39):
+   * `window-closed` when the funding window lapsed on a successful (observed) read, `blind-lapse`
+   * when an esplora gap spanned the lapse so whether funds arrived is unknown. Absent while the
+   * cohort is still live. Never claimed on a blind lapse as a definite "funding never arrived".
+   */
+  terminal?: 'window-closed' | 'blind-lapse';
 }
 
 /** The terminal chip of a retained ended-cohort record (a strict subset of {@link CohortChip}). */

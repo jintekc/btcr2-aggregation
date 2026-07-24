@@ -695,6 +695,9 @@ export function createService(opts: CreateServiceOptions): Service {
   // attention chip. This display watch is separate from the AUTHORITATIVE wait that gates signing
   // in tx.ts (onProvideTxData); both share classifyFunding + the suggested minimum so they agree.
   const fundingWatches = new Map<string, FundingWatchHandle>();
+  // The last funding view reported per cohort, so `cohort-failed` can compose the terminal lapse
+  // outcome (window-closed vs blind-lapse) from the last-known funding state (D-38/D-39).
+  const lastFundingView = new Map<string, FundingView>();
   if (opts.broadcast && live && netConfig) {
     const netConf = netConfig;
     const liveConf = live;
@@ -744,6 +747,7 @@ export function createService(opts: CreateServiceOptions): Service {
             // last-known one (the watch does not fabricate), only this bit flips.
             esploraStale: !lastObservationOk,
           };
+          lastFundingView.set(cohortId, view);
           monitor.noteFunding(cohortId, view);
           // Flip the health strip's esplora bit in step (D-43): a failed funding read is exactly the
           // mid-flight outage that must freeze every cohort stale-honest.
@@ -751,6 +755,27 @@ export function createService(opts: CreateServiceOptions): Service {
         },
       });
       fundingWatches.set(cohortId, handle);
+    });
+
+    // A cohort that FAILED without reaching `funded` fails for want of funding (the wait threw): fold
+    // the terminal lapse outcome into the funding view so the operator sees an honest window-closed
+    // vs blind-lapse verdict (D-38/D-39), then stop the now-pointless watch.
+    runner.on('cohort-failed', ({ cohortId }) => {
+      const handle = fundingWatches.get(cohortId);
+      if (!handle) {
+        return;
+      }
+      const last = lastFundingView.get(cohortId);
+      if (last && last.state !== 'funded') {
+        // Blind lapse when the last observation failed (an esplora gap spanned the lapse), else a
+        // clean window-closed lapse. Mirrors the tx.ts wait's own throw discrimination.
+        monitor.noteFunding(cohortId, {
+          ...last,
+          terminal: last.esploraStale ? 'blind-lapse' : 'window-closed',
+        });
+      }
+      handle.stop();
+      fundingWatches.delete(cohortId);
     });
   }
 
