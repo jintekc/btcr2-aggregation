@@ -281,6 +281,14 @@ export interface CreateServiceOptions {
    */
   rosterPks?: Uint8Array[];
   /**
+   * Optional operator-supplied service display name (D-51). A boot-time constant (env
+   * `SERVICE_NAME`, resolved in {@link file://./demo-server.ts}) surfaced additively on
+   * `GET /v1/config` so the operator console health strip and the public directory header can
+   * label the service. Display text only (no edit surface, no markup); omitted from the config
+   * DTO when unset so the frozen public network fields stay byte-identical.
+   */
+  serviceName?: string;
+  /**
    * Operator console password (HOST-01, ADR 0015). When set, this service mounts the
    * operator surface: `POST /v1/operator/login`, the session guard on
    * `/v1/operator/*`, `POST /v1/operator/logout`, `GET /v1/operator/session`, and the
@@ -592,6 +600,9 @@ export function createService(opts: CreateServiceOptions): Service {
     // single source of truth for this coordinator's chain) and validated by
     // resolveNetwork, independent of the live/broadcast path.
     networkName: resolveNetwork(opts.config.network).name,
+    // Optional service display name (D-51), surfaced additively on GET /v1/config for the
+    // health strip + public directory header. Undefined leaves the config DTO byte-identical.
+    serviceName: opts.serviceName,
     // The read-only resolve route is independent of the live/broadcast path: a
     // Bitcoin connection alone (to run the beacon-signal indexer) plus the artifact
     // store is enough to serve `GET /resolve/:did`. Passed whenever a connection is

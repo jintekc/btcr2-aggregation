@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { resolveNetwork } from '@btcr2-aggregation/shared';
 import { Card, StatusDot } from '../../ui/primitives';
 import { fetchStatus, type ServiceStatus } from '../../lib/directory';
+import { useParticipant } from '../../stores/participant';
 
 /** Status poll cadence (matches PublicStatus): 10s bounded fetch, no new dependency. */
 const POLL_MS = 10000;
@@ -19,6 +20,9 @@ const POLL_MS = 10000;
  */
 export function ServiceIdentityHeader({ baseUrl }: { baseUrl: string }) {
   const [status, setStatus] = useState<ServiceStatus | undefined>(undefined);
+  // Optional operator-supplied service name (D-51), read from the same GET /v1/config load the
+  // App performs on mount; rendered as plain auto-escaped text beside the origin, no edit surface.
+  const serviceName = useParticipant((s) => s.serviceName);
 
   useEffect(() => {
     let active = true;
@@ -54,7 +58,10 @@ export function ServiceIdentityHeader({ baseUrl }: { baseUrl: string }) {
   return (
     <Card className="space-y-4 p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <h1 className="text-3xl font-bold leading-tight tracking-tight text-ink">{window.location.host}</h1>
+        <div>
+          {serviceName ? <p className="text-sm text-muted">{serviceName}</p> : null}
+          <h1 className="text-3xl font-bold leading-tight tracking-tight text-ink">{window.location.host}</h1>
+        </div>
         <span
           className={
             net.isMainnet

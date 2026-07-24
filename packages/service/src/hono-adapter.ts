@@ -123,6 +123,15 @@ export interface HonoAppOptions {
    */
   networkName?: NetworkName;
   /**
+   * Optional operator-supplied service display name (D-51), a boot-time env constant
+   * (`SERVICE_NAME`) surfaced on `GET /v1/config` beside the network so the operator console
+   * health strip and the public directory header can label the service. Additive and optional:
+   * when unset the config DTO is byte-identical (no `serviceName` key), so the frozen public
+   * network fields never change. It is display text only, never markup or a URL (the browser
+   * renders it as auto-escaped React text content, T-04-03-01); there is no edit surface.
+   */
+  serviceName?: string;
+  /**
    * Bitcoin REST (esplora) connection. When supplied together with {@link store},
    * a read-only `GET /resolve/:did` route resolves a did:btcr2 identifier
    * server-side (discovering beacon signals over this connection, fetching off-chain
@@ -198,6 +207,7 @@ export function createHonoApp(
     webDistDir,
     store,
     networkName,
+    serviceName,
     bitcoin,
     ipfs,
     operatorAuth,
@@ -237,7 +247,10 @@ export function createHonoApp(
   // coordinator's Bitcoin network on load and derive its addresses/DIDs from it,
   // rather than baking DEFAULT_NETWORK in at build time. Only the JSON-safe DTO is
   // returned (the client rebuilds the full config via `resolveNetwork(network)`).
-  app.get('/v1/config', (c) => c.json(networkDto));
+  // The optional service name rides ADDITIVELY on the config DTO: included only when the
+  // operator set SERVICE_NAME, so the browser reads it at load, and the frozen network fields
+  // (network/label/isMainnet) stay byte-identical when it is unset (D-51/D-26; config.spec pin).
+  app.get('/v1/config', (c) => c.json(serviceName ? { ...networkDto, serviceName } : networkDto));
 
   // Public cohort directory + service status (SVC-02, D-09/D-14/D-15). Always mounted
   // (like /v1/config, OUTSIDE the operator-auth block): the anonymous participant

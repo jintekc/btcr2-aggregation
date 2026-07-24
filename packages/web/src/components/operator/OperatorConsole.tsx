@@ -5,9 +5,13 @@ import { LoginPanel } from './LoginPanel';
 import { CreateCohortForm } from './CreateCohortForm';
 import { OperatorCohortList } from './OperatorCohortList';
 import { CohortDetail } from './CohortDetail';
+import { HealthStrip } from './HealthStrip';
 
 /** List poll cadence (matches the drill-down detail poll): keeps chips/metrics/freshness live. */
 const LIST_POLL_MS = 4000;
+
+/** Unreachable banner copy (UI-SPEC D-25), shown when the list poll cannot reach the service. */
+const UNREACHABLE_BANNER = "Can't reach this service. Showing the last known state and retrying quietly.";
 
 /**
  * Login-gated, list-first operator console (SVC-03, D-07). Probes the session on mount, then
@@ -28,6 +32,7 @@ export function OperatorConsole({ baseUrl }: { baseUrl: string }) {
   const view = useOperator((s) => s.view);
   const openCohort = useOperator((s) => s.openCohort);
   const refreshCohorts = useOperator((s) => s.refreshCohorts);
+  const listStale = useOperator((s) => s.listStale);
 
   const [showCreate, setShowCreate] = useState(false);
 
@@ -73,19 +78,34 @@ export function OperatorConsole({ baseUrl }: { baseUrl: string }) {
 
   // Drill-down view (D-03): a single open cohort's live detail replaces the list; the Back link
   // inside CohortDetail returns to the list. Only advertised cohorts reach here (drafts keep the
-  // inline row treatment, D-09).
+  // inline row treatment, D-09). The health strip stays always-visible above both views (D-17).
   if (view.kind === 'detail') {
-    return <CohortDetail baseUrl={baseUrl} cohortId={view.cohortId} />;
+    return (
+      <div className="space-y-6">
+        <HealthStrip />
+        <CohortDetail baseUrl={baseUrl} cohortId={view.cohortId} />
+      </div>
+    );
   }
 
   return (
     <div className="space-y-6">
+      <HealthStrip />
+
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-3xl font-bold tracking-tight text-ink">Operator console</h1>
         <Button variant="ghost" onClick={() => void signOut(baseUrl)}>
           Sign out
         </Button>
       </div>
+
+      {/* Unreachable freeze banner (D-25): a network/5xx list poll freezes the displayed state
+          and retries quietly, never redirecting. A 401 instead routes to re-login (in the store). */}
+      {listStale ? (
+        <div className="rounded-lg border border-bad/40 bg-bad/10 px-3 py-2 text-sm text-bad">
+          {UNREACHABLE_BANNER}
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         {!showCreate ? (

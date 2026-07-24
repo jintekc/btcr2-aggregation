@@ -107,6 +107,12 @@ interface ParticipantState {
    * targets instead of a build-time constant.
    */
   network: NetworkName;
+  /**
+   * Optional operator-supplied service display name (D-51), read from `GET /v1/config` on load.
+   * Null until the config lands or when the operator set no `SERVICE_NAME`. Surfaced on both the
+   * operator console health strip and the public directory header; there is no edit surface.
+   */
+  serviceName: string | null;
   /** Load state of the runtime network config; gates identity generation. */
   configStatus: ConfigStatus;
   /** Onboarding model of the current identity: KEY (`k1`) or EXTERNAL (`x1`). */
@@ -919,6 +925,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
     identity: null,
     did: null,
     network: DEFAULT_NETWORK,
+    serviceName: null,
     configStatus: 'loading',
     idType: 'KEY',
     secret: null,
@@ -947,7 +954,8 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       );
       try {
         const dto = await fetchNetworkConfig(baseUrl);
-        set({ network: dto.network, configStatus: 'ready' });
+        // Adopt the optional service display name (D-51) alongside the network; absent -> null.
+        set({ network: dto.network, serviceName: dto.serviceName ?? null, configStatus: 'ready' });
         append('info', `coordinator network: ${dto.label} (${dto.network})`);
       } catch (err) {
         // Degrade gracefully: keep the default network and unblock generation. An

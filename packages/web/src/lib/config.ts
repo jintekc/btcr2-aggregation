@@ -10,7 +10,18 @@
 import type { NetworkConfigDTO } from '@btcr2-aggregation/shared';
 
 /**
- * Fetch the coordinator's runtime network DTO from the same-origin `GET /v1/config`.
+ * The runtime config DTO the browser reads from `GET /v1/config`: the network fields plus an
+ * OPTIONAL operator-supplied `serviceName` (D-51), present only when the operator set
+ * `SERVICE_NAME` at boot. Widens {@link NetworkConfigDTO} additively so a service without a
+ * name returns the byte-identical network DTO and the field is simply absent.
+ */
+export interface RuntimeConfigDTO extends NetworkConfigDTO {
+  /** Operator-supplied service display name; absent when `SERVICE_NAME` is unset. */
+  serviceName?: string;
+}
+
+/**
+ * Fetch the coordinator's runtime config DTO from the same-origin `GET /v1/config`.
  *
  * Bounded by a timeout: a coordinator that accepts the connection but never sends a
  * response (blocked event loop, silent proxy) would otherwise hang this promise with no
@@ -18,7 +29,7 @@ import type { NetworkConfigDTO } from '@btcr2-aggregation/shared';
  * so `loadConfig` degrades to the default network - honoring its graceful-degradation
  * contract for a stall, not just an error response.
  */
-export async function fetchNetworkConfig(baseUrl: string): Promise<NetworkConfigDTO> {
+export async function fetchNetworkConfig(baseUrl: string): Promise<RuntimeConfigDTO> {
   const url = `${baseUrl.replace(/\/$/, '')}/v1/config`;
   const res = await fetch(url, {
     headers: { accept: 'application/json' },
@@ -27,5 +38,5 @@ export async function fetchNetworkConfig(baseUrl: string): Promise<NetworkConfig
   if (!res.ok) {
     throw new Error(`GET /v1/config failed: HTTP ${res.status}`);
   }
-  return (await res.json()) as NetworkConfigDTO;
+  return (await res.json()) as RuntimeConfigDTO;
 }

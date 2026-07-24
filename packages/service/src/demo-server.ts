@@ -171,6 +171,13 @@ export interface DemoServerOptions {
    * it (M4 .env-out-of-image lesson).
    */
   operatorPassword?: string;
+  /**
+   * Optional service display name (D-51; env `SERVICE_NAME`). A boot-time constant surfaced on
+   * `GET /v1/config` so the operator console health strip and the public directory header label
+   * the service. Display text only: there is no edit surface and no validation beyond trimming.
+   * Omit to run the service unnamed (the surfaces simply show no name).
+   */
+  serviceName?: string;
   /** Operator session TTL in ms (env `OPERATOR_SESSION_TTL_MS`; default 24h). */
   operatorSessionTtlMs?: number;
   /**
@@ -270,6 +277,11 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
   // participant surface still serves. Loud boot warning mirrors the ADR 0010 mainnet
   // banner. Never logged. Unlike mainnet this does NOT throw - a fresh self-hosted
   // service is expected to boot before the operator sets a password (D-07).
+  // Optional service display name (D-51): mirror the RECOVERY_KEY/NETWORK env idiom, trimming
+  // only (a name is display text, no further validation). An empty/whitespace value coalesces to
+  // undefined so the config DTO stays byte-identical (no serviceName key) rather than an empty one.
+  const serviceName = (opts.serviceName ?? process.env.SERVICE_NAME)?.trim() || undefined;
+
   const operatorPassword = opts.operatorPassword ?? process.env.OPERATOR_PASSWORD;
   const operatorSessionTtlMs =
     opts.operatorSessionTtlMs ??
@@ -330,6 +342,8 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
     store,
     bitcoin,
     ipfs,
+    // Optional service display name surfaced on GET /v1/config (D-51).
+    serviceName,
     // Operator auth (possibly undefined => fail-closed, operator surface unmounted).
     operatorPassword,
     operatorSessionTtlMs,
