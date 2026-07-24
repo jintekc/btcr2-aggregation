@@ -445,6 +445,11 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
     changeAddress,
     allowMainnet,
     fundingWindowMs,
+    // Operator-held recovery key exactly when RECOVERY_KEY was supplied (env or opts); otherwise the
+    // cohort recovery key is an auto-derived throwaway. Drives the funding-stage recovery-key
+    // disclosure honestly (D-40): the boot banner already warns on a throwaway under BROADCAST, and
+    // this carries the same fact into the per-cohort funding view.
+    recoveryKeyOperatorHeld: Boolean(recoveryKey),
     webDistDir: resolvedDist,
     store,
     bitcoin,

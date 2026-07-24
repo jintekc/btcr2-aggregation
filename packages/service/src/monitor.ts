@@ -47,6 +47,7 @@ import type { Transaction } from '@scure/btc-signer';
 import type { AggregationServiceEvents, AggregationServiceRunner } from '@did-btcr2/aggregation/service';
 import type { BeaconBroadcaster } from './broadcast.js';
 import type { AnchorReadDTO, AnchorState } from './anchor-state.js';
+import type { FundingStateName } from './funding-watch.js';
 
 /**
  * Upper bound on monitored cohort entries (mirrors the anchor-state / operator-cohorts
@@ -225,6 +226,34 @@ export interface ServiceHealthDTO {
   esploraReachable: boolean | 'n/a';
 }
 
+/**
+ * The operator-facing funding view for a live+broadcast cohort (D-36 through D-43), fed by the
+ * live-path funding watch via {@link CohortMonitor.noteFunding}. Carries the honest funding
+ * `state`, the ONE suggested minimum (D-37), the beacon address (+ a derived explorer URL) the
+ * operator funds, the always-disclosed recovery-key state (D-40), the mainnet real-money flag +
+ * change-routing bit (D-42), the truncated-window disclosure when the wait clamped the window
+ * (D-38), and the esplora-stale bit for a mid-flight observation gap (D-43). Present ONLY for a
+ * live+broadcast cohort; a hermetic cohort never carries it (the funding stage cannot exist on the
+ * fixture path). The recovery-key VALUE is never serialized, only its STATE (T-04-06-04).
+ */
+export interface FundingView {
+  state: FundingStateName;
+  suggestedMinSats: number;
+  beaconAddress: string;
+  /** Block-explorer URL for {@link beaconAddress}, present only when the network derives one. */
+  explorerUrl?: string;
+  /** `operator-held` when the operator supplied RECOVERY_KEY; `throwaway` when it was auto-derived (D-40). */
+  recoveryKeyState: 'operator-held' | 'throwaway';
+  /** True on a mainnet cohort: the funding stage adds the real-money + change-routing lines (D-42). */
+  mainnet: boolean;
+  /** True when a LIVE_CHANGE_ADDRESS redirects change off the beacon address (D-42). */
+  changeAddressRedirected: boolean;
+  /** The clamped window in whole minutes, present ONLY when the remaining TTL truncated it (D-38). */
+  truncatedWindowMin?: number;
+  /** True when the last funding observation FAILED (esplora outage): the state below is frozen stale (D-43). */
+  esploraStale: boolean;
+}
+
 /** The terminal chip of a retained ended-cohort record (a strict subset of {@link CohortChip}). */
 type EndedChip = 'anchored' | 'fallback' | 'failed';
 
@@ -299,6 +328,12 @@ export interface CohortDetailDTO {
   fallback: FallbackDTO;
   /** The bounded per-cohort activity ring, server wall-clock stamped, oldest-first (D-21/D-22). */
   activity: ActivityEntryDTO[];
+  /**
+   * The operator funding view, present ONLY for a live+broadcast cohort whose funding watch has
+   * reported at least once (D-36 through D-43). Absent on a hermetic cohort (no funding stage on
+   * the fixture path) and before the first watch reading lands.
+   */
+  funding?: FundingView;
 }
 
 /**
@@ -355,6 +390,14 @@ export interface CohortMonitor {
    * reading leaves every last-known chip/detail frozen (stale-honest, not a fabricated state).
    */
   noteEsploraObservation(ok: boolean): void;
+  /**
+   * Record the latest operator funding view for a live+broadcast cohort (D-36 through D-43), fed
+   * by the live-path funding watch in {@link file://./index.ts}. The view rides the gated per-cohort
+   * detail read and drives the `needs-funding` attention chip on the summary list until the cohort
+   * is `funded` (D-44). A no-op on the hermetic path: a hermetic monitor never serves a funding
+   * view even if this is (defensively) called, because the funding stage cannot exist off-chain.
+   */
+  noteFunding(cohortId: string, view: FundingView): void;
 }
 
 /**
@@ -545,6 +588,12 @@ export function createCohortMonitor(
    * oldest-first. Captured AT EVENT TIME so a session-GC'd cohort still projects its fate.
    */
   const ended = new Map<string, EndedRecord>();
+  /**
+   * Latest operator funding view per live+broadcast cohort (D-36 through D-43), set by the live-path
+   * funding watch via {@link noteFunding}. Never populated on the hermetic path. Unbounded is fine:
+   * one entry per live cohort, and the live cohort set is itself bounded by the runner's session.
+   */
+  const fundingViews = new Map<string, FundingView>();
 
   /** Get-or-create a cohort entry WITHOUT touching insertion order (that is `remember`'s job). */
   function entryFor(cohortId: string): MonitorEntry {
@@ -974,6 +1023,11 @@ export function createCohortMonitor(
       ...(capacity > 0 ? { n: capacity } : {}),
     };
 
+    // Funding view (D-36 through D-43): present ONLY for a live+broadcast cohort whose funding
+    // watch has reported. Gated on serviceMode so a stray note on the hermetic path can never
+    // surface a funding stage that cannot exist off-chain.
+    const funding = serviceMode === 'live' ? fundingViews.get(cohortId) : undefined;
+
     return {
       exists: true,
       members,
@@ -986,6 +1040,7 @@ export function createCohortMonitor(
       fallback,
       // Copy the ring so a caller can never mutate the fold's internal array.
       activity: entry ? entry.activity.map((a) => ({ ...a })) : [],
+      ...(funding ? { funding: { ...funding } } : {}),
     };
   }
 
@@ -1017,6 +1072,17 @@ export function createCohortMonitor(
       esploraReachable = ok;
     },
 
+    noteFunding(cohortId: string, view: FundingView): void {
+      // Store the latest funding view for the gated detail read + the `needs-funding` summary chip.
+      // A no-op off the broadcasting path: a hermetic/live-no-broadcast service never surfaces a
+      // funding stage (the funding stage cannot exist without a real on-chain beacon), so a stray
+      // note is dropped rather than fabricating one.
+      if (serviceMode !== 'live') {
+        return;
+      }
+      fundingViews.set(cohortId, view);
+    },
+
     summary(): CohortSummaryDTO[] {
       const rows: CohortSummaryDTO[] = [];
       const live = new Set<string>();
@@ -1033,6 +1099,14 @@ export function createCohortMonitor(
         }
         if (!chip || !phase) {
           continue;
+        }
+        // Funding attention (D-44): the moment keygen completes, a live+broadcast cohort awaiting
+        // funding (any state that is not `funded`) reads `needs-funding` (warn) instead of its
+        // phase chip, so the operator is nudged to fund it before the wait clock runs down. A
+        // `funded` cohort keeps its phase chip (co-signing continues normally).
+        const funding = fundingViews.get(cohort.id);
+        if (funding && funding.state !== 'funded') {
+          chip = 'needs-funding';
         }
         live.add(cohort.id);
         rows.push({

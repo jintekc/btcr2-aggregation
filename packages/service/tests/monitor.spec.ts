@@ -7,7 +7,7 @@ import { resolveBtcr2SenderPk } from '@did-btcr2/method';
 import { createIdentity, resolveNetwork } from '@btcr2-aggregation/shared';
 import type { Transaction } from '@scure/btc-signer';
 import { describe, expect, it } from 'vitest';
-import { createCohortMonitor, summarizeTx } from '../src/monitor.js';
+import { createCohortMonitor, summarizeTx, type FundingView } from '../src/monitor.js';
 import { BeaconBroadcaster } from '../src/broadcast.js';
 import { createAnchorState } from '../src/anchor-state.js';
 import { createHonoApp } from '../src/hono-adapter.js';
@@ -802,5 +802,85 @@ describe('summarizeTx (lifted from dashboard-sse)', () => {
     const summary = summarizeTx(fixtureTx);
     expect(summary.fee).toBeUndefined();
     expect(summary).toMatchObject({ txid: 'fixture-txid', version: 2, inputs: 1, outputs: 2 });
+  });
+});
+
+describe('createCohortMonitor funding view (LIVE-01, D-36 through D-43)', () => {
+  const sampleView: FundingView = {
+    state: 'waiting',
+    suggestedMinSats: 2000,
+    beaconAddress: 'bcrt1pbeaconaddress',
+    explorerUrl: 'https://mutinynet.com/address/bcrt1pbeaconaddress',
+    recoveryKeyState: 'operator-held',
+    mainnet: true,
+    changeAddressRedirected: false,
+    truncatedWindowMin: 7,
+    esploraStale: false,
+  };
+
+  it('carries the funding view (recovery-key state + mainnet + truncated window) on a live cohort detail', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner, undefined, undefined, 'live');
+    // keygen-complete makes the cohort exist in the fold so detail projects (not the absent shape).
+    runner.emit('keygen-complete', { cohortId: 'c1', beaconAddress: 'bcrt1pbeaconaddress' });
+    monitor.noteFunding('c1', sampleView);
+
+    const detail = monitor.detail('c1');
+    expect(detail.funding).toBeDefined();
+    expect(detail.funding?.state).toBe('waiting');
+    expect(detail.funding?.recoveryKeyState).toBe('operator-held');
+    expect(detail.funding?.mainnet).toBe(true);
+    expect(detail.funding?.truncatedWindowMin).toBe(7);
+    expect(detail.funding?.esploraStale).toBe(false);
+  });
+
+  it('needs-funding summary chip fires once a live cohort has an unfunded funding view (D-44)', () => {
+    // A live cohort in a filling phase normally reads `filling`; an unfunded funding view flips its
+    // summary chip to the `needs-funding` attention chip until it is funded. Advertise a real cohort
+    // (as index.ts does) so the summary has a live row to override.
+    const identity = createIdentity(resolveNetwork(ACTIVE_NETWORK));
+    const transport = new HttpServerTransport({ resolveSenderPk: resolveBtcr2SenderPk, heartbeatIntervalMs: 0 });
+    transport.registerActor(identity.did, identity.keys);
+    const runner = new AggregationServiceRunner({
+      transport,
+      did: identity.did,
+      keys: identity.keys,
+      onProvideTxData: async () => {
+        throw new Error('signing not exercised in this spec');
+      },
+    });
+    transport.start();
+    const operatorCohorts = createOperatorCohorts({ activeNetwork: ACTIVE_NETWORK, runner });
+    const monitor = createCohortMonitor(runner, undefined, undefined, 'live');
+    try {
+      const draft = operatorCohorts.createDraft({ beaconType: 'CASBeacon', size: 2, threshold: 2 });
+      const cohortId = operatorCohorts.advertiseDraft(draft.draftId)!.draftId;
+      runner.emit('keygen-complete', { cohortId, beaconAddress: 'bcrt1pbeaconaddress' });
+
+      monitor.noteFunding(cohortId, { ...sampleView, state: 'waiting' });
+      expect(monitor.summary().find((r) => r.cohortId === cohortId)?.chip).toBe('needs-funding');
+
+      // Once funded, the chip returns to the phase-derived value (no longer an attention chip).
+      monitor.noteFunding(cohortId, { ...sampleView, state: 'funded' });
+      expect(monitor.summary().find((r) => r.cohortId === cohortId)?.chip).not.toBe('needs-funding');
+    } finally {
+      runner.stop();
+    }
+  });
+
+  it('is absent before any funding reading lands', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner, undefined, undefined, 'live');
+    runner.emit('keygen-complete', { cohortId: 'c1', beaconAddress: 'bcrt1pbeaconaddress' });
+    expect(monitor.detail('c1').funding).toBeUndefined();
+  });
+
+  it('is absent on a hermetic cohort even if noteFunding is defensively called (no funding stage off-chain)', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner); // hermetic: no mode, no broadcaster
+    runner.emit('keygen-complete', { cohortId: 'c1', beaconAddress: 'bcrt1pbeaconaddress' });
+    monitor.noteFunding('c1', sampleView);
+    expect(monitor.detail('c1').funding).toBeUndefined();
+    expect(monitor.summary().find((r) => r.cohortId === 'c1')?.chip).not.toBe('needs-funding');
   });
 });

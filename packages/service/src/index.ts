@@ -20,8 +20,16 @@ import { createHonoApp } from './hono-adapter.js';
 import { createLoginThrottle, createSessionStore } from './operator-auth.js';
 import { createOperatorCohorts } from './operator-cohorts.js';
 import { createAnchorState } from './anchor-state.js';
-import { createCohortMonitor, type ServiceMode } from './monitor.js';
+import { createCohortMonitor, type FundingView, type ServiceMode } from './monitor.js';
 import { makeProvideTxData, type LiveTxConfig } from './tx.js';
+import {
+  computeFundingDeadline,
+  computeSuggestedMinSats,
+  createFundingWatch,
+  FUNDING_SLACK_MS,
+  type FundingState,
+  type FundingWatchHandle,
+} from './funding-watch.js';
 import { persistCohortArtifacts } from './persist.js';
 import { GenesisStagingCache, persistMemberGenesis } from './genesis-capture.js';
 import { decideRosterOptIn } from './roster.js';
@@ -77,7 +85,19 @@ export {
   type ServiceMetricsDTO,
   type ServiceMode,
   type ServiceHealthDTO,
+  type FundingView,
 } from './monitor.js';
+export {
+  classifyFunding,
+  computeSuggestedMinSats,
+  computeFundingDeadline,
+  createFundingWatch,
+  FUNDING_SLACK_MS,
+  type FundingState,
+  type FundingStateName,
+  type FundingWatchHandle,
+  type FundingWatchOptions,
+} from './funding-watch.js';
 export { makeProvideTxData, MIN_LIVE_FUNDING_SATS, type LiveTxConfig } from './tx.js';
 export {
   BeaconBroadcaster,
@@ -252,6 +272,22 @@ export interface CreateServiceOptions {
    */
   fundingWindowMs?: number;
   /**
+   * Poll cadence (ms) for the live+broadcast funding wait + operator display watch (D-36/D-38).
+   * Default 5000. Lower it in a hermetic mock e2e so the awaiting-funding -> funded transition is
+   * observed quickly. Only used on the live+broadcast path.
+   */
+  fundingPollIntervalMs?: number;
+  /**
+   * Whether the cohort's ADR-042 recovery key is OPERATOR-HELD (the operator supplied RECOVERY_KEY,
+   * so they can recover funds from a below-threshold-failed cohort) versus a THROWAWAY key whose
+   * secret was auto-derived and discarded (funds sent to a failed cohort are unrecoverable). Drives
+   * the always-shown funding-stage recovery-key disclosure (D-40). Default false (throwaway), the
+   * conservative honest default: `buildCohortConfig` always fills `config.recoveryKey` (auto-deriving
+   * a throwaway when none is supplied), so the config alone cannot distinguish the two - the caller
+   * (demo-server, from the RECOVERY_KEY env) must assert operator-held explicitly.
+   */
+  recoveryKeyOperatorHeld?: boolean;
+  /**
    * Permit a live run against mainnet. Default false: a mainnet {@link config}
    * network with {@link live} true throws (real funds guard). No effect on the
    * fixture path.
@@ -357,6 +393,31 @@ export interface Service {
 }
 
 /**
+ * Derive a block-explorer URL for a beacon ADDRESS from the network's txid explorer template
+ * (D-36 funding stage "View on explorer" link). {@link NetworkConfig} exposes only
+ * `explorerTxUrl(txid)` (`.../tx/{txid}`); every mempool-style explorer this app targets uses the
+ * sibling `.../address/{address}` path, so swap the trailing `/tx/<sentinel>` for `/address/<addr>`.
+ * Returns undefined for the offline network (whose `explorerTxUrl` yields an empty string) so the
+ * funding stage simply omits the link rather than rendering a dead one.
+ */
+function addressExplorerUrl(netConfig: NetworkConfig, address: string): string | undefined {
+  try {
+    const txUrl = netConfig.explorerTxUrl('SENTINEL');
+    if (!txUrl) {
+      return undefined;
+    }
+    const base = txUrl.replace(/\/tx\/SENTINEL$/, '');
+    // If the template did not end in the expected /tx/<sentinel> shape, do not guess an address URL.
+    if (base === txUrl) {
+      return undefined;
+    }
+    return `${base}/address/${address}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Create an aggregation service: an {@link HttpServerTransport} mounted under Hono
  * on a real port, driven by an {@link AggregationServiceRunner} configured with the
  * fixture beacon-tx callback. Senders are authenticated by resolving their DID to a
@@ -432,6 +493,11 @@ export function createService(opts: CreateServiceOptions): Service {
   // mainnet target must be explicitly allowed (real-funds guard). The scure
   // network params come from the shared registry (single source of truth) so
   // address decoding matches everywhere.
+  // Advertise timestamps per cohort, for the funding wait's remaining-TTL clamp (D-38). The
+  // library's `cohortTtlMs` is armed at advertise and never reset, so the wait must subtract the
+  // already-elapsed time; `cohort-advertised` is the earliest per-cohort signal we can stamp.
+  const advertisedAt = new Map<string, number>();
+
   let live: LiveTxConfig | undefined;
   let netConfig: NetworkConfig | undefined;
   if (opts.live) {
@@ -446,6 +512,17 @@ export function createService(opts: CreateServiceOptions): Service {
       bitcoin: opts.bitcoin,
       network: netConfig.scureNetwork,
       changeAddress: opts.changeAddress,
+      // Funding wait (D-38): threaded only when a window is configured (the live+broadcast product
+      // path). Without it the live branch keeps its single-shot pre-flight, unchanged.
+      fundingWindowMs: opts.fundingWindowMs,
+      fundingPollIntervalMs: opts.fundingPollIntervalMs,
+      remainingCohortTtlMs:
+        opts.cohortTtlMs !== undefined
+          ? (cohortId: string): number | undefined => {
+              const at = advertisedAt.get(cohortId);
+              return at === undefined ? undefined : opts.cohortTtlMs! - (Date.now() - at);
+            }
+          : undefined,
     };
   }
 
@@ -602,6 +679,81 @@ export function createService(opts: CreateServiceOptions): Service {
   const mode: ServiceMode = broadcaster ? 'live' : live ? 'live-no-broadcast' : 'hermetic';
   const monitor = createCohortMonitor(runner, broadcaster, anchorState, mode);
 
+  // Stamp each cohort's advertise time so the funding wait's remaining-TTL clamp is honest (D-38).
+  // Registered unconditionally (cheap, harmless off the live path); consumed only by the live
+  // config's `remainingCohortTtlMs` closure and the funding watch's truncated-window disclosure.
+  runner.on('cohort-advertised', ({ cohortId }) => {
+    if (!advertisedAt.has(cohortId)) {
+      advertisedAt.set(cohortId, Date.now());
+    }
+  });
+
+  // Live-path funding watch (LIVE-01, D-36 through D-44). ONLY on the broadcasting path: the
+  // funding stage cannot exist without a real on-chain beacon (a hermetic/live-no-broadcast cohort
+  // never funds a beacon). At `keygen-complete` the beacon address is known, so start a WATCH-ONLY
+  // poll that feeds the monitor's funding view (the gated detail read) + the `needs-funding`
+  // attention chip. This display watch is separate from the AUTHORITATIVE wait that gates signing
+  // in tx.ts (onProvideTxData); both share classifyFunding + the suggested minimum so they agree.
+  const fundingWatches = new Map<string, FundingWatchHandle>();
+  if (opts.broadcast && live && netConfig) {
+    const netConf = netConfig;
+    const liveConf = live;
+    const suggestedMinSats = computeSuggestedMinSats();
+    // The always-shown recovery-key disclosure (D-40) + the mainnet real-money/change-routing bits
+    // (D-42), fixed for every cohort of this service. The recovery-key VALUE is never carried, only
+    // the STATE (T-04-06-04).
+    const recoveryKeyState: FundingView['recoveryKeyState'] = opts.recoveryKeyOperatorHeld
+      ? 'operator-held'
+      : 'throwaway';
+    const mainnet = netConf.isMainnet;
+    const changeAddressRedirected = opts.changeAddress !== undefined;
+    runner.on('keygen-complete', ({ cohortId, beaconAddress }) => {
+      // One watch per cohort (keygen-complete fires once, but guard against a re-emit).
+      if (fundingWatches.has(cohortId)) {
+        return;
+      }
+      // Disclose the truncated window honestly (D-38): compute the same clamp the tx.ts wait uses
+      // at this moment (keygen-complete and the wait fire near-simultaneously, so this matches).
+      const at = advertisedAt.get(cohortId);
+      const remainingTtl =
+        opts.cohortTtlMs !== undefined && at !== undefined
+          ? opts.cohortTtlMs - (Date.now() - at)
+          : undefined;
+      const { truncatedWindowMin } = computeFundingDeadline({
+        configuredWindowMs: opts.fundingWindowMs,
+        remainingTtlMs: remainingTtl,
+        slackMs: FUNDING_SLACK_MS,
+      });
+      const explorerUrl = addressExplorerUrl(netConf, beaconAddress);
+      const handle = createFundingWatch({
+        bitcoin: liveConf.bitcoin,
+        beaconAddress,
+        suggestedMinSats,
+        pollIntervalMs: opts.fundingPollIntervalMs,
+        onState: (fundingState: FundingState, { lastObservationOk }) => {
+          const view: FundingView = {
+            state: fundingState.state,
+            suggestedMinSats,
+            beaconAddress,
+            ...(explorerUrl ? { explorerUrl } : {}),
+            recoveryKeyState,
+            mainnet,
+            changeAddressRedirected,
+            ...(truncatedWindowMin !== undefined ? { truncatedWindowMin } : {}),
+            // A failed observation freezes the funding state stale (D-43): the state is the
+            // last-known one (the watch does not fabricate), only this bit flips.
+            esploraStale: !lastObservationOk,
+          };
+          monitor.noteFunding(cohortId, view);
+          // Flip the health strip's esplora bit in step (D-43): a failed funding read is exactly the
+          // mid-flight outage that must freeze every cohort stale-honest.
+          monitor.noteEsploraObservation(lastObservationOk);
+        },
+      });
+      fundingWatches.set(cohortId, handle);
+    });
+  }
+
   // Operator on-demand cohort drafts (SVC-01). Constructed per-createService like the
   // auth closures above, and ONLY when the operator surface is enabled - fail-closed
   // (D-07): no operator password, no cohort routes. The active network is the service's
@@ -668,8 +820,11 @@ export function createService(opts: CreateServiceOptions): Service {
       });
     },
     stop(): Promise<void> {
-      // Abort any in-flight confirmation poll before tearing down the runner.
+      // Abort any in-flight confirmation poll + funding watch poll before tearing down the runner.
       broadcastHandle?.stop();
+      for (const handle of fundingWatches.values()) {
+        handle.stop();
+      }
       runner.stop();
       transport.stop();
       return new Promise<void>((resolve) => {
