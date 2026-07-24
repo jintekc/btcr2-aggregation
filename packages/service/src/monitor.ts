@@ -405,6 +405,18 @@ export interface CohortMonitor {
    * view even if this is (defensively) called, because the funding stage cannot exist off-chain.
    */
   noteFunding(cohortId: string, view: FundingView): void;
+  /**
+   * The PUBLIC, non-oracle funding signal for a cohort (D-44), backing the anonymous
+   * `GET /v1/funding/:cohortId` read a seated participant polls. Returns ONLY an
+   * `awaitingFunding` boolean, and ONLY `true` for a live+broadcast cohort whose funding
+   * state is still `waiting` or `awaiting-confirmation` (the operator has not yet funded the
+   * beacon address). Everything else reads `false`: a hermetic/live-no-broadcast service (no
+   * funding stage exists off-chain), a funded/dead-end cohort, and an unknown/never-existed
+   * cohortId - so the read can never leak an amount, a key, or a cohort's existence beyond a
+   * single waiting bit (T-04-07-01). Distinct from {@link noteFunding}'s rich operator view:
+   * this is the anonymous participant projection, deliberately stripped to one boolean.
+   */
+  publicFunding(cohortId: string): { awaitingFunding: boolean };
 }
 
 /**
@@ -1088,6 +1100,21 @@ export function createCohortMonitor(
         return;
       }
       fundingViews.set(cohortId, view);
+    },
+
+    publicFunding(cohortId: string): { awaitingFunding: boolean } {
+      // Non-oracle by construction (T-04-07-01): only a live+broadcast cohort can carry a
+      // funding view, and only its still-unfunded states (waiting / awaiting-confirmation)
+      // read `awaitingFunding: true`. A hermetic/live-no-broadcast service, a funded or
+      // dead-end cohort, and an unknown cohortId all read `false`, so the anonymous read
+      // leaks neither amounts, keys, nor cohort existence beyond a single waiting bit.
+      if (serviceMode !== 'live') {
+        return { awaitingFunding: false };
+      }
+      const view = fundingViews.get(cohortId);
+      const awaitingFunding =
+        view !== undefined && (view.state === 'waiting' || view.state === 'awaiting-confirmation');
+      return { awaitingFunding };
     },
 
     summary(): CohortSummaryDTO[] {

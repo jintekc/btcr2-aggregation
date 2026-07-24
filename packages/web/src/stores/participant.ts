@@ -26,6 +26,7 @@ import {
   type PublishableArtifactKind,
 } from '@btcr2-aggregation/shared';
 import { fetchAnchor, type AnchorDTO } from '../lib/anchor';
+import { fetchFunding } from '../lib/funding';
 import { elapsed } from '../lib/clock';
 import { fetchNetworkConfig } from '../lib/config';
 import { fetchDirectory, type DirectoryCohortDTO } from '../lib/operator';
@@ -182,6 +183,23 @@ interface ParticipantState {
    * reconnect (D-25).
    */
   unreachable: boolean;
+  /**
+   * True once we learned the picked cohort is a LIVE (on-chain) cohort that anchors its
+   * beacon on Bitcoin (D-44), latched from the first `awaitingFunding` funding-signal read.
+   * Drives the join-time "this cohort anchors on-chain; the operator funds its beacon address
+   * after seats fill" notice. Never set on a hermetic (no-broadcast) cohort - the public
+   * funding read returns `awaitingFunding: false` there, so neither this nor the waiting copy
+   * ever surfaces. A per-round fact (reset on adopt/join/leave/start-over via INITIAL_OUTCOME).
+   */
+  liveCohort: boolean;
+  /**
+   * True while the picked live cohort is still awaiting its operator's beacon funding (D-44),
+   * polled post-seat from the PUBLIC `GET /v1/funding/:cohortId` non-oracle read. Drives the
+   * honest "Waiting for the operator to fund this cohort's beacon address." wait copy. Clears
+   * to false the moment the funding read reports the beacon funded (or on any teardown). Carries
+   * no amount, key, or address - only the single waiting bit the public read exposes.
+   */
+  awaitingFunding: boolean;
   /**
    * True once this participant observed the runner's `fallback-requested` event (D-23):
    * the n-of-n key-path stalled and the cohort co-signed the ADR-042 k-of-n script-path
@@ -497,6 +515,27 @@ let postSeatFailures = 0;
 let postSeatGoneStreak = 0;
 const POST_SEAT_GONE_CONFIRMATIONS = 2;
 
+// The post-seat funding-signal poll (D-44), a NEW live-path concern separate from every
+// other poll: once seated on a live cohort, watch the PUBLIC `GET /v1/funding/:cohortId`
+// non-oracle read to learn whether the operator has funded the cohort's beacon address yet,
+// so the participant sees honest "waiting for funding" copy instead of a bare co-signing
+// spinner. Module scope like the sibling polls: a long-lived handle, not a render value.
+// Epoch-guarded (WR-01 class) so a stale in-flight read from a prior round is dropped.
+// Cleared on complete/fail/leave/re-join (teardownLive). A fetch error is swallowed (an
+// unreachable funding read is never a terminal, and the other polls own the D-24 signal).
+let fundingPoll: ReturnType<typeof setInterval> | null = null;
+let fundingEpoch = 0;
+const FUNDING_POLL_MS = 5000;
+
+function clearFundingPoll(): void {
+  if (fundingPoll !== null) {
+    clearInterval(fundingPoll);
+    fundingPoll = null;
+  }
+  // Invalidate any fetchFunding still in flight so its stale bit cannot drive the next round.
+  fundingEpoch += 1;
+}
+
 function clearPostSeatPoll(): void {
   if (postSeatPoll !== null) {
     clearInterval(postSeatPoll);
@@ -538,6 +577,9 @@ function teardownLive(): void {
   clearPostSeatPoll();
   clearResolveLagRetry();
   clearAnchorPoll();
+  // The funding-signal poll belongs to this round like the post-seat poll: tear it down at
+  // every terminal so a completed/failed round never keeps polling a stale cohort (D-44).
+  clearFundingPoll();
 }
 
 function clearDirectoryPoll(): void {
@@ -808,6 +850,8 @@ const INITIAL_OUTCOME = {
   sidecar: null,
   anchor: null as AnchorDTO | null,
   unreachable: false,
+  liveCohort: false,
+  awaitingFunding: false,
   fallbackObserved: false,
   nonInclusionReason: null as string | null,
   cohortThreshold: null as number | null,
@@ -1112,6 +1156,36 @@ export const useParticipant = create<ParticipantState>((set, get) => {
             },
           );
         }, POST_SEAT_POLL_MS);
+        // Funding-signal watch (D-44): on a LIVE (on-chain) cohort the operator funds the beacon
+        // address AFTER seats fill, so from the seat onward poll the PUBLIC non-oracle funding read
+        // and surface honest "waiting for funding" copy. `awaitingFunding: true` also latches the
+        // `liveCohort` fact (the read is true ONLY for a live+broadcast cohort still awaiting funding),
+        // which drives the join-time "this cohort anchors on-chain" notice. A hermetic cohort always
+        // reads false, so neither the notice nor the wait copy ever surfaces there. A fetch error is
+        // swallowed (never a terminal; the post-seat/anchor polls own the D-24 unreachable signal).
+        clearFundingPoll();
+        const fundEpoch = fundingEpoch;
+        const fundingTick = (): void => {
+          fetchFunding(baseUrl, cohortId).then(
+            ({ awaitingFunding }) => {
+              if (fundEpoch !== fundingEpoch) {
+                return;
+              }
+              set(
+                awaitingFunding
+                  ? { awaitingFunding: true, liveCohort: true }
+                  : { awaitingFunding: false },
+              );
+            },
+            () => {
+              // Ignore: an unreachable funding read is a transient miss, never "not live" and
+              // never a terminal. The next tick retries; the latched liveCohort fact is unchanged.
+            },
+          );
+        };
+        // Immediate first read (so the wait copy appears without a full cadence), then the interval.
+        fundingTick();
+        fundingPoll = setInterval(fundingTick, FUNDING_POLL_MS);
       });
       r.on('update-submitted', ({ cohortId }) => {
         setStep('submit', 'done');

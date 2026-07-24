@@ -327,6 +327,23 @@ export function createHonoApp(
     return c.json(anchorState ? anchorState.read(cohortId) : { enabled: false, state: 'none' });
   });
 
+  // Public funding signal (D-44). Mounted here in the PUBLIC block beside /v1/anchor and
+  // BEFORE the `if (operatorAuth)` gate: like the anchor read, it is anonymous by design so a
+  // seated participant can poll whether a live cohort is still awaiting its operator's funding
+  // with no session. It is a NEW, ADDITIVE sibling read - the frozen /v1/anchor + DirectoryCohortDTO
+  // stay byte-untouched (D-26). Non-oracle: it returns ONLY `{ awaitingFunding }` (never an amount,
+  // a key, or an existence oracle, T-04-07-01); an unknown/hermetic id reads `{ awaitingFunding: false }`.
+  // Guard the `:cohortId` shape with the same cheap 400 as the anchor read BEFORE any lookup. When no
+  // monitor is wired (hermetic default), answer the fail-open `false` rather than 500. The read serves
+  // last-known funding-watch state and never drives chain I/O, so the anonymous route cannot be a DoS vector.
+  app.get('/v1/funding/:cohortId', (c) => {
+    const cohortId = c.req.param('cohortId');
+    if (!/^[0-9a-zA-Z-]{1,64}$/.test(cohortId)) {
+      return c.json({ error: 'invalid cohort id' }, 400);
+    }
+    return c.json(monitor ? monitor.publicFunding(cohortId) : { awaitingFunding: false });
+  });
+
   // Operator surface (HOST-01, ADR 0015). Mounted ONLY when operator auth is
   // configured (fail-closed, D-07): a service booted without an OPERATOR_PASSWORD
   // exposes no operator/mutating routes and no gated telemetry at all. Registration

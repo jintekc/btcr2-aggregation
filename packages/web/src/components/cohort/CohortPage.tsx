@@ -107,6 +107,8 @@ export function CohortPage({ baseUrl: _baseUrl, onBrowse }: { baseUrl: string; o
   const log = useParticipant((s) => s.log);
   const leave = useParticipant((s) => s.leave);
   const unreachable = useParticipant((s) => s.unreachable);
+  const liveCohort = useParticipant((s) => s.liveCohort);
+  const awaitingFunding = useParticipant((s) => s.awaitingFunding);
   const error = useParticipant((s) => s.error);
   const startOver = useParticipant((s) => s.startOver);
 
@@ -168,6 +170,25 @@ export function CohortPage({ baseUrl: _baseUrl, onBrowse }: { baseUrl: string; o
           anchor={anchor}
         />
       </Card>
+
+      {/* Live-cohort funding notice + honest wait copy (D-44). A LIVE (on-chain) cohort anchors its
+          beacon on Bitcoin, and the operator funds that beacon address only after seats fill, so the
+          participant sees WHY co-signing may pause (waiting on funding) instead of a bare spinner. The
+          notice shows on any live cohort still in flight; the wait line adds only while the public
+          funding read reports the beacon still unfunded. A hermetic cohort surfaces neither. */}
+      {liveCohort && !failed && status !== 'complete' ? (
+        <Card className="space-y-1 border-edge-strong p-5">
+          <p className="text-sm text-ink">
+            This cohort anchors on-chain. The operator funds its beacon address after seats fill, so
+            keep this tab open.
+          </p>
+          {awaitingFunding ? (
+            <p className="text-sm text-muted">
+              Waiting for the operator to fund this cohort&apos;s beacon address.
+            </p>
+          ) : null}
+        </Card>
+      ) : null}
 
       {!failed && stage === 'submit-window' && cohortId ? (
         <SubmitPanel baseUrl={_baseUrl} cohortId={cohortId} />
