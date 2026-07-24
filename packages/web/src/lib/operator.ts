@@ -435,17 +435,28 @@ export async function discardDraft(baseUrl: string, id: string): Promise<void> {
 }
 
 /**
- * POST the advertise action for a draft (SVC-02). Gated + same-origin (the session
- * cookie rides `credentials: 'same-origin'`); returns whether the server accepted it
- * (200) so the store can surface the transient success message.
+ * POST the advertise action for a draft (SVC-02). Gated + same-origin (the session cookie rides
+ * `credentials: 'same-origin'`). Returns the LIVE cohort id on success, or `null` when the server
+ * did not accept it (so the store can surface the transient success message and land the operator
+ * in the correct drill-down, D-13).
+ *
+ * The returned id is deliberately the response DTO's `draftId`, which the server sets to the NEW
+ * live cohort id: `advertiseDraft` calls `runner.advertiseCohort`, which mints a fresh cohort id
+ * and deletes the draft, so the original draft id is stale the instant advertise succeeds. Landing
+ * the drill-down on that stale id would poll a cohort the monitor has no entry for (an empty
+ * "Seats: 0/0" page), so the caller MUST open the returned live id instead.
  */
-export async function advertise(baseUrl: string, id: string): Promise<boolean> {
+export async function advertise(baseUrl: string, id: string): Promise<string | null> {
   const res = await fetch(endpoint(baseUrl, `/v1/operator/cohorts/${encodeURIComponent(id)}/advertise`), {
     method: 'POST',
     credentials: 'same-origin',
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
-  return res.ok;
+  if (!res.ok) {
+    return null;
+  }
+  const dto = (await res.json()) as { draftId?: unknown };
+  return typeof dto.draftId === 'string' && dto.draftId ? dto.draftId : null;
 }
 
 /**

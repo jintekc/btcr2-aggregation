@@ -265,15 +265,17 @@ export const useOperator = create<OperatorState>((set, get) => ({
   async advertise(baseUrl, id) {
     set({ advertiseStatus: 'advertising', advertisingId: id, advertiseMessage: undefined, formError: undefined });
     try {
-      const ok = await apiAdvertise(baseUrl, id);
-      if (ok) {
+      const liveCohortId = await apiAdvertise(baseUrl, id);
+      if (liveCohortId) {
         set({ advertiseStatus: 'idle', advertisingId: undefined, advertiseMessage: ADVERTISED_OK });
         await get().refreshCohorts(baseUrl);
-        // Land the operator in the freshly-advertised cohort's drill-down (D-13): the draft
-        // id becomes the live cohort id on advertise. Guard on a still-signed-in session so a
-        // 401 during the refresh above (which drops to logged-out) is not overridden.
+        // Land the operator in the freshly-advertised cohort's drill-down (D-13). Advertise mints a
+        // NEW live cohort id server-side (the draft is deleted), so open the LIVE id the advertise
+        // response returned, NOT the stale draft id (which the monitor has no entry for). Guard on a
+        // still-signed-in session so a 401 during the refresh above (which drops to logged-out) is
+        // not overridden.
         if (get().auth === 'logged-in') {
-          get().openCohort(id);
+          get().openCohort(liveCohortId);
         }
         // Clear the transient confirmation after a few seconds, but only if it is still
         // the same message (a later action may have replaced it).
