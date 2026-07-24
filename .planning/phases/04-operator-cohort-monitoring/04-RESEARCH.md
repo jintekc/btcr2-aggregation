@@ -541,7 +541,9 @@ Summary read polls whenever the console is mounted and logged in; the detail rea
 | A4 | vitest's default include picks up new `packages/*/tests/*.spec.ts` without config changes | Validation Architecture | Wave 0 adds an explicit include if not; trivial |
 | A5 | Large cohort-count list rendering without virtualization is acceptable (UI-SPEC unresolved item, single-box modest counts) | UI-SPEC carry-over | Revisit only if it bites; bounded retention caps the list |
 
-## Open Questions
+## Open Questions (RESOLVED at plan time)
+
+> All three questions were resolved by the planner: (1) 04-07 Task 1 adds the additive public read `GET /v1/funding/:cohortId` (this file's own recommendation); (2) 04-03 Task 2 carries SERVICE_NAME on `/v1/config` after verifying the `config.spec.ts` pin style is fields-present, not fields-absent; (3) the live requirement landed as LIVE-01 in REQUIREMENTS.md/ROADMAP.md.
 
 1. **Participant-side mid-round funding-signal vehicle (D-44, discretion)**
    - What we know: the frozen public anchor read is off-limits; candidates are the existing protocol SSE session (participant already holds a live transport session mid-round) or a new additive public read.

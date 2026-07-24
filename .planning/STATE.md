@@ -4,15 +4,15 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 4
 current_phase_name: Operator Cohort Monitoring
-status: planning
-stopped_at: Phase 4 context gathered (incl. 2 ultracode audit rounds)
-last_updated: "2026-07-23T16:49:27.005Z"
-last_activity: 2026-07-22
-last_activity_desc: Phase 3 complete, transitioned to Phase 4
+status: ready-to-execute
+stopped_at: Phase 04 planned (8 plans, 7 waves)
+last_updated: "2026-07-24T15:19:01.677Z"
+last_activity: 2026-07-24
+last_activity_desc: Phase 4 planned - 8 plans in 7 waves, checker passed
 progress:
   total_phases: 4
   completed_phases: 3
-  total_plans: 22
+  total_plans: 30
   completed_plans: 22
 ---
 
@@ -29,8 +29,8 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 
 Phase: 4 — Operator Cohort Monitoring
 Plan: Not started
-Status: Ready to plan
-Last activity: 2026-07-22 — Phase 3 complete, transitioned to Phase 4
+Status: Ready to execute
+Last activity: 2026-07-24 - Phase 4 planned (8 plans, 7 waves; checker passed, coverage 55/55)
 
 Progress: [██████████░░░░░░░░░░] 3 of 6 phases complete (22/22 planned-to-date plans executed)
 
@@ -145,7 +145,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-23T16:49:26.995Z
-Stopped at: Phase 4 context gathered (incl. 2 ultracode audit rounds)
-Resume file: .planning/phases/04-operator-cohort-monitoring/04-CONTEXT.md
-Next command: /gsd-discuss-phase 4
+Last session: 2026-07-23T22:49:06.664Z
+Stopped at: Phase 04 planned (8 plans, 7 waves)
+Resume file: .planning/phases/04-operator-cohort-monitoring/04-01-PLAN.md
+Next command: /gsd-execute-phase 4

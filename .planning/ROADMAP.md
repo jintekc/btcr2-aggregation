@@ -136,15 +136,46 @@ Plans:
 **Goal**: On the authenticated console, the operator monitors each advertised cohort's members, pending submissions, co-sign progress, and anchor status in real time, turning the read-only telemetry tab into the operator's live view of on-demand cohorts.
 **Mode:** mvp
 **Depends on**: Phase 3 (a full participant lifecycle to monitor) and Phase 1 (the protected console)
-**Requirements**: SVC-03
+**Requirements**: SVC-03, LIVE-01
 **Success Criteria** (what must be TRUE):
 
   1. The operator sees, per advertised cohort, who has joined and how many seats remain, updating live as participants join.
   2. The operator sees pending DID-update submissions and co-sign progress for a cohort as it advances through the MuSig2 round.
   3. The operator sees anchor status (beacon broadcast / confirmed) for each cohort.
   4. This monitoring view is reachable only by the authenticated operator, not by anonymous participants.
+  5. The live broadcast path is operable from the product itself (LIVE-01): a real boot enables live co-sign + broadcast behind guard rails (`BROADCAST=1` requires `LIVE=1`), the cohort-beacon funding stage advances honestly (waiting / seen / funded / dead-end), the funding wait fails with a specific reason before any library timer, and the participant awaiting-funding / stall / unconfirmed-signal-resolve copy is honest, verified hermetically by a mocked-chain funding leg and by an owner live-UAT walkthrough.
 
-**Plans**: TBD
+**Plans**: 8 plans
+Plans:
+**Wave 1**
+
+- [ ] 04-01-PLAN.md - TRACER: monitoring member/seat vertical slice (monitor fold + gated detail read + polled drill-down) (SVC-03, Wave 1)
+
+**Wave 2** *(blocked on Wave 1)*
+
+- [ ] 04-02-PLAN.md - Retire dashboard-SSE + migrate pins + monitoring summary read (chips/metrics/ended taxonomy) (SVC-03, Wave 2)
+
+**Wave 3** *(blocked on Wave 2)*
+
+- [ ] 04-03-PLAN.md - List-first console shell + status chips + service metrics + health strip + SERVICE_NAME (SVC-03, Wave 3)
+
+**Wave 4** *(blocked on Wave 3)*
+
+- [ ] 04-04-PLAN.md - Drill-down depth: submissions, per-member round state, honest co-sign, anchor detail, activity log, JSON export (SVC-03, Wave 4)
+
+**Wave 5** *(blocked on Wave 4)*
+
+- [ ] 04-05-PLAN.md - Live boot enablement (BROADCAST=1 + banners + invariant) + bounded broadcast send retry + mode/esplora health signal (LIVE-01, Wave 5)
+
+**Wave 6** *(blocked on Wave 5)*
+
+- [ ] 04-06-PLAN.md - Cohort-beacon funding stage: watch predicate + clamped funding wait + honest disclosure + mocked-chain e2e (LIVE-01, Wave 6)
+
+**Wave 7** *(blocked on Wave 6; the two run in parallel, disjoint files)*
+
+- [ ] 04-07-PLAN.md - Participant-side: awaiting-funding notice + stall-copy fix + unconfirmed-signal resolve guard (LIVE-01, Wave 7)
+- [ ] 04-08-PLAN.md - Proof + docs: fixture monitoring e2e + browser operator capstone + uat:live + ADR 0016 + DEPLOY going-live + scoping one-pagers + owner live-UAT checkpoint (SVC-03/LIVE-01, Wave 7)
+
 **UI hint**: yes
 
 ### Phase 5: Operator Cohort Lifecycle Control
@@ -187,6 +218,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 1. Authenticated Operator Console + On-Demand Cohort Creation | 4/4 | Complete    | 2026-07-08 |
 | 2. Participant Discovery + Browse-and-Pick Join | 9/9 | Complete    | 2026-07-16 |
 | 3. Participant Submit, Co-Sign, Track, and Resolve | 9/9 | Complete    | 2026-07-22 |
-| 4. Operator Cohort Monitoring | 0/TBD | Not started | - |
+| 4. Operator Cohort Monitoring | 0/8 | Not started | - |
 | 5. Operator Cohort Lifecycle Control | 0/TBD | Not started | - |
 | 6. Two-Stranger End-to-End + Real-Aggregator Framing | 0/TBD | Not started | - |
