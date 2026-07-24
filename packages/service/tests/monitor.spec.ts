@@ -722,6 +722,65 @@ describe('createCohortMonitor summary + serviceMetrics + ended taxonomy', () => 
   });
 });
 
+describe('createCohortMonitor serviceHealth (mode + esplora reachability, D-17/D-43)', () => {
+  it('reports hermetic mode with esploraReachable n/a when no broadcaster is wired', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner);
+    expect(monitor.serviceHealth()).toEqual({ mode: 'hermetic', esploraReachable: 'n/a' });
+  });
+
+  it('derives live mode from a broadcaster when no explicit mode is passed', () => {
+    const runner = bareRunner();
+    const broadcaster = new BeaconBroadcaster();
+    const monitor = createCohortMonitor(runner, broadcaster);
+    expect(monitor.serviceHealth().mode).toBe('live');
+    expect(monitor.serviceHealth().esploraReachable).toBe(true);
+  });
+
+  it('honors an explicit live-no-broadcast mode (the middle mode) with esplora reachable', () => {
+    const runner = bareRunner();
+    // The middle mode: a live esplora path built but no broadcaster (index.ts passes it).
+    const monitor = createCohortMonitor(runner, undefined, undefined, 'live-no-broadcast');
+    expect(monitor.serviceHealth()).toEqual({ mode: 'live-no-broadcast', esploraReachable: true });
+  });
+
+  it('flips esploraReachable on noteEsploraObservation(false) without altering cohort state (stale-honest, D-43)', () => {
+    const runner = bareRunner();
+    const broadcaster = new BeaconBroadcaster();
+    const monitor = createCohortMonitor(runner, broadcaster, undefined, 'live');
+
+    // Seed one cohort's last-known detail.
+    runner.emit('opt-in-received', {
+      cohortId: 'c1',
+      participantDid: 'did:example:alice',
+      participantPk: new Uint8Array([1]),
+      communicationPk: new Uint8Array([2]),
+    });
+    runner.emit('participant-accepted', { cohortId: 'c1', participantDid: 'did:example:alice' });
+    const before = monitor.detail('c1');
+    expect(before.members).toHaveLength(1);
+
+    // A mid-flight esplora outage flips the strip bit only.
+    monitor.noteEsploraObservation(false);
+    expect(monitor.serviceHealth()).toEqual({ mode: 'live', esploraReachable: false });
+
+    // The cohort's last-known detail is FROZEN, not mutated or invented (stale-honest).
+    const after = monitor.detail('c1');
+    expect(after).toEqual(before);
+
+    // Recovery flips it back.
+    monitor.noteEsploraObservation(true);
+    expect(monitor.serviceHealth().esploraReachable).toBe(true);
+  });
+
+  it('keeps esploraReachable n/a on hermetic even after a noteEsploraObservation call', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner); // hermetic
+    monitor.noteEsploraObservation(false);
+    expect(monitor.serviceHealth().esploraReachable).toBe('n/a');
+  });
+});
+
 describe('summarizeTx (lifted from dashboard-sse)', () => {
   it('does not throw on a fixture tx whose fee accessor throws (fee -> undefined, other fields kept)', () => {
     const fixtureTx = {

@@ -20,7 +20,7 @@ import { createHonoApp } from './hono-adapter.js';
 import { createLoginThrottle, createSessionStore } from './operator-auth.js';
 import { createOperatorCohorts } from './operator-cohorts.js';
 import { createAnchorState } from './anchor-state.js';
-import { createCohortMonitor } from './monitor.js';
+import { createCohortMonitor, type ServiceMode } from './monitor.js';
 import { makeProvideTxData, type LiveTxConfig } from './tx.js';
 import { persistCohortArtifacts } from './persist.js';
 import { GenesisStagingCache, persistMemberGenesis } from './genesis-capture.js';
@@ -75,6 +75,8 @@ export {
   type CohortChip,
   type CohortSummaryDTO,
   type ServiceMetricsDTO,
+  type ServiceMode,
+  type ServiceHealthDTO,
 } from './monitor.js';
 export { makeProvideTxData, MIN_LIVE_FUNDING_SATS, type LiveTxConfig } from './tx.js';
 export {
@@ -592,7 +594,13 @@ export function createService(opts: CreateServiceOptions): Service {
   // detail composes the operator anchor view from the SAME projection the public read serves
   // (byte-untouched, D-18/D-26); a hermetic service passes undefined and the detail reads the
   // mode-honest `{ enabled: false, state: 'none' }`.
-  const monitor = createCohortMonitor(runner, broadcaster, anchorState);
+  // The resolved broadcast mode (D-17) for the operator health strip: a broadcaster present
+  // means the service broadcasts on-chain (`live`); a live esplora path built but not
+  // broadcasting is the `live-no-broadcast` middle mode; else the hermetic fixture path. Passed
+  // so the monitor reports mode + esplora reachability honestly (04-06 wires the strip + the
+  // funding watch's `noteEsploraObservation`).
+  const mode: ServiceMode = broadcaster ? 'live' : live ? 'live-no-broadcast' : 'hermetic';
+  const monitor = createCohortMonitor(runner, broadcaster, anchorState, mode);
 
   // Operator on-demand cohort drafts (SVC-01). Constructed per-createService like the
   // auth closures above, and ONLY when the operator surface is enabled - fail-closed

@@ -203,6 +203,28 @@ export interface ServiceMetricsDTO {
   failed: number;
 }
 
+/**
+ * The resolved broadcast mode of the service (D-17), for the operator health strip. `hermetic`
+ * is the fixture co-sign path (no chain); `live-no-broadcast` builds a real beacon tx on a live
+ * esplora but never pushes it (the middle mode, reachable programmatically but not via env);
+ * `live` broadcasts each cohort's beacon tx on-chain. Derived ONCE at construction from the
+ * live/broadcast wiring in {@link file://./index.ts}, never re-derived per read.
+ */
+export type ServiceMode = 'hermetic' | 'live-no-broadcast' | 'live';
+
+/**
+ * The service-level health the operator strip renders honestly (D-17/D-43): the resolved
+ * {@link ServiceMode} and an esplora-reachability bit. `esploraReachable` is `'n/a'` on the
+ * hermetic path (no esplora is contacted), else a boolean that the live-path funding watch /
+ * confirm poll flips via {@link CohortMonitor.noteEsploraObservation}. A `false` reading means a
+ * mid-flight esplora outage: the strip flips, but every cohort's last-known chip/detail stays
+ * frozen (stale-honest, D-43) while the retry/confirm machinery keeps working underneath.
+ */
+export interface ServiceHealthDTO {
+  mode: ServiceMode;
+  esploraReachable: boolean | 'n/a';
+}
+
 /** The terminal chip of a retained ended-cohort record (a strict subset of {@link CohortChip}). */
 type EndedChip = 'anchored' | 'fallback' | 'failed';
 
@@ -319,6 +341,20 @@ export interface CohortMonitor {
    * plain JSON-serializable. Off-chain artifacts stay referenced by hash at `/cas/`.
    */
   exportRecord(cohortId: string): CohortExportDTO;
+  /**
+   * Service-level health for the operator strip (D-17/D-43): the resolved {@link ServiceMode}
+   * and the esplora-reachability bit (`'n/a'` on hermetic). A pure projection over the mode
+   * fixed at construction plus the last {@link noteEsploraObservation} reading.
+   */
+  serviceHealth(): ServiceHealthDTO;
+  /**
+   * Record the outcome of a live esplora observation (D-43), flipping the reachability bit the
+   * {@link serviceHealth} strip renders. Called by the live-path funding watch / confirm poll on
+   * each success (`true`) or failure (`false`). A no-op on the hermetic path (no esplora is
+   * contacted, so the bit stays `'n/a'`). It NEVER touches any cohort's fold state, so a `false`
+   * reading leaves every last-known chip/detail frozen (stale-honest, not a fabricated state).
+   */
+  noteEsploraObservation(ok: boolean): void;
 }
 
 /**
@@ -483,7 +519,18 @@ export function createCohortMonitor(
   runner: AggregationServiceRunner,
   broadcaster?: BeaconBroadcaster,
   anchorState?: AnchorState,
+  mode?: ServiceMode,
 ): CohortMonitor {
+  // The resolved broadcast mode (D-17), fixed at construction. When the caller does not supply
+  // one, derive the honest binary from the wiring available here: a broadcaster present means
+  // the service broadcasts (`live`); otherwise `hermetic`. The `live-no-broadcast` middle mode
+  // is indistinguishable from hermetic without the caller's knowledge of the live esplora
+  // connection, so index.ts passes it explicitly (the funding watch is a live-esplora path).
+  const serviceMode: ServiceMode = mode ?? (broadcaster ? 'live' : 'hermetic');
+  // Last esplora observation (D-43). Starts reachable on a live path (optimistic until a failed
+  // observation); irrelevant on hermetic, where serviceHealth reports `'n/a'`. Flipped ONLY by
+  // noteEsploraObservation, never by a fold listener, so it can never mutate cohort state.
+  let esploraReachable = true;
   /**
    * The operator anchor view for a cohort: the SAME projection the public read serves,
    * composed from the injected {@link anchorState} (byte-untouched, D-26), or the mode-honest
@@ -952,6 +999,22 @@ export function createCohortMonitor(
       // plus a cohortId + exportedAt stamp. Off-chain artifacts stay referenced by hash at
       // /cas/ - only the signed-update bodies the detail already surfaces cross here (D-34).
       return { cohortId, exportedAt: Date.now(), ...buildDetail(cohortId) };
+    },
+
+    serviceHealth(): ServiceHealthDTO {
+      // Pure projection: the mode is fixed at construction; esplora reachability is `'n/a'` on
+      // the hermetic path (no esplora is ever contacted) and the last observed reading otherwise.
+      return {
+        mode: serviceMode,
+        esploraReachable: serviceMode === 'hermetic' ? 'n/a' : esploraReachable,
+      };
+    },
+
+    noteEsploraObservation(ok: boolean): void {
+      // Flip ONLY the reachability bit; never touch the fold, so a failed observation freezes
+      // every cohort's last-known state stale-honest (D-43) rather than inventing a new one. A
+      // no-op on hermetic: serviceHealth reports `'n/a'` there regardless of this flag.
+      esploraReachable = ok;
     },
 
     summary(): CohortSummaryDTO[] {
