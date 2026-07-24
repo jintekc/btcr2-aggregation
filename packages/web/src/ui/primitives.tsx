@@ -26,6 +26,30 @@ export function SectionTitle({ children }: { children: ReactNode }) {
   );
 }
 
+/**
+ * A collapsed-by-default detail section that scrolls its overflow (`max-h-80 overflow-auto`)
+ * rather than growing the card. Promoted VERBATIM from the local `Expander` in
+ * `components/cohort/CompletionSummary.tsx` so the participant and operator surfaces share
+ * ONE implementation (04-UI-SPEC reuse map: plain-first content, raw protocol detail behind
+ * the technical expander, D-12).
+ */
+export function Expander({ title, children }: { title: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-lg border border-edge bg-surface-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-faint"
+      >
+        <span>{title}</span>
+        <span>{open ? 'Hide' : 'Show'}</span>
+      </button>
+      {open ? <div className="max-h-80 overflow-auto border-t border-edge px-4 py-3">{children}</div> : null}
+    </div>
+  );
+}
+
 type Tone = 'neutral' | 'accent' | 'good' | 'warn' | 'bad';
 
 const TONE_CLASS: Record<Tone, string> = {

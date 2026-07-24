@@ -6,12 +6,14 @@ import {
   readvertise as apiReadvertise,
   createDraft as apiCreateDraft,
   discardDraft as apiDiscardDraft,
-  listCohorts as apiListCohorts,
+  fetchOperatorCohorts,
   fetchCohortDetail,
   sessionProbe,
   type CohortDetailDTO,
+  type CohortSummaryDTO,
   type DraftInput,
   type OperatorCohortDTO,
+  type ServiceMetricsDTO,
 } from '../lib/operator';
 
 /**
@@ -33,11 +35,11 @@ export type CreateStatus = 'idle' | 'creating' | 'error';
 /** Advertise-action lifecycle (per draft row). */
 export type AdvertiseStatus = 'idle' | 'advertising' | 'error';
 
-/** Transient advertise success copy (spaced hyphen per house style; UI-SPEC intent). */
-const ADVERTISED_OK = 'Advertised - now joinable in the directory.';
+/** Transient advertise success copy (UI-SPEC verbatim, em-dash-free). */
+const ADVERTISED_OK = 'Advertised. Now joinable in the directory.';
 
 /** Transient re-advertise success copy (an expired cohort brought back to the directory). */
-const READVERTISED_OK = 'Re-advertised - back in the directory as a fresh cohort.';
+const READVERTISED_OK = 'Re-advertised. Back in the directory as a fresh cohort.';
 
 /** Exact invalid-password copy (UI-SPEC); never reveals whether a session/account exists. */
 const INVALID_PASSWORD =
@@ -63,8 +65,21 @@ export type OperatorView = { kind: 'list' } | { kind: 'detail'; cohortId: string
 interface OperatorState {
   auth: OperatorAuthStatus;
   error?: string;
-  /** The operator's own cohorts (drafts now; advertised entries once plan 03 lands). */
+  /** The operator's own cohorts (drafts, advertised, and expired records). */
   cohorts: OperatorCohortDTO[];
+  /**
+   * Live monitoring summary rows (one per live or ended cohort), keyed by cohortId, from the
+   * `monitoring` sibling of `GET /v1/operator/cohorts` (SVC-03, D-06). Empty until the first
+   * list read lands; the list surface maps each advertised cohort to its chip from here.
+   */
+  rows: CohortSummaryDTO[];
+  /** Service-level live counts backing the metrics row (D-06); undefined until the first read. */
+  metrics?: ServiceMetricsDTO;
+  /**
+   * True when the last LIST poll was unreachable, so the displayed list/metrics are frozen
+   * last-known state (D-25) and the unreachable banner shows; cleared on the next ok read.
+   */
+  listStale: boolean;
   /** Create-form submit status; drives the button's `Creating…` label. */
   createStatus: CreateStatus;
   /** Server (or client) validation message for the create form, when present. */
@@ -124,6 +139,9 @@ export const useOperator = create<OperatorState>((set, get) => ({
   auth: 'checking',
   error: undefined,
   cohorts: [],
+  rows: [],
+  metrics: undefined,
+  listStale: false,
   createStatus: 'idle',
   formError: undefined,
   advertiseStatus: 'idle',
@@ -176,6 +194,9 @@ export const useOperator = create<OperatorState>((set, get) => ({
         auth: 'logged-out',
         error: undefined,
         cohorts: [],
+        rows: [],
+        metrics: undefined,
+        listStale: false,
         formError: undefined,
         createStatus: 'idle',
         advertiseStatus: 'idle',
@@ -190,13 +211,40 @@ export const useOperator = create<OperatorState>((set, get) => ({
   },
 
   async refreshCohorts(baseUrl) {
-    try {
-      const cohorts = await apiListCohorts(baseUrl);
-      set({ cohorts });
-    } catch {
-      // A transient list failure leaves the last-known list in place rather than
-      // wiping the operator's view; the next successful refresh reconciles it.
+    // The list read is discriminated like the drill-down poll (D-16/D-25): a 401 is a
+    // session expiry (honest re-login), an unreachable read freezes the last-known list
+    // and raises the banner, and an ok read updates the list + monitoring + freshness stamp.
+    const result = await fetchOperatorCohorts(baseUrl);
+    if (result.kind === 'unauthorized') {
+      // Session expired mid-monitoring (D-16): drop to the login screen with the honest
+      // re-login copy and clear the drill-down, mirroring pollDetail's 401 branch.
+      set({
+        auth: 'logged-out',
+        error: SESSION_EXPIRED,
+        cohorts: [],
+        rows: [],
+        metrics: undefined,
+        listStale: false,
+        view: { kind: 'list' },
+        detail: undefined,
+        detailStale: false,
+        lastUpdated: undefined,
+      });
+      return;
     }
+    if (result.kind === 'unreachable') {
+      // Freeze the last-known list (D-25): keep it visible, flag it stale for the banner +
+      // freshness indicator, and retry quietly on the next tick. Never blank the view.
+      set({ listStale: true });
+      return;
+    }
+    set({
+      cohorts: result.value.cohorts,
+      rows: result.value.monitoring?.rows ?? [],
+      metrics: result.value.monitoring?.metrics,
+      listStale: false,
+      lastUpdated: Date.now(),
+    });
   },
 
   async submitDraft(baseUrl, input) {
@@ -221,6 +269,12 @@ export const useOperator = create<OperatorState>((set, get) => ({
       if (ok) {
         set({ advertiseStatus: 'idle', advertisingId: undefined, advertiseMessage: ADVERTISED_OK });
         await get().refreshCohorts(baseUrl);
+        // Land the operator in the freshly-advertised cohort's drill-down (D-13): the draft
+        // id becomes the live cohort id on advertise. Guard on a still-signed-in session so a
+        // 401 during the refresh above (which drops to logged-out) is not overridden.
+        if (get().auth === 'logged-in') {
+          get().openCohort(id);
+        }
         // Clear the transient confirmation after a few seconds, but only if it is still
         // the same message (a later action may have replaced it).
         setTimeout(() => {

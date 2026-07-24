@@ -209,18 +209,78 @@ export async function fetchCohortDetail(baseUrl: string, id: string): Promise<Fe
   }
 }
 
-/** GET the operator's own cohorts (drafts now; advertised entries once plan 03 lands). */
-export async function listCohorts(baseUrl: string): Promise<OperatorCohortDTO[]> {
-  const res = await fetch(endpoint(baseUrl, '/v1/operator/cohorts'), {
-    headers: { accept: 'application/json' },
-    credentials: 'same-origin',
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-  });
-  if (!res.ok) {
-    throw new Error(`GET /v1/operator/cohorts failed: HTTP ${res.status}`);
+/**
+ * The live status-chip key for one monitoring row (mirrors the service `CohortChip`, D-04).
+ * A live cohort reads `filling` / `co-signing`; `needs-funding` is the live-cohort funding
+ * placeholder the live-path plan 04-06 populates; an ended cohort reads its terminal fate
+ * `fallback` (anchored via the k-of-n script path) / `anchored` / `failed`. The client maps
+ * each key to a fixed Badge/StatusDot tone (the UI-SPEC tone map).
+ */
+export type CohortChip = 'filling' | 'co-signing' | 'needs-funding' | 'fallback' | 'anchored' | 'failed';
+
+/**
+ * One monitoring row for the operator cohort list (mirrors the service `CohortSummaryDTO`,
+ * D-06). Carries the live status `chip`, the seat count + capacity, the raw phase (or
+ * `'ended'` for a retained terminal record), and a short failure `reason` on a failed row.
+ */
+export interface CohortSummaryDTO {
+  cohortId: string;
+  chip: CohortChip;
+  seatsJoined: number;
+  capacity: number;
+  phase: string;
+  reason?: string;
+}
+
+/**
+ * Service-level live counts for the operator metrics row (mirrors the service
+ * `ServiceMetricsDTO`, D-06): `open` (joinable/filling), `inFlight` (mid co-sign),
+ * `anchored` (successfully anchored, including the k-of-n fallback path), and `failed`
+ * (terminal). Derived from the live set + the bounded retained records, never a since-boot
+ * cumulative counter.
+ */
+export interface ServiceMetricsDTO {
+  open: number;
+  inFlight: number;
+  anchored: number;
+  failed: number;
+}
+
+/**
+ * The merged `GET /v1/operator/cohorts` read model (D-06/D-26). `cohorts` is the operator's
+ * own draft/advertised/expired list (byte-identical to before); the NEW `monitoring` sibling
+ * key carries the summary chip rows + service-level metrics from the per-service fold, present
+ * only when a monitor is wired (a fail-closed boot omits it).
+ */
+export interface OperatorCohortsDTO {
+  cohorts: OperatorCohortDTO[];
+  monitoring?: { rows: CohortSummaryDTO[]; metrics: ServiceMetricsDTO };
+}
+
+/**
+ * GET the operator's own cohorts PLUS the monitoring summary, discriminated like
+ * {@link fetchCohortDetail} (SVC-03, D-16/D-25): the store must tell a session-expiry (401 ->
+ * honest re-login, D-16) apart from a transient network/5xx fault (freeze the last-known list,
+ * D-25). NEVER throws: `res.status === 401` -> `unauthorized`, `res.ok` -> `ok`, any thrown
+ * error or other non-ok status -> `unreachable`. Same-origin (the read is operator-gated).
+ */
+export async function fetchOperatorCohorts(baseUrl: string): Promise<FetchResult<OperatorCohortsDTO>> {
+  try {
+    const res = await fetch(endpoint(baseUrl, '/v1/operator/cohorts'), {
+      headers: { accept: 'application/json' },
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (res.status === 401) {
+      return { kind: 'unauthorized' };
+    }
+    if (!res.ok) {
+      return { kind: 'unreachable' };
+    }
+    return { kind: 'ok', value: (await res.json()) as OperatorCohortsDTO };
+  } catch {
+    return { kind: 'unreachable' };
   }
-  const body = (await res.json()) as { cohorts: OperatorCohortDTO[] };
-  return body.cohorts;
 }
 
 /** DELETE (discard) an un-advertised draft by id. */

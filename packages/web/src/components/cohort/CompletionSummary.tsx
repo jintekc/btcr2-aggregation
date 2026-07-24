@@ -6,7 +6,7 @@ import {
   serviceEndpointString,
   type ResolvedService,
 } from '../../lib/resolve';
-import { Badge, Button, Card, CopyField, Mono, SectionTitle } from '../../ui/primitives';
+import { Badge, Button, Card, CopyField, Expander, Mono, SectionTitle } from '../../ui/primitives';
 
 /**
  * The post-completion region of the one cohort page (PART-04, D-10/D-17/D-28/D-29/D-30). It
@@ -28,24 +28,6 @@ import { Badge, Button, Card, CopyField, Mono, SectionTitle } from '../../ui/pri
  *
  * All copy is mode-honest and em-dash-free per the UI-SPEC Copywriting Contract.
  */
-
-/** A collapsed-by-default detail section that scrolls its overflow rather than growing the card. */
-function Expander({ title, children }: { title: string; children: React.ReactNode }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="rounded-lg border border-edge bg-surface-2">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-faint"
-      >
-        <span>{title}</span>
-        <span>{open ? 'Hide' : 'Show'}</span>
-      </button>
-      {open ? <div className="max-h-80 overflow-auto border-t border-edge px-4 py-3">{children}</div> : null}
-    </div>
-  );
-}
 
 export function CompletionSummary({ baseUrl, onBrowse }: { baseUrl: string; onBrowse: () => void }) {
   const result = useParticipant((s) => s.result);
