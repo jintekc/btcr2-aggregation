@@ -85,6 +85,59 @@ interface ServiceStatusDTO {
   openCohorts: number;
 }
 
+/**
+ * The gated per-cohort monitoring detail shape (subset asserted), served by
+ * `GET /v1/operator/cohorts/:id` and backed by the {@link createCohortMonitor} fold. The
+ * monitoring leg below asserts this read reflects real cohort activity (seated members,
+ * who submitted) end to end over the hermetic fixture path (D-47 fixture leg, SVC-03).
+ */
+interface MonitorMemberDTO {
+  did: string;
+  status: 'pending' | 'seated';
+  round: 'seated' | 'submitted' | 'validated' | 'nonce-sent' | 'rejected';
+}
+interface MonitorSubmissionDTO {
+  did: string;
+  submitted: boolean;
+  /** Server wall-clock ms the update was received (present once submitted). */
+  at?: number;
+}
+interface MonitorCoSignDTO {
+  noncesReceived: number;
+  total: number;
+  awaitingPartialSigs: boolean;
+}
+interface MonitorDetailDTO {
+  exists: boolean;
+  members: MonitorMemberDTO[];
+  seatsJoined: number;
+  capacity: number;
+  phase: string;
+  submissions: MonitorSubmissionDTO[];
+  coSign: MonitorCoSignDTO;
+}
+
+/** One monitoring summary chip row (subset), from the `monitoring.rows` sibling of the list read. */
+interface MonitorSummaryRowDTO {
+  cohortId: string;
+  chip: 'filling' | 'co-signing' | 'needs-funding' | 'fallback' | 'anchored' | 'failed';
+  seatsJoined: number;
+  capacity: number;
+}
+
+/**
+ * The operator cohort-list read (`GET /v1/operator/cohorts`) with its ADDITIVE `monitoring`
+ * sibling (D-19): the summary chip `rows` + the service `metrics`, present whenever the
+ * monitor is wired. The frozen operator `cohorts` array is unchanged.
+ */
+interface OperatorListWithMonitoringDTO {
+  cohorts: OperatorCohortDTO[];
+  monitoring?: {
+    rows: MonitorSummaryRowDTO[];
+    metrics: { open: number; inFlight: number; anchored: number; failed: number };
+  };
+}
+
 /** Reject if `p` does not settle within `ms` (the timeout does not keep Node alive). */
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -484,9 +537,187 @@ export async function runExpiryLeg(options: OperatorCohortOptions = {}): Promise
   }
 }
 
+/**
+ * The SVC-03 fixture monitoring leg (D-47 fixture leg): boot a hermetic operator service, log
+ * in, advertise a cohort, and let real headless participants join + co-sign it, THEN assert the
+ * gated monitoring reads reflect that real activity end to end over the fixture path - the
+ * per-cohort detail read (`GET /v1/operator/cohorts/:id`) shows the seated members and who
+ * submitted, and the list read's `monitoring` sibling settles the cohort into the `anchored`
+ * ended taxonomy. This is the hermetic, CI-facing evidence of record for the monitoring read
+ * model (the live end-to-end funding proof is the owner's opt-in `pnpm uat:live` walkthrough).
+ *
+ * Robust-by-construction: the monitor folds every runner event into its OWN per-cohort entry at
+ * event time (RESEARCH Pitfall 2), so the members/submissions/co-sign facts survive the session
+ * GC that runs on completion. The leg therefore synchronizes on the service's HARD
+ * signing-complete and then asserts the folded reads, rather than racing the near-instant
+ * hermetic co-sign for a mid-flight snapshot.
+ */
+export async function runMonitorLeg(options: OperatorCohortOptions = {}): Promise<string[]> {
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const log = options.quiet ? () => {} : (msg: string) => console.log(msg);
+  const problems: string[] = [];
+  const fail = (problem: string): void => {
+    problems.push(problem);
+  };
+
+  // A hermetic operator-enabled service; the monitor is wired inside createService whenever an
+  // operatorPassword is set (no live/broadcast, so the funding stage is absent, D-47).
+  const service = createService({
+    identity: createIdentity(),
+    config: buildCohortConfig(THRESHOLD, 'CASBeacon'),
+    operatorPassword: OPERATOR_PASSWORD,
+    operatorCookieSecure: false,
+  });
+
+  let signedCohortId = '';
+  const signingComplete = new Promise<void>((resolve) => {
+    service.runner.on('signing-complete', (result) => {
+      signedCohortId = result.cohortId;
+      resolve();
+    });
+  });
+  service.runner.on('error', (err) => log(`[monitor] service error: ${err.message}`));
+
+  const { baseUrl } = await service.start(options.port ?? 0);
+  log(`[monitor] service listening on ${baseUrl}`);
+
+  const participants: ReturnType<typeof createParticipant>[] = [];
+  try {
+    // Login + capture the operator_session cookie (Node fetch has no cookie jar).
+    const loginRes = await fetch(`${baseUrl}/v1/operator/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: OPERATOR_PASSWORD }),
+    });
+    const setCookie = loginRes.headers.getSetCookie().find((c) => c.startsWith('operator_session='));
+    await loginRes.text();
+    if (loginRes.status !== 200 || !setCookie) {
+      fail(`[monitor] operator login should be 200 with a session cookie, got ${loginRes.status}`);
+      return problems;
+    }
+    const cookie = setCookie.split(';')[0];
+
+    // Create + advertise a cohort.
+    const createRes = await fetch(`${baseUrl}/v1/operator/cohorts`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ beaconType: 'CASBeacon', size: THRESHOLD, threshold: THRESHOLD }),
+    });
+    if (createRes.status !== 201) {
+      fail(`[monitor] create draft should be 201, got ${createRes.status}`);
+      return problems;
+    }
+    const draft = (await createRes.json()) as OperatorCohortDTO;
+    const advertiseRes = await fetch(`${baseUrl}/v1/operator/cohorts/${draft.draftId}/advertise`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+    if (advertiseRes.status !== 200) {
+      fail(`[monitor] advertise should be 200, got ${advertiseRes.status}`);
+      return problems;
+    }
+    const cohortId = ((await advertiseRes.json()) as OperatorCohortDTO).draftId;
+    log(`[monitor] advertised cohort ${cohortId}; driving real participants to generate monitored activity...`);
+
+    // Real headless participants discover, join, submit, and co-sign - the SAME lifecycle
+    // the operator would be monitoring, generating every event the fold records.
+    const participantComplete: Promise<void>[] = [];
+    for (let i = 0; i < THRESHOLD; i += 1) {
+      const participant = createParticipant({ identity: createIdentity(), baseUrl });
+      participant.runner.on('error', (err) => log(`[monitor] participant ${i} error: ${err.message}`));
+      participants.push(participant);
+      participantComplete.push(
+        new Promise<void>((resolve) => participant.runner.on('cohort-complete', () => resolve())),
+      );
+    }
+    await Promise.all(participants.map((p) => p.start()));
+    await withTimeout(signingComplete, timeoutMs, '[monitor] cohort signing');
+    await withTimeout(Promise.all(participantComplete), 15_000, '[monitor] participant completion');
+    if (signedCohortId !== cohortId) {
+      fail(`[monitor] the cohort that signed (${signedCohortId}) is not the advertised cohort (${cohortId})`);
+    }
+
+    // (1) The gated per-cohort detail read reflects the seated members + who submitted (D-30/D-31).
+    let detail: MonitorDetailDTO;
+    try {
+      detail = await pollUntil(
+        async () => {
+          const res = await fetch(`${baseUrl}/v1/operator/cohorts/${cohortId}`, { headers: { cookie } });
+          return (await res.json()) as MonitorDetailDTO;
+        },
+        (d) => d.exists && d.seatsJoined === THRESHOLD && d.submissions.filter((s) => s.submitted).length === THRESHOLD,
+        timeoutMs,
+        '[monitor] detail read reflects seated members + submissions',
+      );
+    } catch (err) {
+      fail(`[monitor] gated detail read never reflected the cohort activity: ${err instanceof Error ? err.message : err}`);
+      return problems;
+    }
+    const seatedMembers = detail.members.filter((m) => m.status === 'seated');
+    if (seatedMembers.length !== THRESHOLD) {
+      fail(`[monitor] detail should show ${THRESHOLD} seated members, got ${seatedMembers.length}`);
+    }
+    const submitted = detail.submissions.filter((s) => s.submitted);
+    if (submitted.length !== THRESHOLD) {
+      fail(`[monitor] detail should show ${THRESHOLD} submissions, got ${submitted.length}`);
+    }
+    if (submitted.some((s) => typeof s.at !== 'number')) {
+      fail('[monitor] each submitted row should carry a server wall-clock `at` stamp (D-22/D-30)');
+    }
+    if (detail.coSign.total !== THRESHOLD) {
+      fail(`[monitor] co-sign total should be ${THRESHOLD} (the seated members), got ${detail.coSign.total}`);
+    }
+    log(`[assert] monitoring detail: ${seatedMembers.length} seated members, ${submitted.length} submissions, co-sign total ${detail.coSign.total}`);
+
+    // (2) The list read's monitoring sibling settles the cohort into the `anchored` ended
+    //     taxonomy (D-23): on the hermetic key-path co-sign the terminal fate is `anchored`
+    //     (no broadcaster to flip it to failed), and the anchored metric counts it.
+    let ended: OperatorListWithMonitoringDTO;
+    try {
+      ended = await pollUntil(
+        async () => {
+          const res = await fetch(`${baseUrl}/v1/operator/cohorts`, { headers: { cookie } });
+          return (await res.json()) as OperatorListWithMonitoringDTO;
+        },
+        (body) => (body.monitoring?.rows ?? []).some((r) => r.cohortId === cohortId && r.chip === 'anchored'),
+        timeoutMs,
+        '[monitor] summary chip settles to anchored',
+      );
+    } catch (err) {
+      fail(`[monitor] summary read never settled the cohort into the anchored ended taxonomy: ${err instanceof Error ? err.message : err}`);
+      return problems;
+    }
+    if (!ended.monitoring) {
+      fail('[monitor] the list read should carry the additive `monitoring` sibling when the monitor is wired');
+    } else if (ended.monitoring.metrics.anchored < 1) {
+      fail(`[monitor] the anchored metric should count the completed cohort, got ${ended.monitoring.metrics.anchored}`);
+    }
+    if (problems.length === 0) {
+      log(`[ok] monitor: the gated reads reflected members + submissions and settled cohort ${cohortId} as anchored`);
+    }
+
+    return problems;
+  } finally {
+    for (const participant of participants) {
+      participant.stop();
+    }
+    await service.stop();
+  }
+}
+
 async function main(): Promise<number> {
   const quiet = process.argv.includes('--quiet');
-  const problems = [...(await runOperatorCohort({ quiet })), ...(await runExpiryLeg({ quiet }))];
+  // `--monitor` runs ONLY the SVC-03 fixture monitoring leg (the `e2e:monitor` script); the
+  // default runs the full operator suite (auth boundary + on-demand driver + expiry) AND the
+  // monitoring leg, so the extended `e2e:operator` gate covers the monitoring read model too.
+  const monitorOnly = process.argv.includes('--monitor');
+  const problems = monitorOnly
+    ? await runMonitorLeg({ quiet })
+    : [
+        ...(await runOperatorCohort({ quiet })),
+        ...(await runExpiryLeg({ quiet })),
+        ...(await runMonitorLeg({ quiet })),
+      ];
   if (problems.length > 0) {
     console.error('\nE2E FAILED:');
     for (const problem of problems) {
@@ -494,13 +725,24 @@ async function main(): Promise<number> {
     }
     return 1;
   }
+  if (monitorOnly) {
+    console.log(
+      '\nMONITOR E2E PASSED: an operator advertised a cohort, real participants joined + co-signed it ' +
+        'hermetically, and the gated monitoring reads reflected that activity end to end - the per-cohort ' +
+        'detail read showed the seated members and who submitted, and the list read settled the cohort into ' +
+        'the anchored ended taxonomy (SVC-03, D-47 fixture leg).',
+    );
+    return 0;
+  }
   console.log(
     '\nE2E PASSED: operator login -> create -> advertise -> real participants discovered the ' +
       'directory entry, joined, and co-signed a 64-byte aggregated Taproot signature over real ' +
       'HTTP - with the auth boundary (wrong-password + no-cookie negatives) and the on-demand-only ' +
       'driver (no cohorts at boot) both proven in the same hermetic run; PLUS the F2 expiry leg ' +
       '(an idle advertised cohort expires out of the participant directory but is surfaced to the ' +
-      'operator as expired with a reason, and is then re-advertised back into the directory).',
+      'operator as expired with a reason, and is then re-advertised back into the directory); PLUS ' +
+      'the SVC-03 monitoring leg (the gated per-cohort detail read reflects the seated members and ' +
+      'submissions, and the list read settles the cohort into the anchored ended taxonomy, D-47).',
   );
   return 0;
 }
