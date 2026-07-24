@@ -75,6 +75,47 @@ export function rawBeaconTxHex(signedTx: Transaction): string {
   return bytesToHex(signedTx.extract());
 }
 
+/**
+ * Default number of send attempts for the bounded broadcast retry (D-41): the initial send
+ * plus up to four retries. Sized so a brief esplora hiccup (a dropped connection, a momentary
+ * 5xx) is ridden out without an operator touching anything, while a genuinely unreachable
+ * network or a policy rejection still terminates in a bounded, honest time rather than looping.
+ */
+const DEFAULT_SEND_RETRY_ATTEMPTS = 5;
+
+/**
+ * Default base backoff between send attempts, in ms (D-41). The delay grows linearly with the
+ * attempt index (base, 2x base, 3x base, ...) via the shared {@link delay} helper, so the total
+ * retry budget at the defaults is bounded (~2+4+6+8 = 20s) and the sleep is cancelable + unref'd
+ * (a teardown aborts it promptly and it never keeps the process alive).
+ */
+const DEFAULT_SEND_RETRY_BACKOFF_MS = 2000;
+
+/**
+ * Esplora rejection messages that mean the tx is ALREADY on the network (in the mempool or a
+ * block), i.e. a DUPLICATE acceptance, not a failure (Pitfall 9 / D-41). Bitcoin Core / esplora
+ * phrase this several ways across versions; match them case-insensitively. A duplicate is
+ * treated as a successful broadcast (the tx is live), never a terminal failure - the caller
+ * emits `beacon-broadcast` exactly once with the computed txid.
+ */
+function isDuplicateAcceptance(message: string): boolean {
+  return /already[ -]?(in[ -])?(the[ -])?(mempool|block ?chain|chain)|txn-already-(known|in-mempool)|already known|transaction already (exists|in)|code":\s*-27|"-27"/i.test(
+    message,
+  );
+}
+
+/**
+ * Rejection messages that indicate a TRANSPORT failure (the node was unreachable at send time)
+ * rather than a policy rejection the node would keep refusing. Drives the honest exhaustion copy
+ * (D-41): "network unreachable at send time" vs "the node rejected the transaction". Matched on
+ * the common Node/undici socket + DNS error shapes.
+ */
+function isNetworkUnreachable(message: string): boolean {
+  return /ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|EPIPE|socket hang ?up|fetch failed|network (error|unreachable|request failed)|timed? ?out|request to .* failed/i.test(
+    message,
+  );
+}
+
 /** Options for {@link broadcastAndConfirm}. */
 export interface BroadcastConfirmOptions {
   /** Interval between `isConfirmed` polls, in ms. Default 5000. */
@@ -85,6 +126,22 @@ export interface BroadcastConfirmOptions {
    * `confirmed: false`.
    */
   confirmTimeoutMs?: number;
+  /**
+   * Bounded number of send attempts before declaring terminal failure (D-41). Default
+   * {@link DEFAULT_SEND_RETRY_ATTEMPTS} = 5 (the first send + four retries). The FIRST send
+   * always runs; only the retries are skipped once {@link signal} aborts. Set 1 to disable
+   * retrying (one-shot, the pre-D-41 behavior).
+   */
+  sendRetryAttempts?: number;
+  /** Base backoff between send attempts, in ms (grows linearly). Default {@link DEFAULT_SEND_RETRY_BACKOFF_MS}. */
+  sendRetryBackoffMs?: number;
+  /**
+   * The txid to report when a send is rejected as a DUPLICATE acceptance (the tx is already on
+   * the network, so `send()` returns no id). Computed by the caller from the finalized signed tx
+   * (`signedTx.id`); when absent, a duplicate-acceptance rejection cannot be resolved to a txid
+   * and is treated as an ordinary (retryable) failure.
+   */
+  expectedTxid?: string;
   /** Aborts an in-flight confirmation poll (wired to `service.stop()`). */
   signal?: AbortSignal;
   /** Called once with the txid immediately after acceptance, before confirmation. */
@@ -123,15 +180,73 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
+ * Send a raw beacon tx with a BOUNDED backoff retry (D-41), retaining `rawHex` across attempts.
+ *
+ * The FIRST send always runs; a transient failure (a dropped connection, a momentary 5xx) is
+ * ridden out by retrying with a linear backoff up to {@link BroadcastConfirmOptions.sendRetryAttempts}
+ * total attempts. Two outcomes short-circuit to SUCCESS or exhaustion instead of an endless loop:
+ * - A DUPLICATE-acceptance rejection ({@link isDuplicateAcceptance}) means the tx is already on the
+ *   network - a success. It resolves to `opts.expectedTxid` (the caller-computed txid, since the
+ *   rejection carries none); with no expectedTxid it degrades to an ordinary retryable failure.
+ * - Once every attempt is spent (or {@link BroadcastConfirmOptions.signal} aborts a retry), the
+ *   accumulated error is thrown with an honest reason that distinguishes "network unreachable at
+ *   send time" from a node policy rejection (D-41), so the operator's failure copy never lies.
+ *
+ * Retries abort promptly: the signal is checked after each failed send and after each backoff
+ * sleep, so a `service.stop()` mid-retry stops re-sending at once (the first send is already
+ * committed by then and cannot be un-sent).
+ */
+async function sendWithRetry(
+  bitcoin: BitcoinConnection,
+  rawHex: string,
+  opts: BroadcastConfirmOptions,
+): Promise<string> {
+  const attempts = Math.max(1, opts.sendRetryAttempts ?? DEFAULT_SEND_RETRY_ATTEMPTS);
+  const backoffMs = opts.sendRetryBackoffMs ?? DEFAULT_SEND_RETRY_BACKOFF_MS;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      // The first send always runs; retries re-use the retained rawHex verbatim so a recovered
+      // send broadcasts the SAME tx (never a rebuilt one), keeping the txid stable.
+      return await bitcoin.rest.transaction.send(rawHex);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // Pitfall 9: a duplicate-acceptance rejection means the tx is ALREADY live - a success,
+      // not a failure. The rejection carries no id, so use the caller-computed expectedTxid.
+      if (isDuplicateAcceptance(message) && opts.expectedTxid) {
+        return opts.expectedTxid;
+      }
+      lastError = err;
+      // Stop on the last attempt or once teardown has begun (do not re-send during stop()).
+      if (attempt >= attempts - 1 || opts.signal?.aborted) {
+        break;
+      }
+      // Linear backoff (base, 2x, 3x, ...); the sleep is cancelable + unref'd, so an abort
+      // during the wait resolves it at once and the next loop check breaks out.
+      await delay(backoffMs * (attempt + 1), opts.signal);
+      if (opts.signal?.aborted) {
+        break;
+      }
+    }
+  }
+  const message = lastError instanceof Error ? lastError.message : String(lastError);
+  const kind = isNetworkUnreachable(message)
+    ? 'network unreachable at send time'
+    : 'the node rejected the transaction';
+  throw new Error(`beacon broadcast failed after ${attempts} attempt(s) (${kind}): ${message}`);
+}
+
+/**
  * Broadcast a raw transaction hex and poll for its first confirmation.
  *
- * Sends via esplora `POST /tx` (which returns the txid), invokes `onBroadcast(txid)`
- * as soon as it is accepted, then polls `isConfirmed(txid)` until true or the
- * timeout elapses. A `send()` rejection propagates (the caller reports it); a
- * confirmation-poll error does NOT - a transient esplora hiccup is swallowed and the
- * poll retries, because the tx is already broadcast and re-broadcasting is
- * unnecessary. Returns `{ txid, confirmed: false }` when accepted but not mined in
- * window (a successful broadcast, pending confirmation).
+ * Sends via esplora `POST /tx` (which returns the txid) with a bounded backoff retry
+ * ({@link sendWithRetry}, D-41): a transient send failure is retried, a duplicate-acceptance
+ * rejection is treated as success, and only a genuinely exhausted send throws. Then invokes
+ * `onBroadcast(txid)` as soon as it is accepted and polls `isConfirmed(txid)` until true or the
+ * timeout elapses. A confirmation-poll error does NOT propagate - a transient esplora hiccup is
+ * swallowed and the poll retries, because the tx is already broadcast. Returns
+ * `{ txid, confirmed: false }` when accepted but not mined in window (a successful broadcast,
+ * pending confirmation).
  */
 export async function broadcastAndConfirm(
   bitcoin: BitcoinConnection,
@@ -141,7 +256,7 @@ export async function broadcastAndConfirm(
   const pollIntervalMs = opts.pollIntervalMs ?? 5000;
   const confirmTimeoutMs = opts.confirmTimeoutMs ?? 180000;
 
-  const txid = await bitcoin.rest.transaction.send(rawHex);
+  const txid = await sendWithRetry(bitcoin, rawHex, opts);
   opts.onBroadcast?.(txid);
 
   // Abort is best-effort: it stops the loop between polls and cancels the sleep. An
@@ -170,6 +285,10 @@ export interface AttachBeaconBroadcastOptions {
   pollIntervalMs?: number;
   /** Overall confirmation wait, in ms. Default 180000. */
   confirmTimeoutMs?: number;
+  /** Bounded send attempts before terminal failure (D-41). Default {@link DEFAULT_SEND_RETRY_ATTEMPTS}. */
+  sendRetryAttempts?: number;
+  /** Base backoff between send attempts, in ms (D-41). Default {@link DEFAULT_SEND_RETRY_BACKOFF_MS}. */
+  sendRetryBackoffMs?: number;
   /** Failure logger. Default `console.error`. Successes surface as broadcaster events. */
   log?: (msg: string) => void;
 }
@@ -211,13 +330,28 @@ export function attachBeaconBroadcast(
       return;
     }
 
+    // The finalized tx's own id, used ONLY to resolve a duplicate-acceptance rejection to a
+    // txid (the rejection carries none, D-41/Pitfall 9). Guarded: a stand-in tx may not expose
+    // `.id`, in which case a duplicate simply degrades to a retryable failure.
+    let expectedTxid: string | undefined;
+    try {
+      expectedTxid = result.signedTx.id;
+    } catch {
+      expectedTxid = undefined;
+    }
+
     try {
       const { txid, confirmed } = await broadcastAndConfirm(opts.bitcoin, rawHex, {
         pollIntervalMs: opts.pollIntervalMs,
         confirmTimeoutMs: opts.confirmTimeoutMs,
+        sendRetryAttempts: opts.sendRetryAttempts,
+        sendRetryBackoffMs: opts.sendRetryBackoffMs,
+        expectedTxid,
         signal: controller.signal,
         // Stay silent once teardown has begun, mirroring the anchored guard below,
-        // so the whole broadcast lifecycle goes quiet after stop().
+        // so the whole broadcast lifecycle goes quiet after stop(). onBroadcast fires
+        // EXACTLY once per cohort (the retry recovers into a single accepted send, and a
+        // duplicate-acceptance resolves to the same one broadcast frame).
         onBroadcast: (id) => {
           if (!controller.signal.aborted) {
             broadcaster.emit('beacon-broadcast', { cohortId, txid: id });
@@ -230,6 +364,11 @@ export function attachBeaconBroadcast(
       }
       broadcaster.emit('beacon-anchored', { cohortId, txid, confirmed });
     } catch (err) {
+      // A send aborted by teardown is not a real failure: stay silent mid-stop, mirroring the
+      // anchored guard above, so a stop() during the send retry never emits a spurious frame.
+      if (controller.signal.aborted) {
+        return;
+      }
       const reason = err instanceof Error ? err.message : String(err);
       broadcaster.emit('beacon-broadcast-failed', { cohortId, reason });
       log(`[broadcast] cohort ${cohortId}: broadcast failed: ${reason}`);
