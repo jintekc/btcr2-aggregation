@@ -55,6 +55,81 @@ LIVE=1 NETWORK=regtest ESPLORA_HOST=http://host.docker.internal:3000 docker comp
 container; on Linux add `extra_hosts: ["host.docker.internal:host-gateway"]` to the
 service, or run your node in the same compose project.)
 
+## Broadcasting cohort beacons for real (BROADCAST=1)
+
+`LIVE=1` alone gives you real resolution and a real registration-tx proxy, but cohort
+co-signing still spends the zero-chain FIXTURE beacon transaction: nothing about the
+aggregate cohort touches the chain. To make a cohort actually anchor on Bitcoin (the
+n-of-n MuSig2 beacon transaction built, funded, and broadcast for real), opt in with
+`BROADCAST=1`. It REQUIRES `LIVE=1` and refuses to boot without it (there is no point
+broadcasting the fixture tx), and it is one more layer on the ADR 0010 guard rails, so
+the hermetic fixture path stays the default and nothing changes until you set it.
+
+```bash
+LIVE=1 BROADCAST=1 NETWORK=mutinynet \
+  OPERATOR_PASSWORD=... RECOVERY_KEY=<x-only-hex> \
+  docker compose up --build
+```
+
+On a live+broadcast boot the coordinator logs a loud banner naming exactly what is live
+(each cohort's beacon tx is broadcast on-chain, the operator must fund each beacon
+address within its funding window, and whether the recovery key is operator-held or a
+throwaway). Read it: it is the same loud-boot idiom as the mainnet rails.
+
+**The flagship live story is MUTINYNET.** It is a real public signet-based network with a
+free faucet, so you can stand up a genuinely broadcasting aggregator and fund real cohort
+beacons without spending real money. `regtest` behind Polar (or any bitcoind + esplora
+pair) is the LOCAL-development story: your own chain, you mine your own blocks (this is
+what `pnpm uat:live` drives). `bitcoin` mainnet is real funds end to end and is gated
+behind `ALLOW_MAINNET=1` on top of everything else (see below). Hermetic (no `LIVE`, no
+`BROADCAST`) remains the boot default and the zero-risk way to see the whole flow.
+
+### Funding a cohort beacon (the operator's job)
+
+Under `BROADCAST=1`, a cohort cannot anchor until its beacon address holds a spendable,
+confirmed UTXO. That funding is the OPERATOR's responsibility, from the operator's own
+wallet, and the operator console walks you through it:
+
+1. When a cohort's seats fill, MuSig2 key aggregation runs and the cohort's Taproot beacon
+   address comes into existence. The operator console surfaces a `Needs funding` chip on the
+   cohort and a funding stage in its drill-down showing the beacon address (with a copy
+   button and an explorer link) and ONE suggested minimum in sats.
+2. Send at least the suggested minimum to that beacon address from your wallet as a SINGLE
+   confirmed UTXO. The suggested minimum is the same number the tx builder will actually
+   check: it is `max(2000 sats, the fee-plus-outputs-derived need)`. Deeper, larger UTXOs
+   are preferred by the library's selection, so top up in one clean payment rather than
+   dribbling dust.
+3. The funding stage advances honestly through three states: waiting (no spendable UTXO
+   yet), seen (an unconfirmed UTXO is in the mempool), and funded (a confirmed UTXO at or
+   above the minimum). Co-signing proceeds automatically once it reads funded.
+4. There is a TERMINAL dead-end: if the selected confirmed UTXO is BELOW the suggested
+   minimum, topping up cannot fix it (new funding confirms shallower and is never selected
+   first), so the stage says so plainly rather than waiting forever.
+5. There is a funding WINDOW (`FUNDING_WINDOW_MS`, default 12 minutes). If the beacon is
+   not funded before the window elapses, the cohort dead-ends with an honest "funding never
+   arrived" reason. The window is clamped per-cohort against the remaining cohort TTL and
+   disclosed when it is truncated; a mid-flight esplora outage freezes the funding readout
+   stale-honestly rather than lying about it.
+
+**Recovery key before you fund anything.** Set `RECOVERY_KEY` to an x-only public key whose
+secret you hold offline (the ADR 042 recovery leaf, spendable by its holder after the
+relative timelock). Without it every cohort gets a THROWAWAY recovery key whose secret is
+discarded, so funds sent to a cohort that then fails below its fallback threshold are
+UNRECOVERABLE, on any network, mutinynet included. The live+broadcast boot banner warns
+loudly when `RECOVERY_KEY` is unset, and the funding stage always discloses whether the
+recovery key is operator-held or throwaway. Derive the key offline; only the public half
+belongs on the server.
+
+**Change routing.** By default the beacon tx returns change to the beacon address itself
+(timelocked under the same script). Set `LIVE_CHANGE_ADDRESS` to route change to an
+operator wallet instead, avoiding address reuse; on mainnet the funding stage shows the
+change-routing line explicitly.
+
+**Timer invariant.** Under `BROADCAST=1` the coordinator fail-fast-validates at boot that
+`PHASE_TIMEOUT_MS` exceeds `FUNDING_WINDOW_MS`, so the funding wait can surface its own
+specific reason before the generic phase-stall timer fires. If you shorten one, keep the
+ordering or the boot throws with both values named.
+
 ## TLS and reverse proxy (required for a public deployment)
 
 The container serves plain HTTP on 8080 and binds `0.0.0.0` inside the container.
@@ -70,8 +145,8 @@ aggregator.example.com {
 }
 ```
 
-nginx equivalent (with the SSE endpoints the dashboard and inbox use kept
-unbuffered):
+nginx equivalent (with the participant advert SSE stream kept unbuffered; the
+operator monitoring surface is polled snapshots now, not SSE, per ADR 0016):
 
 ```nginx
 server {
@@ -85,8 +160,9 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        # Server-Sent Events (GET /v1/adverts, the dashboard, the inbox) must not
-        # be buffered or the browser never sees live cohort state.
+        # Server-Sent Events (GET /v1/adverts) must not be buffered or a browsing
+        # participant never sees live cohort adverts. (The operator console reads
+        # polled snapshots over plain fetch, so it needs no SSE tuning, ADR 0016.)
         proxy_buffering off;
         proxy_read_timeout 3600s;
     }
@@ -174,10 +250,16 @@ curl -fsS http://localhost:8080/v1/config
 | `NETWORK` | `mutinynet` | Chain for the coordinator + browser. Unknown name fails at boot. |
 | `PORT` | `8080` | Published port. |
 | `HOST` | `0.0.0.0` (in image) | Bind address. The image sets `0.0.0.0`; the bare entrypoint defaults to `127.0.0.1`. |
-| `LIVE` | unset | `1` = real esplora connection (resolve + tx proxy). |
+| `LIVE` | unset | `1` = real esplora connection (resolve + tx proxy). Cohort co-sign stays fixture unless `BROADCAST=1`. |
+| `BROADCAST` | unset | `1` = build + broadcast a REAL aggregate beacon tx per cohort. Requires `LIVE=1` (throws otherwise). |
 | `ESPLORA_HOST` | registry default | Override the esplora REST host (needs `LIVE=1`). |
 | `ALLOW_MAINNET` | unset | Required for `NETWORK=bitcoin`, even offline. |
-| `RECOVERY_KEY` | unset | x-only recovery pubkey for funded cohorts. Required before funding. |
+| `RECOVERY_KEY` | unset | x-only recovery pubkey for funded cohorts. Required before funding (else keys are throwaway). |
+| `FUNDING_WINDOW_MS` | `720000` (12m) | How long co-signing waits for a cohort beacon to be funded before it dead-ends (needs `BROADCAST=1`; must be < `PHASE_TIMEOUT_MS`). |
+| `LIVE_CHANGE_ADDRESS` | beacon address | Route the beacon tx change to an operator wallet instead of the beacon address (needs `BROADCAST=1`). |
+| `SERVICE_NAME` | unset | Display name shown in the operator console health strip and the public directory header. Display text only; no edit surface. |
+| `PHASE_TIMEOUT_MS` | (built-in default) | Per-phase stall budget. Under `BROADCAST=1` it must exceed `FUNDING_WINDOW_MS` (boot-validated). |
+| `COHORT_TTL_MS` | (built-in default) | Overall wall-clock budget per cohort, from advertise to signing-complete. |
 | `OPERATOR_PASSWORD` | unset | Operator console password (HOST-01, ADR 0015). Set it to enable the login-gated console + gated telemetry. Unset = fail-closed: public participant surface still serves, operator surface disabled with a loud boot warning. Keep it in a `.env` file, never bake it into the image. |
 | `OPERATOR_SESSION_TTL_MS` | `86400000` (24h) | Operator session lifetime in ms. |
 | `OPERATOR_COOKIE_SECURE` | on | Session cookie `Secure` flag. Leave on behind a TLS proxy; set `0` ONLY for a local plain-http run (else the browser drops the cookie). |

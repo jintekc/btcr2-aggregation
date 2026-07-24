@@ -1,9 +1,14 @@
 # ADR 0015: Operator authentication - httpOnly session behind the first mutating control surface
 
-- Status: Accepted
+- Status: Accepted (amended 2026-07-24)
 - Date: 2026-07-08
 - Milestone: v1 Phase 1 (Authenticated Operator Console + On-Demand Cohort Creation; HOST-01)
 - Supersedes: the public-read-only telemetry posture of [ADR 0004](0004-dashboard-sse-telemetry-channel.md)
+- Amended by: [ADR 0016](0016-polled-monitoring-read-model.md) (Phase 4): the `GET /dashboard/events`
+  SSE feed this ADR gated is RETIRED. The `EventSource`-cannot-send-a-header argument below is no
+  longer a live driver of the scheme; the httpOnly opaque session cookie survives unchanged on its
+  own independent merits (server-side logout invalidation, session-fixation impossibility, CSRF
+  defense in depth). See the "Amendment" note at the end of this ADR.
 
 ## Context
 
@@ -22,10 +27,11 @@ strictly before, the first mutating route. Because the operator monitoring feed 
 live telemetry stream and is now operator-only rather than public, its access posture
 changes too - hence this ADR supersedes ADR 0004's public-read-only stance for that feed.
 
-The single most consequential technical constraint on the auth scheme: the telemetry
-feed is a Server-Sent Events stream consumed by the browser's `EventSource`, and
+The single most consequential technical constraint on the auth scheme (as of Phase 1): the
+telemetry feed is a Server-Sent Events stream consumed by the browser's `EventSource`, and
 `EventSource` cannot set an `Authorization` header. It only sends same-origin cookies
-automatically.
+automatically. (Amended: ADR 0016 retired that SSE feed in Phase 4, so this is no longer the
+driver; the cookie scheme is kept for the reasons in the Amendment note below, not for this one.)
 
 ## Decision
 
@@ -116,3 +122,28 @@ automatically.
   and rejected for this milestone (see 01-CONTEXT.md D-02): the participant is
   architecturally a client, and a split would force CORS onto every route, need a second
   deployable, and supersede ADRs 0003/0005/0014 for zero v1 requirement coverage.
+
+## Amendment (Phase 4, ADR 0016): the SSE feed is retired, the session survives
+
+Phase 4 ([ADR 0016](0016-polled-monitoring-read-model.md)) replaced the read-only dashboard SSE
+channel with a server-side event fold behind gated, polled snapshot reads, and DELETED
+`GET /dashboard/events` and its `bridgeRunnerToSse` bridge. Two clarifications to this ADR follow;
+neither changes the auth scheme, the login flow, the throttle, the cookie flags, or the negative
+tests.
+
+1. **Route inventory (D-08) update.** `GET /dashboard/events` no longer exists, so it is no longer
+   a gated route. Its replacements, the gated polled monitoring reads (`GET /v1/operator/cohorts`
+   with its `monitoring` sibling, `GET /v1/operator/cohorts/:id`, and `:id/export`), mount inside
+   the SAME `/v1/operator/*` `requireOperator` block and inherit the identical guard. The
+   `/dashboard/*` prefix guard is retired with the feed.
+
+2. **Rationale.** The Context above led with the `EventSource`-cannot-send-a-header constraint as
+   the reason an httpOnly same-origin cookie was the only workable scheme. That constraint is now
+   moot (there is no SSE stream to gate). The httpOnly opaque server-tracked session cookie is
+   retained anyway, on its independent merits, all of which still hold: server-side logout
+   invalidation (a stateless JWT could not, without a denylist), session-fixation impossibility
+   (CSPRNG server-issued ids), and CSRF defense in depth (`SameSite=Strict` plus the same-origin
+   Origin/Referer check, with httpOnly keeping the id out of any script's reach). The gated
+   monitoring reads are ordinary same-origin `fetch` calls that carry the cookie exactly as the
+   mutating routes always have, so the negative-auth evidence simply moved from the SSE feed onto
+   those reads.
