@@ -63,8 +63,15 @@ export {
   createCohortMonitor,
   type CohortMonitor,
   type CohortDetailDTO,
+  type CohortExportDTO,
   type CohortMemberDTO,
   type MemberStatus,
+  type MemberRound,
+  type ActivityLevel,
+  type ActivityEntryDTO,
+  type SubmissionDTO,
+  type CoSignDTO,
+  type FallbackDTO,
   type CohortChip,
   type CohortSummaryDTO,
   type ServiceMetricsDTO,
@@ -571,8 +578,11 @@ export function createService(opts: CreateServiceOptions): Service {
   // operatorAuth block, so a fail-closed boot exposes no monitoring surface even though the
   // fold still runs harmlessly. Fire-and-forget by construction: its listeners catch their
   // own errors so a monitoring failure never disturbs the protocol (matching the
-  // persist/broadcast listeners above).
-  const monitor = createCohortMonitor(runner, broadcaster);
+  // persist/broadcast listeners above). The `anchorState` is threaded so the gated per-cohort
+  // detail composes the operator anchor view from the SAME projection the public read serves
+  // (byte-untouched, D-18/D-26); a hermetic service passes undefined and the detail reads the
+  // mode-honest `{ enabled: false, state: 'none' }`.
+  const monitor = createCohortMonitor(runner, broadcaster, anchorState);
 
   // Operator on-demand cohort drafts (SVC-01). Constructed per-createService like the
   // auth closures above, and ONLY when the operator surface is enabled - fail-closed

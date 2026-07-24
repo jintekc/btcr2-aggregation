@@ -9,6 +9,7 @@ import type { Transaction } from '@scure/btc-signer';
 import { describe, expect, it } from 'vitest';
 import { createCohortMonitor, summarizeTx } from '../src/monitor.js';
 import { BeaconBroadcaster } from '../src/broadcast.js';
+import { createAnchorState } from '../src/anchor-state.js';
 import { createHonoApp } from '../src/hono-adapter.js';
 import { createLoginThrottle, createSessionStore, type OperatorAuthConfig } from '../src/operator-auth.js';
 import {
@@ -127,6 +128,11 @@ describe('createCohortMonitor', () => {
       seatsJoined: 0,
       capacity: 0,
       phase: 'unknown',
+      submissions: [],
+      coSign: { noncesReceived: 0, total: 0, awaitingPartialSigs: false },
+      anchor: { enabled: false, state: 'none' },
+      fallback: { used: false },
+      activity: [],
     });
   });
 
@@ -184,6 +190,11 @@ describe('createCohortMonitor', () => {
       seatsJoined: 0,
       capacity: 0,
       phase: 'unknown',
+      submissions: [],
+      coSign: { noncesReceived: 0, total: 0, awaitingPartialSigs: false },
+      anchor: { enabled: false, state: 'none' },
+      fallback: { used: false },
+      activity: [],
     });
   });
 
@@ -203,6 +214,200 @@ describe('createCohortMonitor', () => {
         communicationPk: Uint8Array;
       }),
     ).not.toThrow();
+  });
+});
+
+describe('createCohortMonitor detail depth (submissions, round state, honest co-sign, anchor, activity)', () => {
+  /** Seat a member on a bare runner so a round event has a member to advance. */
+  function seat(runner: AggregationServiceRunner, cohortId: string, did: string): void {
+    runner.emit('opt-in-received', {
+      cohortId,
+      participantDid: did,
+      participantPk: new Uint8Array([1]),
+      communicationPk: new Uint8Array([2]),
+    });
+    runner.emit('participant-accepted', { cohortId, participantDid: did });
+  }
+
+  it('advances a member through seated -> submitted -> validated -> nonce-sent (D-31)', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner);
+    seat(runner, 'c1', 'did:example:alice');
+    expect(monitor.detail('c1').members[0].round).toBe('seated');
+
+    runner.emit('update-received', { cohortId: 'c1', participantDid: 'did:example:alice' });
+    expect(monitor.detail('c1').members[0].round).toBe('submitted');
+
+    runner.emit('validation-received', { cohortId: 'c1', participantDid: 'did:example:alice', approved: true });
+    expect(monitor.detail('c1').members[0].round).toBe('validated');
+
+    runner.emit('nonce-received', { cohortId: 'c1', participantDid: 'did:example:alice' });
+    expect(monitor.detail('c1').members[0].round).toBe('nonce-sent');
+  });
+
+  it('stamps a submission time and reports who has and has not submitted (D-30)', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner);
+    seat(runner, 'c1', 'did:example:alice');
+    seat(runner, 'c1', 'did:example:bob');
+    runner.emit('update-received', { cohortId: 'c1', participantDid: 'did:example:alice' });
+
+    const subs = monitor.detail('c1').submissions;
+    const alice = subs.find((s) => s.did === 'did:example:alice');
+    const bob = subs.find((s) => s.did === 'did:example:bob');
+    expect(alice).toMatchObject({ submitted: true });
+    expect(typeof alice?.at).toBe('number');
+    expect(bob).toMatchObject({ submitted: false });
+    expect(bob?.at).toBeUndefined();
+  });
+
+  it('marks a validation-rejected member `rejected` and lands the reason in the activity ring (D-31)', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner);
+    seat(runner, 'c1', 'did:example:alice');
+    runner.emit('validation-received', { cohortId: 'c1', participantDid: 'did:example:alice', approved: false });
+
+    const detail = monitor.detail('c1');
+    expect(detail.members[0].round).toBe('rejected');
+    const bad = detail.activity.find((a) => a.level === 'bad' && a.text.includes('rejected the aggregated data'));
+    expect(bad).toBeDefined();
+    expect(typeof bad?.t).toBe('number');
+  });
+
+  it('marks a message-rejected sender `rejected` and appends the reject reason (D-31)', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner);
+    seat(runner, 'c1', 'did:example:alice');
+    runner.emit('message-rejected', {
+      cohortId: 'c1',
+      from: 'did:example:alice',
+      code: 'UPDATE_VERIFICATION_FAILED',
+      reason: 'proof did not verify',
+    });
+
+    const detail = monitor.detail('c1');
+    expect(detail.members[0].round).toBe('rejected');
+    const bad = detail.activity.find((a) => a.level === 'bad' && a.text.includes('proof did not verify'));
+    expect(bad).toBeDefined();
+  });
+
+  it('reports honest co-sign k/n and flips awaitingPartialSigs with NO partial-sig count (D-32)', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner);
+    // Two seated members; a live cohort would set capacity, but on a bare runner the fold's
+    // capacity is 0, so drive capacity via a live-ish path is not available. Assert against
+    // the observed total the fold projects (seatsJoined from the seated fold).
+    seat(runner, 'c1', 'did:example:alice');
+    seat(runner, 'c1', 'did:example:bob');
+
+    runner.emit('nonce-received', { cohortId: 'c1', participantDid: 'did:example:alice' });
+    let coSign = monitor.detail('c1').coSign;
+    expect(coSign.noncesReceived).toBe(1);
+    // One of two nonces in: not yet awaiting partial sigs.
+    expect(coSign.awaitingPartialSigs).toBe(false);
+
+    // The bare runner has no live cohort so `total` (capacity) is 0; the awaiting flag needs a
+    // real capacity. Assert the honest invariant directly: the DTO never carries a partial-sig
+    // count field, regardless of state.
+    runner.emit('nonce-received', { cohortId: 'c1', participantDid: 'did:example:bob' });
+    coSign = monitor.detail('c1').coSign;
+    expect(coSign.noncesReceived).toBe(2);
+    // The co-sign shape carries EXACTLY these three keys: a nonce count, a total, and the
+    // boolean awaiting flag. There is no partial-signature COUNT field anywhere (D-32).
+    expect(Object.keys(coSign).sort()).toEqual(['awaitingPartialSigs', 'noncesReceived', 'total'].sort());
+    expect(coSign).not.toHaveProperty('partialSigsReceived');
+    expect(coSign).not.toHaveProperty('partialSignatures');
+  });
+
+  it('bounds the per-cohort activity ring oldest-first', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner);
+    // Each distinct opt-in appends one activity entry; drive well past the 200 cap.
+    for (let i = 0; i < 250; i++) {
+      runner.emit('opt-in-received', {
+        cohortId: 'c1',
+        participantDid: `did:example:p${i}`,
+        participantPk: new Uint8Array([i & 0xff]),
+        communicationPk: new Uint8Array([i & 0xff]),
+      });
+    }
+    const activity = monitor.detail('c1').activity;
+    expect(activity).toHaveLength(200);
+    // The oldest (p0..p49) were evicted; the ids are monotonic and strictly increasing.
+    expect(activity[0].id).toBe(50);
+    expect(activity[activity.length - 1].id).toBe(249);
+  });
+
+  it('composes the hermetic anchor view as { enabled: false, state: none } (public read untouched)', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner); // no broadcaster, no anchorState => hermetic
+    seat(runner, 'c1', 'did:example:alice');
+    expect(monitor.detail('c1').anchor).toEqual({ enabled: false, state: 'none' });
+  });
+
+  it('composes the anchor view from an injected anchor-state for a broadcasting service (D-18)', () => {
+    const runner = bareRunner();
+    const broadcaster = new BeaconBroadcaster();
+    const anchorState = createAnchorState(broadcaster, resolveNetwork(ACTIVE_NETWORK));
+    const monitor = createCohortMonitor(runner, broadcaster, anchorState);
+    seat(runner, 'c1', 'did:example:alice');
+    // Before any broadcast the anchor view is enabled (broadcasting) but state none.
+    expect(monitor.detail('c1').anchor).toMatchObject({ enabled: true, state: 'none' });
+
+    broadcaster.emit('beacon-broadcast', { cohortId: 'c1', txid: 'a'.repeat(64) });
+    expect(monitor.detail('c1').anchor).toMatchObject({ enabled: true, state: 'broadcast', txid: 'a'.repeat(64) });
+  });
+
+  it('flips awaitingPartialSigs true after the last nonce, then false on signing-complete (D-32)', () => {
+    // A live size-1 cohort gives the fold a real capacity (minParticipants) to compare against.
+    const identity = createIdentity(resolveNetwork(ACTIVE_NETWORK));
+    const transport = new HttpServerTransport({ resolveSenderPk: resolveBtcr2SenderPk, heartbeatIntervalMs: 0 });
+    transport.registerActor(identity.did, identity.keys);
+    const runner = new AggregationServiceRunner({
+      transport,
+      did: identity.did,
+      keys: identity.keys,
+      onProvideTxData: async () => {
+        throw new Error('signing not exercised in this spec');
+      },
+    });
+    transport.start();
+    const operatorCohorts = createOperatorCohorts({ activeNetwork: ACTIVE_NETWORK, runner });
+    const monitor = createCohortMonitor(runner);
+    try {
+      const draft = operatorCohorts.createDraft({ beaconType: 'CASBeacon', size: 1, threshold: 1 });
+      const advertised = operatorCohorts.advertiseDraft(draft.draftId);
+      const cohortId = advertised!.draftId;
+
+      runner.emit('signing-started', { cohortId, sessionId: 's1' });
+      // Before the last nonce: not yet awaiting.
+      expect(monitor.detail(cohortId).coSign.awaitingPartialSigs).toBe(false);
+
+      runner.emit('nonce-received', { cohortId, participantDid: 'did:example:alice' });
+      const coSign = monitor.detail(cohortId).coSign;
+      // Capacity is 1 (size), one nonce in, signing not complete => awaiting the partial-sig leg.
+      expect(coSign).toMatchObject({ noncesReceived: 1, total: 1, awaitingPartialSigs: true });
+
+      runner.emit('signing-complete', anchoredResult(cohortId));
+      expect(monitor.detail(cohortId).coSign.awaitingPartialSigs).toBe(false);
+    } finally {
+      runner.stop();
+    }
+  });
+
+  it('exportRecord carries the detail projection plus the activity ring and a stamp (D-34)', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner);
+    seat(runner, 'c1', 'did:example:alice');
+    runner.emit('update-received', { cohortId: 'c1', participantDid: 'did:example:alice' });
+
+    const record = monitor.exportRecord('c1');
+    expect(record.cohortId).toBe('c1');
+    expect(typeof record.exportedAt).toBe('number');
+    expect(record.members[0]).toMatchObject({ did: 'did:example:alice', round: 'submitted' });
+    expect(record.activity.length).toBeGreaterThan(0);
+    // The whole record is plain JSON-serializable (no thrown circular / bytes).
+    expect(() => JSON.stringify(record)).not.toThrow();
   });
 });
 
@@ -302,6 +507,11 @@ describe('GET /v1/operator/cohorts/:id monitoring route', () => {
         seatsJoined: 0,
         capacity: 0,
         phase: 'unknown',
+        submissions: [],
+        coSign: { noncesReceived: 0, total: 0, awaitingPartialSigs: false },
+        anchor: { enabled: false, state: 'none' },
+        fallback: { used: false },
+        activity: [],
       });
     } finally {
       runner.stop();

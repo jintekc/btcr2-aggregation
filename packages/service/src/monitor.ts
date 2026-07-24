@@ -46,6 +46,7 @@ import { bytesToHex } from '@noble/hashes/utils';
 import type { Transaction } from '@scure/btc-signer';
 import type { AggregationServiceEvents, AggregationServiceRunner } from '@did-btcr2/aggregation/service';
 import type { BeaconBroadcaster } from './broadcast.js';
+import type { AnchorReadDTO, AnchorState } from './anchor-state.js';
 
 /**
  * Upper bound on monitored cohort entries (mirrors the anchor-state / operator-cohorts
@@ -66,6 +67,15 @@ const MAX_MONITORED = 24;
 const MAX_TERMINAL = 24;
 
 /**
+ * Upper bound on the per-cohort activity ring (D-21). Past this cap the OLDEST entry is
+ * evicted oldest-first so a long-lived, chatty cohort cannot grow its ring without limit
+ * (T-04-04-03, DoS) while the operator still sees a deep-enough recent history. Sized well
+ * above one cohort's full lifecycle event count (opt-ins + submissions + validations +
+ * nonces + signing + broadcast frames) so a typical cohort never evicts mid-life.
+ */
+const ACTIVITY_RING_SIZE = 200;
+
+/**
  * Cohort phases that count as OPEN/filling for the summary chip + open metric (mirrors
  * `operator-cohorts.ts` `OPEN_PHASES`): a cohort still discovering/gathering participants,
  * before signing starts. Kept as local string members so this module does not depend on
@@ -82,6 +92,77 @@ const IN_FLIGHT_PHASES = new Set<string>(['SigningStarted', 'NoncesCollected', '
 
 /** Whether a folded member has only opted in (`pending`) or been seated (`seated`). */
 export type MemberStatus = 'pending' | 'seated';
+
+/**
+ * The per-member round state answering "who is holding this cohort up" (D-31), a forward
+ * progression through the co-sign round: `seated` (accepted, nothing submitted yet) ->
+ * `submitted` (signed update received) -> `validated` (approved the aggregated data) ->
+ * `nonce-sent` (contributed a MuSig2 nonce). `rejected` is the off-path terminal for a
+ * member whose message was dropped or who rejected validation; a rejection also lands in
+ * the activity ring. This is deliberately NOT extended past `nonce-sent`: the per-member
+ * partial-signature leg emits no runner event (D-32), so the monitor never claims it.
+ */
+export type MemberRound = 'seated' | 'submitted' | 'validated' | 'nonce-sent' | 'rejected';
+
+/** Tone of one activity-ring entry (mirrors the client LogLevel): info/good/warn/bad. */
+export type ActivityLevel = 'info' | 'good' | 'warn' | 'bad';
+
+/**
+ * One entry in a cohort's bounded activity ring (D-21/D-22). `id` is a per-cohort monotonic
+ * sequence (stable across polls, so the client's LogPanel keys + auto-follow work); `t` is
+ * the server wall-clock time (ms) the event was folded, because the runner supplies no
+ * timestamps (D-22); `level` colors the line by event kind; `text` is the plain-language
+ * summary. Raw protocol detail (pubkeys, signed-update JSON) lives behind the drill-down
+ * expanders, never in the log text.
+ */
+export interface ActivityEntryDTO {
+  id: number;
+  t: number;
+  level: ActivityLevel;
+  text: string;
+}
+
+/**
+ * One submission row in the drill-down (D-30): whether a seated member has submitted their
+ * signed update yet and, if so, the server wall-clock time it was received (`at`, stamped at
+ * receipt because the runner carries no timestamp). `raw` carries the member's signed-update
+ * document for the `Raw signed update` technical expander, present only for a LIVE cohort
+ * whose `pendingUpdates` the session still holds (an ended/GC'd cohort keeps the who/when
+ * from the fold but drops the raw body). Operator-gated like the whole detail DTO (D-26).
+ */
+export interface SubmissionDTO {
+  did: string;
+  submitted: boolean;
+  at?: number;
+  raw?: unknown;
+}
+
+/**
+ * Honest per-cohort co-sign progress (D-32). `noncesReceived` of `total` counts the members
+ * who have contributed a MuSig2 nonce (an identified `nonce-received` event), so this leg is
+ * a real observed count. `awaitingPartialSigs` flips true once every nonce is in but signing
+ * has not completed - the honest signal for the partial-signature leg, which emits NO runner
+ * event: there is deliberately NO partial-signature count anywhere in this shape (the
+ * unobservable leg is never invented, prohibition + D-32).
+ */
+export interface CoSignDTO {
+  noncesReceived: number;
+  total: number;
+  awaitingPartialSigs: boolean;
+}
+
+/**
+ * Whether this cohort took the ADR-042 k-of-n script-path fallback (D-33). `used` is true
+ * when `getResult().path === 'script-path'` or `fallback-started` fired; `k`/`n` are the
+ * fallback threshold and cohort size when derivable from the live cohort (absent once the
+ * session has GC'd the cohort, so the client discloses the fallback plainly without inventing
+ * a count it can no longer read).
+ */
+export interface FallbackDTO {
+  used: boolean;
+  k?: number;
+  n?: number;
+}
 
 /**
  * The live status-chip key for one cohort row, from the fixed UI-SPEC tone map (D-04): a
@@ -148,6 +229,13 @@ export interface CohortMemberDTO {
   did: string;
   status: MemberStatus;
   since: number;
+  /**
+   * The per-member round state (D-31). A pending opt-in carries `seated` as an inert default
+   * (the drill-down renders a pending member by its `status`, not its `round`), so the round
+   * chip only surfaces for seated members that have actually progressed through the co-sign
+   * round.
+   */
+  round: MemberRound;
 }
 
 /**
@@ -165,6 +253,33 @@ export interface CohortDetailDTO {
   seatsJoined: number;
   capacity: number;
   phase: string;
+  /** Who has and has not submitted their signed update, with wall-clock times (D-30). */
+  submissions: SubmissionDTO[];
+  /** Honest co-sign progress: nonces k/n plus the awaiting-partial-sigs flag, never a partial-sig count (D-32). */
+  coSign: CoSignDTO;
+  /**
+   * The operator's anchor view, composed from the injected anchor-state read (D-18). A
+   * broadcasting service surfaces the real Signed -> Broadcast -> Confirmed lifecycle; a
+   * hermetic (no-broadcast) service reads `{ enabled: false, state: 'none' }` so the
+   * drill-down honestly shows there is no on-chain anchor. The public anchor read is
+   * byte-untouched (this is the SAME projection, not a second fold).
+   */
+  anchor: AnchorReadDTO;
+  /** Whether the cohort took the k-of-n fallback path, with k/n when derivable (D-33). */
+  fallback: FallbackDTO;
+  /** The bounded per-cohort activity ring, server wall-clock stamped, oldest-first (D-21/D-22). */
+  activity: ActivityEntryDTO[];
+}
+
+/**
+ * The full monitoring export record for one cohort (D-34): the detail DTO (which already
+ * carries the activity ring) plus a `cohortId` and `exportedAt` stamp. Off-chain artifacts
+ * are referenced by hash at `/cas/`, never inlined - only the signed-update bodies the
+ * detail already surfaces to the operator cross here, nothing more.
+ */
+export interface CohortExportDTO extends CohortDetailDTO {
+  cohortId: string;
+  exportedAt: number;
 }
 
 /** The gated per-cohort read surface backed by the fold. */
@@ -190,11 +305,42 @@ export interface CohortMonitor {
    * Never a cumulative since-boot total (D-06).
    */
   serviceMetrics(): ServiceMetricsDTO;
+  /**
+   * The full monitoring export record for a cohort (D-34): the same detail projection the
+   * drill-down shows plus the activity ring, `cohortId`, and an `exportedAt` stamp, all
+   * plain JSON-serializable. Off-chain artifacts stay referenced by hash at `/cas/`.
+   */
+  exportRecord(cohortId: string): CohortExportDTO;
 }
 
-/** The non-oracle answer for an unknown/evicted cohort with no live-set presence. */
-function absentDetail(): CohortDetailDTO {
-  return { exists: false, members: [], seatsJoined: 0, capacity: 0, phase: 'unknown' };
+/**
+ * The non-oracle answer for an unknown/evicted cohort with no live-set presence. The anchor
+ * view still reflects the injected anchor state (mode-honest): a broadcasting service reads
+ * `{ enabled: true, state: 'none' }`, a hermetic one `{ enabled: false, state: 'none' }`.
+ */
+function absentDetail(anchor: AnchorReadDTO): CohortDetailDTO {
+  return {
+    exists: false,
+    members: [],
+    seatsJoined: 0,
+    capacity: 0,
+    phase: 'unknown',
+    submissions: [],
+    coSign: { noncesReceived: 0, total: 0, awaitingPartialSigs: false },
+    anchor,
+    fallback: { used: false },
+    activity: [],
+  };
+}
+
+/** The internal folded member record: the wire fields plus a private submission stamp. */
+interface MemberRecord {
+  did: string;
+  status: MemberStatus;
+  since: number;
+  round: MemberRound;
+  /** Server wall-clock (ms) the member's signed update was received, stamped at receipt (D-30). */
+  submittedAt?: number;
 }
 
 /** The internal folded entry for one cohort: its members plus event-time enrichment. */
@@ -204,7 +350,7 @@ interface MonitorEntry {
    * projection lists them in the order they were first observed. A pending opt-in is
    * promoted in place to seated on acceptance, keeping its original `since` stamp.
    */
-  members: Map<string, CohortMemberDTO>;
+  members: Map<string, MemberRecord>;
   /**
    * Last-known cohort capacity (n seats), snapshotted from the live session at each
    * membership event so an ended cohort (GC'd from the session) still projects its
@@ -219,6 +365,14 @@ interface MonitorEntry {
    * even if the `signing-complete` result's `path` is absent (belt-and-suspenders, D-33).
    */
   fellBack?: boolean;
+  /** DIDs that have contributed a MuSig2 nonce, so the co-sign k/n count is a real observed set (D-32). */
+  noncesSent: Set<string>;
+  /** True once `signing-complete` fired: freezes `awaitingPartialSigs` back to false (the leg finished). */
+  signingComplete: boolean;
+  /** The bounded activity ring (oldest-first), server wall-clock stamped (D-21/D-22). */
+  activity: ActivityEntryDTO[];
+  /** Per-cohort monotonic activity id, so a poll never re-keys an existing log line. */
+  activitySeq: number;
 }
 
 /**
@@ -233,6 +387,15 @@ function safe<T>(fn: () => T): T | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Shorten a DID for the plain-language activity log text (the full DID still rides the
+ * Members section behind a copy-full field). Keeps the method prefix + a head/tail slice so
+ * a log line stays readable without wrapping; a short DID is returned unchanged.
+ */
+function shortDid(did: string): string {
+  return did.length > 24 ? `${did.slice(0, 14)}…${did.slice(-6)}` : did;
 }
 
 /**
@@ -308,7 +471,16 @@ export function serialize(event: keyof AggregationServiceEvents, payload: unknow
 export function createCohortMonitor(
   runner: AggregationServiceRunner,
   broadcaster?: BeaconBroadcaster,
+  anchorState?: AnchorState,
 ): CohortMonitor {
+  /**
+   * The operator anchor view for a cohort: the SAME projection the public read serves,
+   * composed from the injected {@link anchorState} (byte-untouched, D-26), or the mode-honest
+   * `{ enabled: false, state: 'none' }` for a hermetic (non-broadcasting) service that wired
+   * no anchor state at all.
+   */
+  const anchorView = (cohortId: string): AnchorReadDTO =>
+    anchorState ? anchorState.read(cohortId) : { enabled: false, state: 'none' };
   const entries = new Map<string, MonitorEntry>();
   /**
    * Retained terminal records (D-23), keyed by cohortId, bounded at {@link MAX_TERMINAL}
@@ -320,10 +492,45 @@ export function createCohortMonitor(
   function entryFor(cohortId: string): MonitorEntry {
     let entry = entries.get(cohortId);
     if (!entry) {
-      entry = { members: new Map(), capacity: 0 };
+      entry = {
+        members: new Map(),
+        capacity: 0,
+        noncesSent: new Set(),
+        signingComplete: false,
+        activity: [],
+        activitySeq: 0,
+      };
       entries.set(cohortId, entry);
     }
     return entry;
+  }
+
+  /**
+   * Get-or-create a member record for a DID on an entry. A DID that first appears on a
+   * round event (update/validation/nonce/reject) without a prior opt-in is recorded as a
+   * seated member, wall-clock stamped at receipt: it is participating, so seated is honest.
+   */
+  function memberFor(entry: MonitorEntry, did: string): MemberRecord {
+    let member = entry.members.get(did);
+    if (!member) {
+      member = { did, status: 'seated', since: Date.now(), round: 'seated' };
+      entry.members.set(did, member);
+    }
+    return member;
+  }
+
+  /**
+   * Append one entry to a cohort's bounded activity ring (D-21), evicting the OLDEST past
+   * {@link ACTIVITY_RING_SIZE}. `t` is stamped here (server wall-clock) because the runner
+   * carries no timestamps (D-22); `id` is the per-cohort monotonic sequence so the client
+   * LogPanel's key + auto-follow stay stable across polls.
+   */
+  function appendActivity(entry: MonitorEntry, level: ActivityLevel, text: string): void {
+    entry.activity.push({ id: entry.activitySeq, t: Date.now(), level, text });
+    entry.activitySeq += 1;
+    while (entry.activity.length > ACTIVITY_RING_SIZE) {
+      entry.activity.shift();
+    }
   }
 
   /**
@@ -406,7 +613,13 @@ export function createCohortMonitor(
     safely('opt-in-received', () => {
       const entry = entryFor(cohortId);
       if (!entry.members.has(participantDid)) {
-        entry.members.set(participantDid, { did: participantDid, status: 'pending', since: Date.now() });
+        entry.members.set(participantDid, {
+          did: participantDid,
+          status: 'pending',
+          since: Date.now(),
+          round: 'seated',
+        });
+        appendActivity(entry, 'info', `${shortDid(participantDid)} opted in.`);
       }
       snapshotCapacity(cohortId, entry);
       remember(cohortId, entry);
@@ -422,8 +635,14 @@ export function createCohortMonitor(
       if (existing) {
         existing.status = 'seated';
       } else {
-        entry.members.set(participantDid, { did: participantDid, status: 'seated', since: Date.now() });
+        entry.members.set(participantDid, {
+          did: participantDid,
+          status: 'seated',
+          since: Date.now(),
+          round: 'seated',
+        });
       }
+      appendActivity(entry, 'good', `${shortDid(participantDid)} was seated.`);
       snapshotCapacity(cohortId, entry);
       remember(cohortId, entry);
     });
@@ -435,24 +654,85 @@ export function createCohortMonitor(
     safely('keygen-complete', () => {
       const entry = entryFor(cohortId);
       entry.beaconAddress = beaconAddress;
+      appendActivity(entry, 'info', 'Keygen finalized. The beacon address is ready.');
       snapshotCapacity(cohortId, entry);
       remember(cohortId, entry);
     });
   });
 
-  // signing-started / nonce-received: the cohort is co-signing (its phase now drives the
-  // `co-signing` chip). Nothing to fold beyond keeping the entry fresh so a cohort that is
-  // progressing through signing without new members is not evicted mid-life.
-  runner.on('signing-started', ({ cohortId }) => {
-    safely('signing-started', () => {
+  // update-received: a seated member submitted their signed update (D-30). Mark the member
+  // `submitted` and wall-clock stamp the receipt (the payload carries no timestamp, D-22).
+  runner.on('update-received', ({ cohortId, participantDid }) => {
+    safely('update-received', () => {
       const entry = entryFor(cohortId);
+      const member = memberFor(entry, participantDid);
+      if (member.round !== 'rejected') {
+        member.round = 'submitted';
+      }
+      member.submittedAt = Date.now();
+      appendActivity(entry, 'info', `${shortDid(participantDid)} submitted an update.`);
       snapshotCapacity(cohortId, entry);
       remember(cohortId, entry);
     });
   });
-  runner.on('nonce-received', ({ cohortId }) => {
+
+  // validation-received: a member acknowledged the aggregated data. Approved advances the
+  // member to `validated`; a rejection marks it `rejected` and lands a bad-tone activity line
+  // (a validation reject is one of the "who is holding this cohort up" answers, D-31).
+  runner.on('validation-received', ({ cohortId, participantDid, approved }) => {
+    safely('validation-received', () => {
+      const entry = entryFor(cohortId);
+      const member = memberFor(entry, participantDid);
+      if (approved) {
+        if (member.round !== 'rejected') {
+          member.round = 'validated';
+        }
+        appendActivity(entry, 'good', `${shortDid(participantDid)} validated the aggregated data.`);
+      } else {
+        member.round = 'rejected';
+        appendActivity(entry, 'bad', `${shortDid(participantDid)} rejected the aggregated data.`);
+      }
+      snapshotCapacity(cohortId, entry);
+      remember(cohortId, entry);
+    });
+  });
+
+  // message-rejected: the state machine silently dropped an inbound message (bad proof,
+  // oversized, wrong version). Unlike the bare `error` event it IS cohort-attributed
+  // (planning note 2): mark the sender `rejected` and append the reason to the activity ring.
+  runner.on('message-rejected', ({ cohortId, from, code, reason }) => {
+    safely('message-rejected', () => {
+      const entry = entryFor(cohortId);
+      const member = memberFor(entry, from);
+      member.round = 'rejected';
+      appendActivity(entry, 'bad', `Rejected a message from ${shortDid(from)}: ${reason} (${code}).`);
+      snapshotCapacity(cohortId, entry);
+      remember(cohortId, entry);
+    });
+  });
+
+  // signing-started: the co-sign round opened (its phase now drives the `co-signing` chip).
+  runner.on('signing-started', ({ cohortId }) => {
+    safely('signing-started', () => {
+      const entry = entryFor(cohortId);
+      appendActivity(entry, 'info', 'Signing round started.');
+      snapshotCapacity(cohortId, entry);
+      remember(cohortId, entry);
+    });
+  });
+
+  // nonce-received: a member contributed their MuSig2 nonce (an IDENTIFIED co-sign event, so
+  // the k/n count is a real observed set, D-32). Mark the member `nonce-sent` and record the
+  // DID so `coSign.noncesReceived` counts unique contributors.
+  runner.on('nonce-received', ({ cohortId, participantDid }) => {
     safely('nonce-received', () => {
       const entry = entryFor(cohortId);
+      const member = memberFor(entry, participantDid);
+      if (member.round !== 'rejected') {
+        member.round = 'nonce-sent';
+      }
+      entry.noncesSent.add(participantDid);
+      appendActivity(entry, 'info', `${shortDid(participantDid)} sent their signing nonce.`);
       snapshotCapacity(cohortId, entry);
       remember(cohortId, entry);
     });
@@ -465,6 +745,7 @@ export function createCohortMonitor(
     safely('fallback-started', () => {
       const entry = entryFor(cohortId);
       entry.fellBack = true;
+      appendActivity(entry, 'warn', 'Falling back to the k-of-n signing path.');
       snapshotCapacity(cohortId, entry);
       remember(cohortId, entry);
     });
@@ -478,7 +759,14 @@ export function createCohortMonitor(
   runner.on('signing-complete', (result) => {
     safely('signing-complete', () => {
       const cohortId = result.cohortId;
-      const viaFallback = result.path === 'script-path' || entries.get(cohortId)?.fellBack === true;
+      const entry = entries.get(cohortId);
+      const viaFallback = result.path === 'script-path' || entry?.fellBack === true;
+      // Mark the co-sign leg done so `awaitingPartialSigs` flips back to false (the partial
+      // signatures arrived, so the honest awaiting line clears) and log the completion.
+      if (entry) {
+        entry.signingComplete = true;
+        appendActivity(entry, 'good', 'Co-signing complete.');
+      }
       const { seatsJoined, capacity } = snapshotSeats(cohortId);
       rememberEnded(cohortId, { chip: viaFallback ? 'fallback' : 'anchored', seatsJoined, capacity });
     });
@@ -488,6 +776,10 @@ export function createCohortMonitor(
   // which has neither, planning note 2): record a terminal `failed` record with its reason.
   runner.on('cohort-failed', ({ cohortId, reason }) => {
     safely('cohort-failed', () => {
+      const entry = entries.get(cohortId);
+      if (entry) {
+        appendActivity(entry, 'bad', `Cohort failed: ${reason || 'cohort failed'}.`);
+      }
       const { seatsJoined, capacity } = snapshotSeats(cohortId);
       rememberEnded(cohortId, { chip: 'failed', seatsJoined, capacity, reason: reason || 'cohort failed' });
     });
@@ -500,8 +792,22 @@ export function createCohortMonitor(
   // pending (confirmed:false) frame is NOT terminal and is left to the signing-complete
   // record so "Anchored" is reserved for a real confirmation (D-18).
   if (broadcaster) {
+    // A broadcast frame (accepted to the network) is folded into the activity ring so the
+    // operator sees the on-chain progression in the log too, in step with the anchor view.
+    broadcaster.on('beacon-broadcast', ({ cohortId, txid }) => {
+      safely('beacon-broadcast', () => {
+        const entry = entries.get(cohortId);
+        if (entry) {
+          appendActivity(entry, 'info', `Beacon tx broadcast (${txid.slice(0, 12)}…).`);
+        }
+      });
+    });
     broadcaster.on('beacon-broadcast-failed', ({ cohortId, reason }) => {
       safely('beacon-broadcast-failed', () => {
+        const entry = entries.get(cohortId);
+        if (entry) {
+          appendActivity(entry, 'bad', `Beacon broadcast failed: ${reason || 'broadcast failed'}.`);
+        }
         const { seatsJoined, capacity } = snapshotSeats(cohortId);
         rememberEnded(cohortId, { chip: 'failed', seatsJoined, capacity, reason: reason || 'broadcast failed' });
       });
@@ -511,6 +817,10 @@ export function createCohortMonitor(
         return;
       }
       safely('beacon-anchored', () => {
+        const entry = entries.get(cohortId);
+        if (entry) {
+          appendActivity(entry, 'good', 'Beacon tx confirmed on-chain.');
+        }
         // Preserve a fallback tag if signing-complete already recorded one; a confirmed
         // anchor of an optimistic-path cohort stays `anchored`.
         const viaFallback = ended.get(cohortId)?.chip === 'fallback';
@@ -520,42 +830,111 @@ export function createCohortMonitor(
     });
   }
 
+  /**
+   * The shared detail projection backing both `detail` and `exportRecord`. A pure read over
+   * the fold + the live session: it composes the members (with round state), submissions
+   * (who/when + the live raw signed-update body), honest co-sign progress, the anchor view,
+   * the fallback flag, and the bounded activity ring. Never mutates state.
+   */
+  function buildDetail(cohortId: string): CohortDetailDTO {
+    const entry = entries.get(cohortId);
+    const cohort = runner.session.getCohort(cohortId);
+    const anchor = anchorView(cohortId);
+    // Neither a fold entry nor a live cohort: the non-oracle absent answer. An advertised
+    // cohort with nobody joined still has a live cohort (no entry yet), so it reads
+    // exists:true with an empty member list and its real seat count.
+    if (!entry && !cohort) {
+      return absentDetail(anchor);
+    }
+    // Members always come from the OWN fold so an ended (session-GC'd) cohort still projects
+    // its members; a live cohort with no opt-ins yet simply has none.
+    const members: CohortMemberDTO[] = entry
+      ? [...entry.members.values()].map((m) => ({
+          did: m.did,
+          status: m.status,
+          since: m.since,
+          round: m.round,
+        }))
+      : [];
+
+    // Seats + capacity + phase: prefer the authoritative live session, else the fold snapshot.
+    const seatsJoined = cohort
+      ? cohort.participants.length
+      : members.filter((m) => m.status === 'seated').length;
+    const capacity = cohort ? cohort.minParticipants : entry ? entry.capacity : 0;
+    const phase = cohort ? runner.session.getCohortPhase(cohortId) ?? 'unknown' : 'unknown';
+
+    // Submissions (D-30): one row per seated member. `submitted` is true when the fold saw an
+    // `update-received` (round advanced) or the live cohort still holds a pending update; the
+    // raw signed-update body rides only from the LIVE pendingUpdates (an ended cohort keeps
+    // the who/when but drops the raw body once the session GC's it).
+    const pendingUpdates = cohort?.pendingUpdates;
+    const submissions: SubmissionDTO[] = entry
+      ? [...entry.members.values()]
+          .filter((m) => m.status === 'seated')
+          .map((m) => {
+            const submitted =
+              m.round === 'submitted' ||
+              m.round === 'validated' ||
+              m.round === 'nonce-sent' ||
+              (pendingUpdates?.has(m.did) ?? false);
+            const raw = pendingUpdates?.get(m.did);
+            return {
+              did: m.did,
+              submitted,
+              ...(m.submittedAt !== undefined ? { at: m.submittedAt } : {}),
+              ...(raw !== undefined ? { raw } : {}),
+            };
+          })
+      : [];
+
+    // Honest co-sign progress (D-32): nonces are a real observed set; `awaitingPartialSigs`
+    // flips true only once every nonce is in and signing has NOT completed. There is NO
+    // partial-signature count anywhere - the leg that emits no event is never invented.
+    const noncesReceived = entry ? entry.noncesSent.size : 0;
+    const coSign: CoSignDTO = {
+      noncesReceived,
+      total: capacity,
+      awaitingPartialSigs:
+        capacity > 0 && noncesReceived >= capacity && !(entry?.signingComplete ?? false),
+    };
+
+    // Fallback (D-33): `used` from the live result path or the folded fallback-started tag;
+    // k/n only when the live cohort is still readable (absent once GC'd, disclosed plainly).
+    const result = safe(() => runner.session.getResult(cohortId));
+    const used = result?.path === 'script-path' || entry?.fellBack === true;
+    const k = cohort ? cohort.effectiveFallbackThreshold : undefined;
+    const fallback: FallbackDTO = {
+      used,
+      ...(k !== undefined && k > 0 ? { k } : {}),
+      ...(capacity > 0 ? { n: capacity } : {}),
+    };
+
+    return {
+      exists: true,
+      members,
+      seatsJoined,
+      capacity,
+      phase,
+      submissions,
+      coSign,
+      anchor,
+      fallback,
+      // Copy the ring so a caller can never mutate the fold's internal array.
+      activity: entry ? entry.activity.map((a) => ({ ...a })) : [],
+    };
+  }
+
   return {
     detail(cohortId: string): CohortDetailDTO {
-      const entry = entries.get(cohortId);
-      const cohort = runner.session.getCohort(cohortId);
-      // Neither a fold entry nor a live cohort: the non-oracle absent answer. An
-      // advertised cohort with nobody joined still has a live cohort (no entry yet), so it
-      // reads exists:true with an empty member list and its real seat count.
-      if (!entry && !cohort) {
-        return absentDetail();
-      }
-      // Members always come from the OWN fold so an ended (session-GC'd) cohort still
-      // projects its members; a live cohort with no opt-ins yet simply has none.
-      const members: CohortMemberDTO[] = entry
-        ? [...entry.members.values()].map((m) => ({ did: m.did, status: m.status, since: m.since }))
-        : [];
-      if (cohort) {
-        // Live enrichment: authoritative seat count and phase from the session.
-        const phase = runner.session.getCohortPhase(cohortId);
-        return {
-          exists: true,
-          members,
-          seatsJoined: cohort.participants.length,
-          capacity: cohort.minParticipants,
-          phase: phase ?? 'unknown',
-        };
-      }
-      // Ended/entry-only: the session has GC'd the cohort, so derive the seat count from
-      // the seated fold and the last-known capacity snapshot; phase is honestly unknown.
-      const seatsJoined = members.filter((m) => m.status === 'seated').length;
-      return {
-        exists: true,
-        members,
-        seatsJoined,
-        capacity: entry ? entry.capacity : 0,
-        phase: 'unknown',
-      };
+      return buildDetail(cohortId);
+    },
+
+    exportRecord(cohortId: string): CohortExportDTO {
+      // The export is exactly the detail projection (which already carries the activity ring)
+      // plus a cohortId + exportedAt stamp. Off-chain artifacts stay referenced by hash at
+      // /cas/ - only the signed-update bodies the detail already surfaces cross here (D-34).
+      return { cohortId, exportedAt: Date.now(), ...buildDetail(cohortId) };
     },
 
     summary(): CohortSummaryDTO[] {
