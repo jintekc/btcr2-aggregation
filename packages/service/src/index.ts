@@ -240,6 +240,16 @@ export interface CreateServiceOptions {
    */
   changeAddress?: string;
   /**
+   * Funding window in ms for the live+broadcast path (D-38). The budget the funding wait
+   * allows for the operator to fund a cohort beacon address before the wait dead-ends with an
+   * honest "funding never arrived" reason. Threaded from {@link file://./demo-server.ts}
+   * (env `FUNDING_WINDOW_MS`, default 12 min). The 04-06 funding stage consumes this inside
+   * `onProvideTxData`, clamping it per-cohort against the remaining TTL so the wait throws its
+   * specific reason before either library timer fires; accepted here now so the boot contract
+   * and the funding stage share one option. No effect on the fixture/non-broadcast path.
+   */
+  fundingWindowMs?: number;
+  /**
    * Permit a live run against mainnet. Default false: a mainnet {@link config}
    * network with {@link live} true throws (real funds guard). No effect on the
    * fixture path.

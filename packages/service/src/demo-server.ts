@@ -41,6 +41,23 @@ export const DEFAULT_PHASE_TIMEOUT_MS = 1_800_000;
  */
 export const DEFAULT_COHORT_TTL_MS = 1_800_000;
 
+/**
+ * Default funding window (12 minutes), env-tunable via `FUNDING_WINDOW_MS`. Under
+ * `BROADCAST=1` (the live+broadcast path, D-35) each cohort's aggregate beacon address must
+ * be funded by the operator before its funding wait gives up; this is that wait's default
+ * budget. Sized modestly (~10-15 min per D-38) so a genuinely unfunded cohort dead-ends with
+ * an honest reason in a reasonable time rather than hanging for the full phase timeout, while
+ * still giving a human operator time to fund the address after seeing the FUND-THIS prompt.
+ *
+ * The D-38 boot invariant pairs this with {@link DEFAULT_PHASE_TIMEOUT_MS}: a live+broadcast
+ * boot fails fast unless `phaseTimeoutMs > fundingWindowMs`, so the funding wait can surface
+ * its specific "funding never arrived" reason from inside `onProvideTxData` BEFORE the
+ * library's phase-stall timer fires (else the operator sees a generic stall instead). The
+ * per-cohort TTL leg of the same invariant is a runtime clamp landed by the 04-06 funding
+ * stage; this constant + the phase-timeout leg are the boot-time half.
+ */
+export const DEFAULT_FUNDING_WINDOW_MS = 720_000;
+
 export interface DemoServerOptions {
   /** Port to listen on (default 8080). */
   port?: number;
@@ -120,8 +137,40 @@ export interface DemoServerOptions {
    * `LIVE=1` also enables it): an offline connection so the gate stays hermetic -
    * resolution returns the genesis document and the registration proxy reports no
    * funds. Set true (or `LIVE=1`) for a real self-hosted deployment.
+   *
+   * NOTE: this flag controls only the injected Bitcoin CONNECTION (offline stub vs real
+   * esplora) used by `GET /resolve/:did` and the `/v1/tx/*` proxy. It does NOT by itself
+   * switch cohort co-signing off the fixture path - that is gated by {@link broadcast}
+   * (D-35), so `LIVE=1` alone keeps its existing meaning (live esplora, fixture co-sign).
    */
   live?: boolean;
+  /**
+   * Enable the live+broadcast cohort path (D-35; env `BROADCAST=1`, which REQUIRES
+   * `LIVE=1`/`live` and throws at boot otherwise). When set, `createService` receives
+   * `{ live: true, broadcast: true }`, so each cohort builds a REAL aggregation beacon tx
+   * that spends a funded UTXO at the cohort beacon address and broadcasts it on-chain -
+   * real money moves. Default false: the hermetic fixture co-sign path. The middle mode
+   * (live sign, no push) is deliberately NOT exposed via env (D-35); a programmatic caller
+   * can still reach it through {@link CreateServiceOptions} directly.
+   */
+  broadcast?: boolean;
+  /**
+   * Change address for the live beacon tx under {@link broadcast} (env `LIVE_CHANGE_ADDRESS`).
+   * Defaults to the cohort beacon address inside `createService`; set the operator funding
+   * wallet here to avoid reusing the cohort address for change. Only meaningful with
+   * {@link broadcast}.
+   */
+  changeAddress?: string;
+  /**
+   * Funding window in ms for the live+broadcast path (env `FUNDING_WINDOW_MS`, default
+   * {@link DEFAULT_FUNDING_WINDOW_MS} = 12 min). The budget the funding wait allows for the
+   * operator to fund a cohort beacon address before it dead-ends with an honest "funding
+   * never arrived" reason (D-38). The 04-06 funding stage consumes this as the funding wait's
+   * window (clamped per-cohort against the remaining TTL); this plan defines the knob, threads
+   * it into `createService`, and enforces the boot invariant `phaseTimeoutMs > fundingWindowMs`
+   * under {@link broadcast}.
+   */
+  fundingWindowMs?: number;
   /**
    * Permit running the coordinator on Bitcoin mainnet. Default false (env
    * `ALLOW_MAINNET=1` also enables it): a mainnet {@link network} throws at boot
@@ -272,6 +321,55 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
     );
   }
 
+  // Live+broadcast enablement (D-35): the ONLY env-exposed path that moves Bitcoin for
+  // cohort beacons. LIVE=1 alone keeps its meaning (live esplora for resolve + the /v1/tx
+  // proxy, fixture co-sign); BROADCAST=1 additionally has createService build + broadcast a
+  // REAL aggregation beacon tx per cohort. BROADCAST without LIVE is refused at boot: the
+  // only tx there is the zero-chain fixture, which is meaningless to broadcast.
+  const useBroadcast = opts.broadcast ?? process.env.BROADCAST === '1';
+  if (useBroadcast && !useLive) {
+    throw new Error(
+      'Refusing to start: BROADCAST=1 requires LIVE=1 (broadcast: true requires live: true). ' +
+        'Without a live esplora connection the only beacon tx to broadcast is the zero-chain ' +
+        'fixture, which cannot anchor. Set LIVE=1 (and fund each cohort beacon address) to ' +
+        'broadcast for real, or unset BROADCAST to run the hermetic fixture co-sign path.',
+    );
+  }
+  // Funding-window knob (D-38; env FUNDING_WINDOW_MS). Threaded into createService for the
+  // 04-06 funding stage; enforced here by the phase-timeout leg of the boot invariant.
+  const changeAddress = opts.changeAddress ?? process.env.LIVE_CHANGE_ADDRESS;
+  const fundingWindowMs =
+    opts.fundingWindowMs ??
+    (process.env.FUNDING_WINDOW_MS ? Number(process.env.FUNDING_WINDOW_MS) : DEFAULT_FUNDING_WINDOW_MS);
+  // D-38 phase-timeout leg: under BROADCAST the funding wait must be able to throw its own
+  // "funding never arrived" reason from inside onProvideTxData BEFORE the library's phase-stall
+  // timer fires, else the operator sees a generic stall instead of the honest funding message.
+  // Fail fast at boot on a config that would let the phase timer win the race.
+  if (useBroadcast && phaseTimeoutMs <= fundingWindowMs) {
+    throw new Error(
+      `Refusing to start: under BROADCAST=1 the phase-stall timeout PHASE_TIMEOUT_MS ` +
+        `(${phaseTimeoutMs}ms) must EXCEED the funding window FUNDING_WINDOW_MS (${fundingWindowMs}ms), ` +
+        'so the funding wait can surface its specific "funding never arrived" reason before the ' +
+        'phase-stall timer fires. Raise PHASE_TIMEOUT_MS or lower FUNDING_WINDOW_MS.',
+    );
+  }
+  // Loud live+broadcast boot banner (D-35/D-40), mirroring the ADR 0010 mainnet loud-boot
+  // idiom. Fires on ANY live+broadcast boot regardless of network, because even a test-network
+  // beacon spends a real (if valueless) UTXO the operator must fund per cohort.
+  if (useLive && useBroadcast) {
+    log(`!!! LIVE + BROADCAST: ${net.label.toUpperCase()} !!!`);
+    log(`  - each cohort's aggregate beacon tx is BROADCAST on-chain to ${net.label}`);
+    log('  - the operator MUST fund each cohort beacon address before its funding window elapses');
+    log(`  - funding window: ${fundingWindowMs}ms; an unfunded cohort dead-ends with a funding reason (no retry fixes it)`);
+    // Throwaway-recovery-key warning (D-40): fires on any live+broadcast boot, not just
+    // mainnet, because funds sent to a below-threshold-failed cohort are lost on any network.
+    if (!recoveryKey) {
+      log('  !!! RECOVERY_KEY UNSET: cohort recovery keys are THROWAWAY (secret discarded) !!!');
+      log('      funds sent to a cohort that fails below its fallback threshold are UNRECOVERABLE,');
+      log('      regardless of network; set RECOVERY_KEY to a key whose secret you hold offline');
+    }
+  }
+
   // Operator console credential (HOST-01, ADR 0015). Fail-closed: no password => the
   // console + mutating routes + gated telemetry do NOT mount, but the public
   // participant surface still serves. Loud boot warning mirrors the ADR 0010 mainnet
@@ -338,6 +436,15 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
     phaseTimeoutMs,
     // Signing-liveness fallback default-on for the product (env AUTO_FALLBACK=0 off).
     autoFallbackOnStall,
+    // Live+broadcast cohort path (D-35): tie createService's live co-sign + on-chain
+    // broadcast to BROADCAST=1 (which requires LIVE=1). LIVE=1 alone leaves these false, so
+    // cohort co-signing stays on the fixture path (existing meaning preserved). The
+    // changeAddress + allowMainnet + fundingWindowMs knobs only bite under this path.
+    live: useBroadcast,
+    broadcast: useBroadcast,
+    changeAddress,
+    allowMainnet,
+    fundingWindowMs,
     webDistDir: resolvedDist,
     store,
     bitcoin,
@@ -385,7 +492,15 @@ if (invokedDirectly) {
   const minParticipants = Number(process.env.MIN_PARTICIPANTS ?? 2);
   const cohortTtlMs = process.env.COHORT_TTL_MS ? Number(process.env.COHORT_TTL_MS) : undefined;
   const phaseTimeoutMs = process.env.PHASE_TIMEOUT_MS ? Number(process.env.PHASE_TIMEOUT_MS) : undefined;
-  startDemoServer({ port, host, minParticipants, cohortTtlMs, phaseTimeoutMs })
+  // Live+broadcast contract (D-35): LIVE=1 controls the esplora connection; BROADCAST=1
+  // (requires LIVE=1) enables real cohort beacon broadcast; LIVE_CHANGE_ADDRESS + FUNDING_WINDOW_MS
+  // tune the funded path. startDemoServer also reads these from process.env, so passing them
+  // explicitly here just keeps the direct-invocation surface self-documenting.
+  const live = process.env.LIVE === '1';
+  const broadcast = process.env.BROADCAST === '1';
+  const changeAddress = process.env.LIVE_CHANGE_ADDRESS || undefined;
+  const fundingWindowMs = process.env.FUNDING_WINDOW_MS ? Number(process.env.FUNDING_WINDOW_MS) : undefined;
+  startDemoServer({ port, host, minParticipants, cohortTtlMs, phaseTimeoutMs, live, broadcast, changeAddress, fundingWindowMs })
     .then((server) => {
       let shuttingDown = false;
       const shutdown = () => {
