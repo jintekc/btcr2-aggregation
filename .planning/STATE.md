@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 04
 current_phase_name: operator-cohort-monitoring
 status: executing
-stopped_at: "Completed 04-04-PLAN.md (drill-down depth: submissions, honest co-sign, anchor, activity log, JSON export)"
-last_updated: "2026-07-24T20:14:56.224Z"
+stopped_at: Completed 04-05-PLAN.md
+last_updated: "2026-07-24T20:35:02.360Z"
 last_activity: 2026-07-24
 last_activity_desc: Executed 04-02 (dashboard-SSE retirement + monitor summary read model)
 progress:
   total_phases: 4
   completed_phases: 3
   total_plans: 30
-  completed_plans: 26
+  completed_plans: 27
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 04 (operator-cohort-monitoring) — EXECUTING
-Plan: 5 of 8 (04-01, 04-02 complete)
+Plan: 6 of 8 (04-01, 04-02 complete)
 Status: Ready to execute
 Last activity: 2026-07-24 — Executed 04-02 (dashboard-SSE retirement + monitor summary read model)
 
-Progress: [█████████░] 87%
+Progress: [█████████░] 90%
 
 ## Performance Metrics
 
@@ -86,6 +86,7 @@ Progress: [█████████░] 87%
 | Phase 04 P02 | 40 min | 2 tasks | 19 files |
 | Phase 04 P03 | 18min | 2 tasks | 13 files |
 | Phase 04 P04 | 35min | 3 tasks | 8 files |
+| Phase 04 P05 | 15min | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -117,6 +118,7 @@ Recent decisions affecting current work (Phase 2):
 - [Phase 04] 04-01 (SVC-03 tracer): monitoring is an INDEPENDENT per-service `createCohortMonitor(runner)` fold (D-27) mirroring anchor-state (bounded 24, oldest-first evict), NOT entangling the frozen anchor-state/operator-cohorts; public anchor read byte-untouched. `detail(cohortId)` is a pure idempotent projection: members folded from the monitor's OWN wall-clock-stamped entry (D-22) so session-GC'd ended cohorts still project, but seats/phase/capacity enrich live from `runner.session` when the cohort is live (a zero-opt-in advertised cohort reads exists:true with real seats, UI-SPEC E5). Unknown id with no entry AND no live cohort = non-oracle exists:false. Gated `GET /v1/operator/cohorts/:id` mounts after requireOperator (anonymous -> 401 before any lookup). Web: discriminated `FetchResult<T>` + `fetchCohortDetail` (401 vs unreachable vs ok) + store `pollDetail` (401 -> logged-out+SESSION_EXPIRED re-login D-16; unreachable -> freeze last-known+detailStale D-25; ok -> store+lastUpdated) + SPA-internal drill-down view state (D-03). Partial-sig/submissions/anchor/funding deliberately deferred to later plans (D-32 honest-limit, NO stubs). 384 tests green. NEW spec convention held: monitor.spec.ts + operator.spec.ts live in package `tests/` (outside src).
 - [Phase ?]: [Phase 04] 04-03 (SVC-03, list-first operator console): reworked the console into the monitoring-first surface (D-07) - service-metrics row (four tabular-nums count-neutral counters) + status-chip rows grouped Needs attention/Active/Drafts/Ended with single-membership bucketing (headings only when non-empty) and the fixed tone map (Draft/Filling/Co-signing/Needs funding/Fallback/Anchored/Failed/Expired), create form behind a New cohort button, advertise lands in the drill-down (D-13), View the public directory link. Added HealthStrip (mode/network/esplora-live-only/IPFS/freshness + SERVICE_NAME) always-visible above both views; freshness derives from the store lastUpdated and FREEZES the {n}s-ago label on a stale read (D-25); mode is a reserved Hermetic default until 04-06 populates live mode. SERVICE_NAME is a boot-time env carrier threaded demo-server->createService->createHonoApp, returned ADDITIVELY on GET /v1/config only when set (frozen network fields byte-identical, additive config.spec pin), surfaced on BOTH the console strip and the public directory header (via the participant store's loadConfig) as plain auto-escaped text with no edit surface (D-51/T-04-03-01). The list read replaced the throwing listCohorts with a discriminated fetchOperatorCohorts so refreshCohorts + a new list-view interval poll route 401->re-login / unreachable->freeze+banner / ok->update+lastUpdated (D-16/D-25). Expander promoted to ui/primitives (D-12). 393 tests + web build + lint green.
 - [Phase ?]: [Phase 04] 04-04 (SVC-03 drill-down depth): the monitor fold now folds every identity-carrying runner event into per-member round state (seated->submitted->validated->nonce-sent, rejected off-path), submissions (who/when + the live raw signed-update body), honest co-sign ({noncesReceived,total,awaitingPartialSigs} with NO partial-sig count anywhere, D-32), an operator anchor view composed from the SAME injected anchor-state the public read serves (byte-untouched public read, hermetic={enabled:false,state:none}, D-18/D-26), a fallback flag (k/n when derivable, D-33), and a bounded (200, oldest-first, per-cohort monotonic id) server-wall-clock-stamped activity ring (D-21/D-22); plus exportRecord + the gated two-segment GET /v1/operator/cohorts/:id/export (anon 401 before lookup, 400 bad id, Content-Disposition filename from the shape-validated id only, no new auth surface, D-34). Drill-down renders top-to-bottom (D-05): OperatorStageTimeline (own stage set, Anchored reserved for confirmed) + Members(round chips + pubkeys behind Technical detail, D-28) + Submissions(Raw signed update expander) + honest Co-sign + Anchor sub-steps(hermetic+fallback lines) + Activity(LogPanel gained a formatTime prop for server wall-clock) + Export card. Member pubkeys + LogPanel.formatTime were Rule 2/3 pull-ins; onboarding-model badge honestly omitted (DTO carries no idType, bech32m decode avoided in the bundle). 407 tests + web build + lint green.
+- [Phase ?]: 04-05: LIVE-01 boot half - BROADCAST=1 (requires LIVE=1) passes {live,broadcast} into createService behind ADR 0010 rails; bounded broadcast send retry (duplicate-acceptance=success, honest exhaustion); monitor serviceHealth mode+esplora bit. LIVE=1 alone unchanged (fixture co-sign). LIVE-01 advanced, completed by 04-06 funding stage + 04-08 UAT.
 
 ### Pending Todos
 
@@ -153,7 +155,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-24T20:14:37.325Z
-Stopped at: Completed 04-04-PLAN.md (drill-down depth: submissions, honest co-sign, anchor, activity log, JSON export)
+Last session: 2026-07-24T20:34:48.799Z
+Stopped at: Completed 04-05-PLAN.md
 Resume file: None
 Next command: /gsd-execute-phase 4 (continue Wave 3: 04-03 console list surface renders the monitoring chips + metrics)
