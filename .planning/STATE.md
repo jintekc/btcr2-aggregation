@@ -2,18 +2,18 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 4
-current_phase_name: Operator Cohort Monitoring
-status: ready-to-execute
-stopped_at: Phase 04 planned (8 plans, 7 waves)
-last_updated: "2026-07-24T15:19:01.677Z"
+current_phase: 04
+current_phase_name: operator-cohort-monitoring
+status: executing
+stopped_at: Completed 04-01-PLAN.md (monitoring tracer)
+last_updated: "2026-07-24T15:05:00.000Z"
 last_activity: 2026-07-24
-last_activity_desc: Phase 4 planned - 8 plans in 7 waves, checker passed
+last_activity_desc: Executed 04-01 (monitoring read-model tracer)
 progress:
   total_phases: 4
   completed_phases: 3
   total_plans: 30
-  completed_plans: 22
+  completed_plans: 23
 ---
 
 # Project State
@@ -23,16 +23,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-22)
 
 **Core value:** A stranger can self-host a real aggregation service that advertises cohorts, and another stranger can point a participant at that service's URL, browse its cohorts, join, co-sign, and resolve - a genuinely two-sided, self-hostable product, not a demo.
-**Current focus:** Phase 4 — Operator Cohort Monitoring
+**Current focus:** Phase 04 — operator-cohort-monitoring
 
 ## Current Position
 
-Phase: 4 — Operator Cohort Monitoring
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-07-24 - Phase 4 planned (8 plans, 7 waves; checker passed, coverage 55/55)
+Phase: 04 (operator-cohort-monitoring) — EXECUTING
+Plan: 2 of 8 (04-01 complete)
+Status: Executing Phase 04
+Last activity: 2026-07-24 — Executed 04-01 (monitoring read-model tracer)
 
-Progress: [██████████░░░░░░░░░░] 3 of 6 phases complete (22/22 planned-to-date plans executed)
+Progress: [██████████░░░░░░░░░░] 3 of 6 phases complete (23 planned-to-date plans executed)
 
 ## Performance Metrics
 
@@ -109,6 +109,7 @@ Recent decisions affecting current work (Phase 2):
 - [Phase 03]: 03-08: anchorSummaryState gained a neutral 'checking' member (null anchor) so the pre-first-read window is never narrated as a confirmed no-broadcast service
 - [Phase 03]: 03-08: StageTimeline final-row label is state-driven (anchorSummaryState === 'anchored'), not the enabled bit, so the timeline header, anchor sub-steps, and CompletionSummary Signed-line never contradict
 - [Phase ?]: [Phase 03] 03-09: reserve the 'anchored' narration for state === 'confirmed' only across anchorSummaryState, deriveStage, and the CompletionSummary heading boolean; state === 'broadcast' routes to 'broadcasting'/'signed', closing Truth 8 (PART-04, D-07, WR-02)
+- [Phase 04] 04-01 (SVC-03 tracer): monitoring is an INDEPENDENT per-service `createCohortMonitor(runner)` fold (D-27) mirroring anchor-state (bounded 24, oldest-first evict), NOT entangling the frozen anchor-state/operator-cohorts; public anchor read byte-untouched. `detail(cohortId)` is a pure idempotent projection: members folded from the monitor's OWN wall-clock-stamped entry (D-22) so session-GC'd ended cohorts still project, but seats/phase/capacity enrich live from `runner.session` when the cohort is live (a zero-opt-in advertised cohort reads exists:true with real seats, UI-SPEC E5). Unknown id with no entry AND no live cohort = non-oracle exists:false. Gated `GET /v1/operator/cohorts/:id` mounts after requireOperator (anonymous -> 401 before any lookup). Web: discriminated `FetchResult<T>` + `fetchCohortDetail` (401 vs unreachable vs ok) + store `pollDetail` (401 -> logged-out+SESSION_EXPIRED re-login D-16; unreachable -> freeze last-known+detailStale D-25; ok -> store+lastUpdated) + SPA-internal drill-down view state (D-03). Partial-sig/submissions/anchor/funding deliberately deferred to later plans (D-32 honest-limit, NO stubs). 384 tests green. NEW spec convention held: monitor.spec.ts + operator.spec.ts live in package `tests/` (outside src).
 
 ### Pending Todos
 
@@ -145,7 +146,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-23T22:49:06.664Z
-Stopped at: Phase 04 planned (8 plans, 7 waves)
-Resume file: .planning/phases/04-operator-cohort-monitoring/04-01-PLAN.md
-Next command: /gsd-execute-phase 4
+Last session: 2026-07-24T15:05:00.000Z
+Stopped at: Completed 04-01-PLAN.md (monitoring read-model tracer); Wave 1 done
+Resume file: .planning/phases/04-operator-cohort-monitoring/04-02-PLAN.md
+Next command: /gsd-execute-phase 4 (continue Wave 2: 04-02 dashboard-SSE retirement)

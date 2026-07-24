@@ -149,7 +149,7 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 04-01-PLAN.md - TRACER: monitoring member/seat vertical slice (monitor fold + gated detail read + polled drill-down) (SVC-03, Wave 1)
+- [x] 04-01-PLAN.md - TRACER: monitoring member/seat vertical slice (monitor fold + gated detail read + polled drill-down) (SVC-03, Wave 1) - SUMMARY: 04-01-SUMMARY.md
 
 **Wave 2** *(blocked on Wave 1)*
 
