@@ -4,6 +4,7 @@ import {
   BeaconSignalDiscovery,
   DidBtcr2,
   type BeaconService,
+  type BeaconSignal,
   type CASAnnouncement,
   type DataNeed,
   type DidResolutionResponse,
@@ -62,6 +63,55 @@ export interface ResolveBtcr2Options {
    * Default 64.
    */
   maxIterations?: number;
+}
+
+/**
+ * Thrown when resolution encounters a beacon signal that is still mempool-resident
+ * (unconfirmed): its block metadata carries no confirmation time, so the upstream
+ * `@did-btcr2/method` resolver would derive an `Invalid Date` from the missing
+ * `block_time` and throw a generic error (surfaced in Phase 3 live UAT, D-46). We detect the
+ * condition in-repo and raise this DISTINGUISHABLE, retryable signal instead of forking the
+ * library, so the route can answer an honest "resolve again after it confirms" rather than a
+ * generic 502. Adopt the upstream `block_time` fix when it ships (RESEARCH A1).
+ */
+export class UnconfirmedSignalError extends Error {
+  constructor(message = 'a beacon signal is awaiting confirmation') {
+    super(message);
+    this.name = 'UnconfirmedSignalError';
+  }
+}
+
+/**
+ * Whether `err` is the upstream Invalid-Date throw a mempool-resident beacon signal triggers
+ * inside the `@did-btcr2/method` resolver. `DateUtils.blocktimeToTimestamp` maps a missing
+ * `block_time` to `new Date(NaN)`, and `DateUtils.toISOStringNonFractional` then throws
+ * `Invalid date: Invalid Date` (verified in `@did-btcr2/common@9.1.0`). Matched by message shape
+ * because the library throws a plain `Error` with no typed error class to catch on. This is the
+ * belt-and-suspenders backstop for the proactive {@link hasUnconfirmedSignal} seam guard: if a
+ * mempool signal shape slips past detection, the throw is still mapped to the retryable outcome.
+ */
+function isUpstreamInvalidDateThrow(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /invalid date/i.test(message);
+}
+
+/**
+ * True when any discovered beacon signal is still mempool-resident (unconfirmed). A confirmed
+ * signal carries a finite `blockMetadata.time` (the block's unix timestamp); a mempool-resident
+ * one has `block_time` undefined, so `time` is `NaN`/undefined (see
+ * `@did-btcr2/method` `BeaconSignalDiscovery.indexer`). Providing such a signal to the resolver is
+ * exactly what triggers the upstream Invalid-Date throw (D-46), so the driver detects it FIRST
+ * and raises {@link UnconfirmedSignalError} before `provide()`.
+ */
+function hasUnconfirmedSignal(signals: Map<BeaconService, BeaconSignal[]>): boolean {
+  for (const list of signals.values()) {
+    for (const signal of list) {
+      if (!Number.isFinite(signal?.blockMetadata?.time)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 /** Fetch `hashHex` from `kind` of `store`, or `undefined` when no store / absent. */
@@ -142,6 +192,13 @@ async function satisfyNeed(
         need.beaconServices as BeaconService[],
         opts.bitcoin,
       );
+      // D-46: a mempool-resident (unconfirmed) signal carries no block_time, so providing it would
+      // make the upstream resolver derive an Invalid Date and throw generically. Detect it at this
+      // seam and raise the distinguishable retryable signal instead (no library fork), so the route
+      // can answer an honest "resolve again after it confirms" rather than a generic 502.
+      if (hasUnconfirmedSignal(signals)) {
+        throw new UnconfirmedSignalError();
+      }
       resolver.provide(need, signals);
       return;
     }
@@ -207,23 +264,39 @@ export async function driveResolution(
   opts: ResolveBtcr2Options,
 ): Promise<DidResolutionResponse> {
   const maxIterations = opts.maxIterations ?? 64;
-  let state = resolver.resolve();
-  let iterations = 0;
-  while (state.status === 'action-required') {
-    if (++iterations > maxIterations) {
-      throw new Error(
-        `resolveBtcr2: exceeded ${maxIterations} iterations without resolving ${did}`,
-      );
+  try {
+    let state = resolver.resolve();
+    let iterations = 0;
+    while (state.status === 'action-required') {
+      if (++iterations > maxIterations) {
+        throw new Error(
+          `resolveBtcr2: exceeded ${maxIterations} iterations without resolving ${did}`,
+        );
+      }
+      // Satisfy the round's needs in order. Each provide() mutates the resolver;
+      // sequential (not parallel) so a need that depends on a just-provided artifact
+      // sees it, and so a failure surfaces the specific unmet need.
+      for (const need of state.needs) {
+        await satisfyNeed(resolver, need, did, opts);
+      }
+      state = resolver.resolve();
     }
-    // Satisfy the round's needs in order. Each provide() mutates the resolver;
-    // sequential (not parallel) so a need that depends on a just-provided artifact
-    // sees it, and so a failure surfaces the specific unmet need.
-    for (const need of state.needs) {
-      await satisfyNeed(resolver, need, did, opts);
+    return state.result;
+  } catch (err) {
+    // D-46: normalize the unconfirmed-signal condition to ONE distinguishable retryable signal.
+    // The satisfyNeed seam raises UnconfirmedSignalError proactively; if a mempool signal shape
+    // slips past it, the upstream resolver instead throws the generic Invalid Date during
+    // resolve() processing - map that shape here too. Every OTHER error (a missing artifact, an
+    // esplora fault, the iteration cap) is a genuine failure and propagates unchanged, so the
+    // route still maps it to a generic 502.
+    if (err instanceof UnconfirmedSignalError) {
+      throw err;
     }
-    state = resolver.resolve();
+    if (isUpstreamInvalidDateThrow(err)) {
+      throw new UnconfirmedSignalError();
+    }
+    throw err;
   }
-  return state.result;
 }
 
 /**

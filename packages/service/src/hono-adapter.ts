@@ -29,7 +29,7 @@ import type { AnchorState } from './anchor-state.js';
 import type { CohortMonitor } from './monitor.js';
 import { mountStaticSite } from './static-site.js';
 import { mountArtifactRoutes, type ArtifactStore } from './store.js';
-import { resolveBtcr2 } from './resolve.js';
+import { resolveBtcr2, UnconfirmedSignalError } from './resolve.js';
 import { validatePinRequest, type IpfsNode, type PinOutcome } from './ipfs.js';
 import type { Sidecar } from '@did-btcr2/method';
 
@@ -513,7 +513,7 @@ export function createHonoApp(
     const resolveResult = async (
       did: string,
       sidecar?: Sidecar,
-    ): Promise<{ status: 200 | 400 | 502; body: object }> => {
+    ): Promise<{ status: 200 | 400 | 502 | 503; body: object }> => {
       if (!/^did:btcr2:[a-z0-9]+$/.test(did)) {
         return { status: 400, body: { error: 'not a valid did:btcr2 identifier' } };
       }
@@ -521,6 +521,21 @@ export function createHonoApp(
         const { didDocument, metadata } = await resolveBtcr2(did, { bitcoin, store, sidecar });
         return { status: 200, body: { didDocument, didDocumentMetadata: metadata } };
       } catch (err) {
+        // D-46: a mempool-resident beacon signal is a RETRYABLE condition, not a fault. Answer a
+        // DISTINGUISHABLE 503 with the honest retry copy (never the generic 502), so the browser
+        // resolve UI tells the user to try again once the signal confirms. `retryable: true` tags
+        // the outcome for callers; the raw upstream detail stays server-side logged, mirroring the
+        // 502-generic convention (no resolver internals disclosed).
+        if (err instanceof UnconfirmedSignalError) {
+          console.error(`[resolve] ${did}: a beacon signal is awaiting confirmation`);
+          return {
+            status: 503,
+            body: {
+              error: 'A beacon signal is awaiting confirmation. Resolve again after it confirms.',
+              retryable: true,
+            },
+          };
+        }
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[resolve] ${did} failed: ${message}`);
         return { status: 502, body: { error: 'resolution failed' } };
