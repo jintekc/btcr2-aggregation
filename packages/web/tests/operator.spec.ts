@@ -17,10 +17,15 @@ const BASE = 'http://svc.test';
 
 const SAMPLE_DETAIL: CohortDetailDTO = {
   exists: true,
-  members: [{ did: 'did:example:alice', status: 'seated', since: 1 }],
+  members: [{ did: 'did:example:alice', status: 'seated', since: 1, round: 'seated' }],
   seatsJoined: 1,
   capacity: 3,
   phase: 'CollectingUpdates',
+  submissions: [{ did: 'did:example:alice', submitted: false }],
+  coSign: { noncesReceived: 0, total: 3, awaitingPartialSigs: false },
+  anchor: { enabled: false, state: 'none' },
+  fallback: { used: false },
+  activity: [],
 };
 
 /** Reset the operator store to a signed-in, list-view baseline before each test. */
