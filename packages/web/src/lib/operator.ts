@@ -145,6 +145,70 @@ export async function createDraft(baseUrl: string, input: DraftInput): Promise<C
   return { ok: false, error };
 }
 
+/**
+ * Discriminated result of a gated monitoring read (SVC-03, D-16/D-25). The store branches
+ * on `kind` to tell a session-expiry (`unauthorized` -> honest re-login, D-16) apart from
+ * a transient network/5xx fault (`unreachable` -> freeze the last-known view, D-25) - the
+ * discrimination the status-blind Phase 1 fetch helpers lacked (RESEARCH planning note 3).
+ */
+export type FetchResult<T> =
+  | { kind: 'ok'; value: T }
+  | { kind: 'unauthorized' }
+  | { kind: 'unreachable' };
+
+/**
+ * One member in a cohort's monitoring projection (mirrors the service `CohortMemberDTO`).
+ * `status` distinguishes a pending opt-in from a seated member (D-29); `since` is the
+ * server wall-clock stamp (ms) the member was first observed (D-22).
+ */
+export interface CohortMemberDTO {
+  did: string;
+  status: 'pending' | 'seated';
+  since: number;
+}
+
+/**
+ * The gated per-cohort monitoring detail (mirrors the service `CohortDetailDTO`, D-26).
+ * The tracer scope: members (pending vs seated), the seat count and capacity, and the
+ * current phase. `exists` is false for an unknown/evicted cohort (non-oracle).
+ */
+export interface CohortDetailDTO {
+  exists: boolean;
+  members: CohortMemberDTO[];
+  seatsJoined: number;
+  capacity: number;
+  phase: string;
+}
+
+/**
+ * GET the gated per-cohort monitoring detail (SVC-03). NEVER throws: the store needs to
+ * tell 401 (session expired, D-16) apart from a network/5xx fault (freeze, D-25), so this
+ * maps `res.status === 401` -> `unauthorized`, `res.ok` -> `ok`, and any thrown error or
+ * other non-ok status -> `unreachable`. The session cookie rides `credentials:
+ * 'same-origin'` (the read is operator-gated); the timeout mirrors the other calls.
+ */
+export async function fetchCohortDetail(baseUrl: string, id: string): Promise<FetchResult<CohortDetailDTO>> {
+  try {
+    const res = await fetch(endpoint(baseUrl, `/v1/operator/cohorts/${encodeURIComponent(id)}`), {
+      headers: { accept: 'application/json' },
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (res.status === 401) {
+      return { kind: 'unauthorized' };
+    }
+    if (!res.ok) {
+      // A non-401 non-ok (e.g. 500/502) is a transient fault, not a session change:
+      // freeze the last-known view rather than logging the operator out (D-25).
+      return { kind: 'unreachable' };
+    }
+    return { kind: 'ok', value: (await res.json()) as CohortDetailDTO };
+  } catch {
+    // A thrown fetch (network down, timeout, abort) is unreachable, never unauthorized.
+    return { kind: 'unreachable' };
+  }
+}
+
 /** GET the operator's own cohorts (drafts now; advertised entries once plan 03 lands). */
 export async function listCohorts(baseUrl: string): Promise<OperatorCohortDTO[]> {
   const res = await fetch(endpoint(baseUrl, '/v1/operator/cohorts'), {

@@ -30,7 +30,15 @@ function stateBadge(state: OperatorCohortDTO['state']): { tone: 'neutral' | 'acc
  * expired cohort is visible and revivable instead of silently vanishing. All render the
  * network, beacon type, and a copyable id.
  */
-function CohortRow({ baseUrl, cohort }: { baseUrl: string; cohort: OperatorCohortDTO }) {
+function CohortRow({
+  baseUrl,
+  cohort,
+  onOpen,
+}: {
+  baseUrl: string;
+  cohort: OperatorCohortDTO;
+  onOpen?: (id: string) => void;
+}) {
   const discard = useOperator((s) => s.discard);
   const advertise = useOperator((s) => s.advertise);
   const readvertise = useOperator((s) => s.readvertise);
@@ -40,6 +48,7 @@ function CohortRow({ baseUrl, cohort }: { baseUrl: string; cohort: OperatorCohor
 
   const isDraft = cohort.state === 'draft';
   const isExpired = cohort.state === 'expired';
+  const isAdvertised = cohort.state === 'advertised';
   const isAdvertising = advertiseStatus === 'advertising' && advertisingId === cohort.draftId;
   const badge = stateBadge(cohort.state);
 
@@ -71,6 +80,12 @@ function CohortRow({ baseUrl, cohort }: { baseUrl: string; cohort: OperatorCohor
         {isExpired ? (
           <Button variant="primary" disabled={isAdvertising} onClick={() => void readvertise(baseUrl, cohort.draftId)}>
             {isAdvertising ? 'Re-advertising…' : 'Re-advertise'}
+          </Button>
+        ) : null}
+        {isAdvertised && onOpen ? (
+          // Only advertised cohorts open the live monitoring drill-down (D-01/D-03/D-09).
+          <Button variant="ghost" onClick={() => onOpen(cohort.draftId)}>
+            Open
           </Button>
         ) : null}
       </div>
@@ -106,7 +121,14 @@ function CohortRow({ baseUrl, cohort }: { baseUrl: string; cohort: OperatorCohor
  * state uses the exact UI-SPEC heading + body. Drafts and advertised cohorts both render
  * as a {@link CohortRow}. A transient good-tone banner confirms a successful advertise.
  */
-export function OperatorCohortList({ baseUrl }: { baseUrl: string }) {
+export function OperatorCohortList({
+  baseUrl,
+  onOpen,
+}: {
+  baseUrl: string;
+  /** Open an advertised cohort's live drill-down (D-01/D-03); absent = no drill-down affordance. */
+  onOpen?: (id: string) => void;
+}) {
   const cohorts = useOperator((s) => s.cohorts);
   const advertiseMessage = useOperator((s) => s.advertiseMessage);
 
@@ -128,7 +150,7 @@ export function OperatorCohortList({ baseUrl }: { baseUrl: string }) {
       ) : (
         <div className="space-y-3">
           {cohorts.map((cohort) => (
-            <CohortRow key={cohort.draftId} baseUrl={baseUrl} cohort={cohort} />
+            <CohortRow key={cohort.draftId} baseUrl={baseUrl} cohort={cohort} onOpen={onOpen} />
           ))}
         </div>
       )}

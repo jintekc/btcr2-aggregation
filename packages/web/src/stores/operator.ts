@@ -7,7 +7,9 @@ import {
   createDraft as apiCreateDraft,
   discardDraft as apiDiscardDraft,
   listCohorts as apiListCohorts,
+  fetchCohortDetail,
   sessionProbe,
+  type CohortDetailDTO,
   type DraftInput,
   type OperatorCohortDTO,
 } from '../lib/operator';
@@ -43,6 +45,21 @@ const INVALID_PASSWORD =
 const THROTTLED = 'Too many attempts. Wait a few minutes and try again.';
 const UNREACHABLE = 'Could not reach the service. Check that it is running, then reload.';
 
+/**
+ * Exact session-expired copy (UI-SPEC, D-16), shown when a monitoring poll returns 401
+ * mid-session: the operator is dropped to the login screen with an honest re-login line
+ * (distinct from a network fault, which freezes the view). Em-dash-free per house style.
+ */
+export const SESSION_EXPIRED =
+  "Your operator session ended. Sign in again to keep monitoring. Monitoring rebuilds from this service's state after you sign in.";
+
+/**
+ * SPA-internal drill-down view state (D-03, NO routed URLs this phase): the console shows
+ * the cohort list by default and toggles to a single active drill-down by cohort id. The
+ * back link returns to the list. Mirrors the participant `participantView` toggle.
+ */
+export type OperatorView = { kind: 'list' } | { kind: 'detail'; cohortId: string };
+
 interface OperatorState {
   auth: OperatorAuthStatus;
   error?: string;
@@ -58,6 +75,17 @@ interface OperatorState {
   advertisingId?: string;
   /** Transient good-tone confirmation shown after a successful advertise. */
   advertiseMessage?: string;
+  /** SPA-internal drill-down view (D-03): the cohort list, or one open cohort detail. */
+  view: OperatorView;
+  /** Last-known monitoring detail for the open drill-down; undefined until the first poll lands. */
+  detail?: CohortDetailDTO;
+  /**
+   * True when the last detail poll was unreachable, so the displayed `detail` is frozen
+   * last-known state (D-25); cleared on the next successful poll.
+   */
+  detailStale: boolean;
+  /** Wall-clock (ms) of the last successful detail poll, driving the freshness indicator (D-25). */
+  lastUpdated?: number;
   /** Probe the session on mount: resolves to logged-in / logged-out / disabled. */
   probe: (baseUrl: string) => Promise<void>;
   /** Attempt sign-in; maps 200/401/429/404 to the matching status + copy. */
@@ -78,6 +106,18 @@ interface OperatorState {
   readvertise: (baseUrl: string, id: string) => Promise<void>;
   /** Discard an un-advertised draft, then refresh the list. */
   discard: (baseUrl: string, id: string) => Promise<void>;
+  /** Open a cohort's drill-down (D-03): set the detail view and clear any stale prior detail. */
+  openCohort: (id: string) => void;
+  /** Close the drill-down: return to the cohort list and clear the detail slice. */
+  closeCohort: () => void;
+  /**
+   * Poll the open cohort's gated detail read once (SVC-03). Branches on the discriminated
+   * result: `unauthorized` drops to the logged-out state with the session-expired copy
+   * (D-16, honest re-login); `unreachable` freezes the last-known `detail` and flags it
+   * stale (D-25); `ok` stores the fresh detail, clears the stale flag, and stamps
+   * `lastUpdated`. No-op when no drill-down is open.
+   */
+  pollDetail: (baseUrl: string) => Promise<void>;
 }
 
 export const useOperator = create<OperatorState>((set, get) => ({
@@ -89,6 +129,10 @@ export const useOperator = create<OperatorState>((set, get) => ({
   advertiseStatus: 'idle',
   advertisingId: undefined,
   advertiseMessage: undefined,
+  view: { kind: 'list' },
+  detail: undefined,
+  detailStale: false,
+  lastUpdated: undefined,
 
   async probe(baseUrl) {
     set({ auth: 'checking', error: undefined });
@@ -137,6 +181,10 @@ export const useOperator = create<OperatorState>((set, get) => ({
         advertiseStatus: 'idle',
         advertisingId: undefined,
         advertiseMessage: undefined,
+        view: { kind: 'list' },
+        detail: undefined,
+        detailStale: false,
+        lastUpdated: undefined,
       });
     }
   },
@@ -213,5 +261,45 @@ export const useOperator = create<OperatorState>((set, get) => ({
   async discard(baseUrl, id) {
     await apiDiscardDraft(baseUrl, id);
     await get().refreshCohorts(baseUrl);
+  },
+
+  openCohort(id) {
+    // Start the drill-down in its checking state: clear any prior cohort's detail so the
+    // page renders its documented empty/checking lines until the first poll lands (D-03,
+    // UI-SPEC E4/E5 loading), rather than briefly showing a stale cohort's members.
+    set({ view: { kind: 'detail', cohortId: id }, detail: undefined, detailStale: false, lastUpdated: undefined });
+  },
+
+  closeCohort() {
+    set({ view: { kind: 'list' }, detail: undefined, detailStale: false, lastUpdated: undefined });
+  },
+
+  async pollDetail(baseUrl) {
+    const { view } = get();
+    if (view.kind !== 'detail') {
+      return;
+    }
+    const result = await fetchCohortDetail(baseUrl, view.cohortId);
+    if (result.kind === 'unauthorized') {
+      // Session expired mid-monitoring (D-16): honest re-login. Drop to the login screen
+      // and back to the list view so the next sign-in starts clean; distinct from an
+      // unreachable fault, which freezes the view below.
+      set({
+        auth: 'logged-out',
+        error: SESSION_EXPIRED,
+        view: { kind: 'list' },
+        detail: undefined,
+        detailStale: false,
+        lastUpdated: undefined,
+      });
+      return;
+    }
+    if (result.kind === 'unreachable') {
+      // Freeze the last-known detail (D-25): keep it visible, flag it stale for the
+      // freshness indicator, and retry quietly on the next tick. Never blank the view.
+      set({ detailStale: true });
+      return;
+    }
+    set({ detail: result.value, detailStale: false, lastUpdated: Date.now() });
   },
 }));

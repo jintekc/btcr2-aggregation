@@ -4,6 +4,7 @@ import { useOperator } from '../../stores/operator';
 import { LoginPanel } from './LoginPanel';
 import { CreateCohortForm } from './CreateCohortForm';
 import { OperatorCohortList } from './OperatorCohortList';
+import { CohortDetail } from './CohortDetail';
 
 /**
  * Login-gated operator console container (UI-SPEC). Probes the session on mount, then
@@ -17,6 +18,8 @@ export function OperatorConsole({ baseUrl }: { baseUrl: string }) {
   const auth = useOperator((s) => s.auth);
   const probe = useOperator((s) => s.probe);
   const signOut = useOperator((s) => s.signOut);
+  const view = useOperator((s) => s.view);
+  const openCohort = useOperator((s) => s.openCohort);
 
   useEffect(() => {
     void probe(baseUrl);
@@ -46,6 +49,13 @@ export function OperatorConsole({ baseUrl }: { baseUrl: string }) {
     return <LoginPanel baseUrl={baseUrl} />;
   }
 
+  // Drill-down view (D-03): a single open cohort's live detail replaces the list; the
+  // Back link inside CohortDetail returns to the list. Only advertised cohorts reach here
+  // (drafts keep the inline row treatment, D-09).
+  if (view.kind === 'detail') {
+    return <CohortDetail baseUrl={baseUrl} cohortId={view.cohortId} />;
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -55,7 +65,8 @@ export function OperatorConsole({ baseUrl }: { baseUrl: string }) {
         </Button>
       </div>
       <CreateCohortForm baseUrl={baseUrl} />
-      <OperatorCohortList baseUrl={baseUrl} />
+      {/* Advertised rows open a live drill-down (D-01/D-03); drafts stay inline (D-09). */}
+      <OperatorCohortList baseUrl={baseUrl} onOpen={(id) => openCohort(id)} />
     </div>
   );
 }
