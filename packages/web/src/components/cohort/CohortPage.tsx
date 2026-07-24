@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { deriveStage, useParticipant } from '../../stores/participant';
+import { deriveStage, terminalReason, useParticipant } from '../../stores/participant';
 import { fmtElapsed } from '../../lib/clock';
-import type { LogLevel, StepKey, StepStatus } from '../../lib/types';
+import type { LogLevel } from '../../lib/types';
 import { Badge, Button, Card, CopyField, SectionTitle } from '../../ui/primitives';
 import { StageTimeline } from './StageTimeline';
 import { SubmitPanel } from './SubmitPanel';
@@ -14,42 +14,6 @@ const LEVEL_CLASS: Record<LogLevel, string> = {
   warn: 'text-warn',
   bad: 'text-bad',
 };
-
-/**
- * Best-effort terminal reason (D-25, UI-SPEC terminal copy). Maps the store's `error` to a
- * specific, honest sentence where the cause is recognizable, and falls back to the honest
- * "didn't say why" when it is not (never inventing a cause). The one POSITIVE stall signal
- * (Finding 2): if this participant's own update is in (`submit` done) but co-signing never
- * completed and was not rescued by the k-of-n fallback, the round provably stalled collecting
- * the remaining members' updates, so the dedicated stall copy is honest rather than invented.
- */
-function terminalReason(error: string | null, steps: Record<StepKey, StepStatus>): string {
-  const raw = (error ?? '').trim();
-  const e = raw.toLowerCase();
-  const submittedButUnsigned = steps.submit === 'done' && steps.sign !== 'done';
-  if (
-    /stalled|collectingupdates|waiting for all members/.test(e) ||
-    (submittedButUnsigned && (!raw || /didn.t say why/.test(e)))
-  ) {
-    return 'The cohort ended. It stalled waiting for all members to submit their updates.';
-  }
-  if (/tim(e|ed)\s?out|timeout/.test(e)) {
-    return 'The cohort ended: phase timed out.';
-  }
-  if (/no longer available|not available|vanished|no longer exists|left the directory/.test(e)) {
-    return 'The cohort ended: the cohort is no longer available.';
-  }
-  if (/sign/.test(e) && /error|fail/.test(e)) {
-    return 'The cohort ended: the signing round errored.';
-  }
-  if (/seat/.test(e)) {
-    return 'The cohort ended: your seat was lost.';
-  }
-  if (!raw || /didn.t say why/.test(e)) {
-    return "The cohort ended and this service didn't say why.";
-  }
-  return `The cohort ended: ${raw}`;
-}
 
 /** A collapsed-by-default detail section that scrolls its overflow rather than growing the card. */
 function Expander({
@@ -109,6 +73,7 @@ export function CohortPage({ baseUrl: _baseUrl, onBrowse }: { baseUrl: string; o
   const unreachable = useParticipant((s) => s.unreachable);
   const liveCohort = useParticipant((s) => s.liveCohort);
   const awaitingFunding = useParticipant((s) => s.awaitingFunding);
+  const validationRequested = useParticipant((s) => s.validationRequested);
   const error = useParticipant((s) => s.error);
   const startOver = useParticipant((s) => s.startOver);
 
@@ -210,7 +175,7 @@ export function CohortPage({ baseUrl: _baseUrl, onBrowse }: { baseUrl: string; o
           landed ON the cohort page (not a browse-directory error card). */}
       {failed ? (
         <Card className="space-y-3 border-bad/40 bg-bad/10 p-5">
-          <p className="text-sm text-bad">{terminalReason(error, steps)}</p>
+          <p className="text-sm text-bad">{terminalReason({ error, steps, validationRequested })}</p>
           <Button
             variant="ghost"
             onClick={() => {

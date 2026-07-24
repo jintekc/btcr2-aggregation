@@ -201,6 +201,15 @@ interface ParticipantState {
    */
   awaitingFunding: boolean;
   /**
+   * True once this participant observed the runner's `validation-requested` event (D-45): the
+   * service asked members to validate the aggregated data, which fires ONLY after it has
+   * collected ALL updates. That makes its presence the positive discriminator for the stall copy:
+   * a signing-window death with the update submitted but this fact NEVER recorded is a genuine
+   * "stalled collecting updates"; a death AFTER it fired is an unexplained co-signing failure, not
+   * a collection stall. Read by {@link terminalReason}. A per-round fact (reset via INITIAL_OUTCOME).
+   */
+  validationRequested: boolean;
+  /**
    * True once this participant observed the runner's `fallback-requested` event (D-23):
    * the n-of-n key-path stalled and the cohort co-signed the ADR-042 k-of-n script-path
    * fallback instead. Drives the explicit k-of-n fallback completion outcome; reset per round.
@@ -784,6 +793,67 @@ export function shouldAutoResolve(anchor: AnchorDTO | null): boolean {
   return anchor.state === 'confirmed' || anchor.state === 'failed';
 }
 
+/**
+ * Best-effort terminal reason (D-25/D-45, UI-SPEC terminal copy). Maps the store's terminal
+ * facts to a specific, honest sentence where the cause is recognizable, falling back to the
+ * honest "didn't say why" when it is not (never inventing a cause). Exported as a pure function
+ * so CohortPage renders it and the stall-predicate rekey is unit-testable.
+ *
+ * The D-45 fix: the stall copy is keyed on the `validationRequested` fact, NOT on
+ * submitted-but-unsigned alone (the predicate that misfired in the Phase 3 live UAT).
+ * `validation-requested` fires ONLY after the service collected EVERY member's update, so:
+ *
+ * - `submitted && !validationRequested` + an unexplained signing-window death is the genuinely
+ *   positive "stalled collecting updates" signal -> `This service stalled while collecting updates.`
+ * - `submitted && validationRequested && still-unsigned` means updates WERE collected but co-signing
+ *   still died unexplained, so a collection stall is provably wrong -> the uncertainty-honest
+ *   `Co-signing could not complete, and this service didn't say why.`
+ * - A reason string that positively names a stall keeps the dedicated stall copy regardless.
+ */
+export function terminalReason(input: {
+  error: string | null;
+  steps: Record<StepKey, StepStatus>;
+  validationRequested: boolean;
+}): string {
+  const raw = (input.error ?? '').trim();
+  const e = raw.toLowerCase();
+  const submittedButUnsigned = input.steps.submit === 'done' && input.steps.sign !== 'done';
+  const unexplained = !raw || /didn.t say why/.test(e);
+
+  // POSITIVE stall (D-45): the reason itself names a collecting-updates stall, OR our update is in
+  // but the service NEVER reached validation (no validation-requested fact) and the death is
+  // otherwise unexplained. The ABSENCE of validation-requested is the positive discriminator, not
+  // submitted-but-unsigned alone.
+  if (
+    /stalled|collectingupdates|collecting updates|waiting for all members/.test(e) ||
+    (submittedButUnsigned && !input.validationRequested && unexplained)
+  ) {
+    return 'This service stalled while collecting updates.';
+  }
+  // UNCERTAINTY-HONEST (D-45): the service DID collect every update (validation-requested fired) but
+  // co-signing still died unexplained with our update unsigned. We cannot claim a collection stall,
+  // so say honestly that co-signing could not complete without a stated reason.
+  if (submittedButUnsigned && input.validationRequested && unexplained) {
+    return "Co-signing could not complete, and this service didn't say why.";
+  }
+  if (/tim(e|ed)\s?out|timeout/.test(e)) {
+    return 'The cohort ended: phase timed out.';
+  }
+  if (/no longer available|not available|vanished|no longer exists|left the directory/.test(e)) {
+    return 'The cohort ended: the cohort is no longer available.';
+  }
+  if (/sign/.test(e) && /error|fail/.test(e)) {
+    return 'The cohort ended: the signing round errored.';
+  }
+  if (/seat/.test(e)) {
+    return 'The cohort ended: your seat was lost.';
+  }
+  if (unexplained) {
+    return "The cohort ended and this service didn't say why.";
+  }
+  return `The cohort ended: ${raw}`;
+}
+
 /** The baked aggregate-beacon service types present in a genesis document (x1 only). */
 function bakedAggregateBeaconTypes(genesisDocument: Record<string, unknown>): string[] {
   const service = genesisDocument.service;
@@ -852,6 +922,7 @@ const INITIAL_OUTCOME = {
   unreachable: false,
   liveCohort: false,
   awaitingFunding: false,
+  validationRequested: false,
   fallbackObserved: false,
   nonInclusionReason: null as string | null,
   cohortThreshold: null as number | null,
@@ -1197,6 +1268,10 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         append('warn', `declined to submit an update for ${cohortId} (non-inclusion)`);
       });
       r.on('validation-requested', () => {
+        // D-45: record the positive discriminator for the stall copy. validation-requested fires
+        // ONLY after the service has collected ALL updates, so once this is true a later
+        // signing-window death is an unexplained co-signing failure, NOT a collecting-updates stall.
+        set({ validationRequested: true });
         append('info', 'validating aggregated cohort data');
       });
       r.on('signing-requested', () => {
