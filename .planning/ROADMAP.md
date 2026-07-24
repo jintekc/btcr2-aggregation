@@ -131,7 +131,7 @@ Plans:
 
 **UI hint**: yes
 
-### Phase 4: Operator Cohort Monitoring
+### Phase 4: Operator Cohort Monitoring [EXECUTING: 2/8 plans]
 
 **Goal**: On the authenticated console, the operator monitors each advertised cohort's members, pending submissions, co-sign progress, and anchor status in real time, turning the read-only telemetry tab into the operator's live view of on-demand cohorts.
 **Mode:** mvp
@@ -153,7 +153,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1)*
 
-- [ ] 04-02-PLAN.md - Retire dashboard-SSE + migrate pins + monitoring summary read (chips/metrics/ended taxonomy) (SVC-03, Wave 2)
+- [x] 04-02-PLAN.md - Retire dashboard-SSE + migrate pins + monitoring summary read (chips/metrics/ended taxonomy) (SVC-03, Wave 2) - SUMMARY: 04-02-SUMMARY.md
 
 **Wave 3** *(blocked on Wave 2)*
 
@@ -218,6 +218,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 1. Authenticated Operator Console + On-Demand Cohort Creation | 4/4 | Complete    | 2026-07-08 |
 | 2. Participant Discovery + Browse-and-Pick Join | 9/9 | Complete    | 2026-07-16 |
 | 3. Participant Submit, Co-Sign, Track, and Resolve | 9/9 | Complete    | 2026-07-22 |
-| 4. Operator Cohort Monitoring | 0/8 | Not started | - |
+| 4. Operator Cohort Monitoring | 2/8 | Executing | - |
 | 5. Operator Cohort Lifecycle Control | 0/TBD | Not started | - |
 | 6. Two-Stranger End-to-End + Real-Aggregator Framing | 0/TBD | Not started | - |

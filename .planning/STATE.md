@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 04
 current_phase_name: operator-cohort-monitoring
 status: executing
-stopped_at: Completed 04-01-PLAN.md (monitoring tracer)
-last_updated: "2026-07-24T15:05:00.000Z"
+stopped_at: Completed 04-02-PLAN.md (dashboard-SSE retirement + monitor summary read)
+last_updated: "2026-07-24T15:30:00.000Z"
 last_activity: 2026-07-24
-last_activity_desc: Executed 04-01 (monitoring read-model tracer)
+last_activity_desc: Executed 04-02 (dashboard-SSE retirement + monitor summary read model)
 progress:
   total_phases: 4
   completed_phases: 3
   total_plans: 30
-  completed_plans: 23
+  completed_plans: 24
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 04 (operator-cohort-monitoring) — EXECUTING
-Plan: 2 of 8 (04-01 complete)
+Plan: 3 of 8 (04-01, 04-02 complete)
 Status: Executing Phase 04
-Last activity: 2026-07-24 — Executed 04-01 (monitoring read-model tracer)
+Last activity: 2026-07-24 — Executed 04-02 (dashboard-SSE retirement + monitor summary read model)
 
-Progress: [██████████░░░░░░░░░░] 3 of 6 phases complete (23 planned-to-date plans executed)
+Progress: [██████████░░░░░░░░░░] 3 of 6 phases complete (24 planned-to-date plans executed)
 
 ## Performance Metrics
 
@@ -82,6 +82,8 @@ Progress: [██████████░░░░░░░░░░] 3 of 6 
 | Phase 03 P07 | 3 min | 3 tasks | 3 files |
 | Phase 03 P08 | 5 min | 3 tasks | 4 files |
 | Phase 03 P09 | 1 min | 2 tasks | 3 files |
+| Phase 04 P01 | 13 min | 2 tasks | 10 files |
+| Phase 04 P02 | 40 min | 2 tasks | 19 files |
 
 ## Accumulated Context
 
@@ -109,6 +111,7 @@ Recent decisions affecting current work (Phase 2):
 - [Phase 03]: 03-08: anchorSummaryState gained a neutral 'checking' member (null anchor) so the pre-first-read window is never narrated as a confirmed no-broadcast service
 - [Phase 03]: 03-08: StageTimeline final-row label is state-driven (anchorSummaryState === 'anchored'), not the enabled bit, so the timeline header, anchor sub-steps, and CompletionSummary Signed-line never contradict
 - [Phase ?]: [Phase 03] 03-09: reserve the 'anchored' narration for state === 'confirmed' only across anchorSummaryState, deriveStage, and the CompletionSummary heading boolean; state === 'broadcast' routes to 'broadcasting'/'signed', closing Truth 8 (PART-04, D-07, WR-02)
+- [Phase 04] 04-02 (SVC-03, dashboard-SSE retirement + summary read): retired the booth-era telemetry channel end to end (D-02/D-19) - deleted `dashboard-sse.ts` + `GET /dashboard/events` + the `/dashboard/*` guard + the web Dashboard tab (DashboardView/CohortCard/MetricsStrip/stores/dashboard.ts), lifting `serialize()`/`summarizeTx` (fixture-fee guard preserved) into `monitor.ts` for later plans, and removing the now-inert runner/broadcaster/network HonoAppOptions. Migrated every committed pin in ONE change: `broadcast.spec` drives the BeaconBroadcaster emitter directly, the Phase-3 negative-auth (401) evidence moved onto the gated monitoring read (operator-boot.spec, operator-auth.spec, e2e/operator-cohort). Grew the monitor into `summary()` (per-cohort status-chip rows: live filling/co-signing + ended anchored/fallback/failed) + `serviceMetrics()` ({open,inFlight,anchored,failed} from the live set + a bounded-24 ended set, never a cumulative counter); ended fate captured AT EVENT TIME so a session-GC'd cohort still projects (D-23); a beacon-broadcast-failed flips anchored->failed (D-18); fallback counts as anchored. Merged into `GET /v1/operator/cohorts` as a NEW `monitoring` sibling key with the `cohorts` array + public directory/status/anchor DTOs byte-frozen (D-26, freeze pins). App.tsx needed no edit (Phase-1 route refactor already retired the tab). `needs-funding` chip is a reserved placeholder for 04-06 (not a stub). 392 tests + web build + lint + e2e:operator all green.
 - [Phase 04] 04-01 (SVC-03 tracer): monitoring is an INDEPENDENT per-service `createCohortMonitor(runner)` fold (D-27) mirroring anchor-state (bounded 24, oldest-first evict), NOT entangling the frozen anchor-state/operator-cohorts; public anchor read byte-untouched. `detail(cohortId)` is a pure idempotent projection: members folded from the monitor's OWN wall-clock-stamped entry (D-22) so session-GC'd ended cohorts still project, but seats/phase/capacity enrich live from `runner.session` when the cohort is live (a zero-opt-in advertised cohort reads exists:true with real seats, UI-SPEC E5). Unknown id with no entry AND no live cohort = non-oracle exists:false. Gated `GET /v1/operator/cohorts/:id` mounts after requireOperator (anonymous -> 401 before any lookup). Web: discriminated `FetchResult<T>` + `fetchCohortDetail` (401 vs unreachable vs ok) + store `pollDetail` (401 -> logged-out+SESSION_EXPIRED re-login D-16; unreachable -> freeze last-known+detailStale D-25; ok -> store+lastUpdated) + SPA-internal drill-down view state (D-03). Partial-sig/submissions/anchor/funding deliberately deferred to later plans (D-32 honest-limit, NO stubs). 384 tests green. NEW spec convention held: monitor.spec.ts + operator.spec.ts live in package `tests/` (outside src).
 
 ### Pending Todos
@@ -146,7 +149,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-24T15:05:00.000Z
-Stopped at: Completed 04-01-PLAN.md (monitoring read-model tracer); Wave 1 done
-Resume file: .planning/phases/04-operator-cohort-monitoring/04-02-PLAN.md
-Next command: /gsd-execute-phase 4 (continue Wave 2: 04-02 dashboard-SSE retirement)
+Last session: 2026-07-24T15:30:00.000Z
+Stopped at: Completed 04-02-PLAN.md (dashboard-SSE retirement + monitor summary read model); Wave 2 done
+Resume file: .planning/phases/04-operator-cohort-monitoring/04-03-PLAN.md
+Next command: /gsd-execute-phase 4 (continue Wave 3: 04-03 console list surface renders the monitoring chips + metrics)
