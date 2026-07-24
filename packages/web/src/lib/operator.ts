@@ -7,6 +7,8 @@
  * login state is derived from {@link sessionProbe}, not from `document.cookie`.
  */
 
+import type { AnchorDTO } from './anchor';
+
 const TIMEOUT_MS = 8000;
 
 function endpoint(baseUrl: string, path: string): string {
@@ -157,20 +159,84 @@ export type FetchResult<T> =
   | { kind: 'unreachable' };
 
 /**
+ * The per-member round state (mirrors the service `MemberRound`, D-31): a forward
+ * progression `seated` -> `submitted` -> `validated` -> `nonce-sent`, with `rejected` the
+ * off-path terminal. The drill-down maps each to a fixed-tone chip.
+ */
+export type MemberRound = 'seated' | 'submitted' | 'validated' | 'nonce-sent' | 'rejected';
+
+/**
  * One member in a cohort's monitoring projection (mirrors the service `CohortMemberDTO`).
  * `status` distinguishes a pending opt-in from a seated member (D-29); `since` is the
- * server wall-clock stamp (ms) the member was first observed (D-22).
+ * server wall-clock stamp (ms) the member was first observed (D-22); `round` is the
+ * per-member co-sign progress (D-31); the pubkeys ride the Technical detail expander only
+ * (D-28), absent for a member first seen on a later round event.
  */
 export interface CohortMemberDTO {
   did: string;
   status: 'pending' | 'seated';
   since: number;
+  round: MemberRound;
+  participantPk?: string;
+  communicationPk?: string;
+}
+
+/**
+ * One submission row (mirrors the service `SubmissionDTO`, D-30): whether a seated member
+ * has submitted their signed update and, if so, the server wall-clock time (`at`); `raw`
+ * carries the signed-update body for the `Raw signed update` expander, present only for a
+ * live cohort whose pending updates the session still holds.
+ */
+export interface SubmissionDTO {
+  did: string;
+  submitted: boolean;
+  at?: number;
+  raw?: unknown;
+}
+
+/**
+ * Honest co-sign progress (mirrors the service `CoSignDTO`, D-32): nonces `k` of `n`
+ * received, plus `awaitingPartialSigs` for the partial-signature leg that emits no event.
+ * There is deliberately NO partial-signature count here (the unobservable leg is never
+ * invented).
+ */
+export interface CoSignDTO {
+  noncesReceived: number;
+  total: number;
+  awaitingPartialSigs: boolean;
+}
+
+/**
+ * Whether this cohort took the ADR-042 k-of-n fallback (mirrors the service `FallbackDTO`,
+ * D-33): `used` plus `k`/`n` when derivable from the live cohort.
+ */
+export interface FallbackDTO {
+  used: boolean;
+  k?: number;
+  n?: number;
+}
+
+/** Tone of one activity-ring entry (mirrors the service `ActivityLevel` / the client LogLevel). */
+export type ActivityLevel = 'info' | 'good' | 'warn' | 'bad';
+
+/**
+ * One activity-ring entry (mirrors the service `ActivityEntryDTO`, D-21/D-22). `t` is the
+ * SERVER wall-clock time (ms), so the drill-down's LogPanel renders it as a wall-clock stamp,
+ * not the participant-side elapsed offset.
+ */
+export interface ActivityEntryDTO {
+  id: number;
+  t: number;
+  level: ActivityLevel;
+  text: string;
 }
 
 /**
  * The gated per-cohort monitoring detail (mirrors the service `CohortDetailDTO`, D-26).
- * The tracer scope: members (pending vs seated), the seat count and capacity, and the
- * current phase. `exists` is false for an unknown/evicted cohort (non-oracle).
+ * The full drill-down depth: members (pending vs seated, round state, pubkeys), submissions
+ * (who/when + raw), honest co-sign progress, the operator anchor view (a hermetic service
+ * reads `{ enabled: false, state: 'none' }`), the fallback flag, and the bounded activity
+ * ring. `exists` is false for an unknown/evicted cohort (non-oracle).
  */
 export interface CohortDetailDTO {
   exists: boolean;
@@ -178,6 +244,11 @@ export interface CohortDetailDTO {
   seatsJoined: number;
   capacity: number;
   phase: string;
+  submissions: SubmissionDTO[];
+  coSign: CoSignDTO;
+  anchor: AnchorDTO;
+  fallback: FallbackDTO;
+  activity: ActivityEntryDTO[];
 }
 
 /**

@@ -236,6 +236,14 @@ export interface CohortMemberDTO {
    * round.
    */
   round: MemberRound;
+  /**
+   * The member's compressed signing public key (hex), captured from the opt-in payload. It
+   * sits behind the drill-down's `Technical detail` expander only (D-28), never on the plain
+   * row; absent for a member first observed on a later round event (no opt-in payload seen).
+   */
+  participantPk?: string;
+  /** The member's communication public key (hex), same expander-only disclosure as {@link participantPk} (D-28). */
+  communicationPk?: string;
 }
 
 /**
@@ -341,6 +349,9 @@ interface MemberRecord {
   round: MemberRound;
   /** Server wall-clock (ms) the member's signed update was received, stamped at receipt (D-30). */
   submittedAt?: number;
+  /** Hex-encoded signing / communication public keys from the opt-in payload (D-28, expander-only). */
+  participantPk?: string;
+  communicationPk?: string;
 }
 
 /** The internal folded entry for one cohort: its members plus event-time enrichment. */
@@ -609,7 +620,7 @@ export function createCohortMonitor(
 
   // opt-in-received fires BEFORE the accept decision (this is D-29's pending signal):
   // record the participant as a PENDING member, wall-clock stamped at receipt.
-  runner.on('opt-in-received', ({ cohortId, participantDid }) => {
+  runner.on('opt-in-received', ({ cohortId, participantDid, participantPk, communicationPk }) => {
     safely('opt-in-received', () => {
       const entry = entryFor(cohortId);
       if (!entry.members.has(participantDid)) {
@@ -618,6 +629,10 @@ export function createCohortMonitor(
           status: 'pending',
           since: Date.now(),
           round: 'seated',
+          // Capture the pubkeys for the Technical detail expander (D-28). Guarded because a
+          // malformed opt-in (the fire-and-forget defensive test) may omit them.
+          ...(participantPk ? { participantPk: bytesToHex(participantPk) } : {}),
+          ...(communicationPk ? { communicationPk: bytesToHex(communicationPk) } : {}),
         });
         appendActivity(entry, 'info', `${shortDid(participantDid)} opted in.`);
       }
@@ -854,6 +869,8 @@ export function createCohortMonitor(
           status: m.status,
           since: m.since,
           round: m.round,
+          ...(m.participantPk !== undefined ? { participantPk: m.participantPk } : {}),
+          ...(m.communicationPk !== undefined ? { communicationPk: m.communicationPk } : {}),
         }))
       : [];
 

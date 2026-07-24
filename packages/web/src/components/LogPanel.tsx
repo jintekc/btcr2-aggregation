@@ -16,11 +16,19 @@ export function LogPanel({
   entries,
   emptyHint,
   className = '',
+  formatTime = fmtElapsed,
 }: {
   title: string;
   entries: LogEntry[];
   emptyHint: string;
   className?: string;
+  /**
+   * Format the entry's `t` for the gutter. Defaults to the participant-side elapsed
+   * `fmtElapsed` (monotonic ms since page load). The operator activity log passes a
+   * wall-clock formatter because its `t` is a SERVER wall-clock stamp, not an elapsed
+   * offset (D-22).
+   */
+  formatTime?: (t: number) => string;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   // Scroll the log container itself (not scrollIntoView on a sentinel, which would
@@ -51,7 +59,7 @@ export function LogPanel({
           <ul className="space-y-1">
             {entries.map((e) => (
               <li key={e.id} className="flex gap-2 font-mono text-xs leading-relaxed">
-                <span className="shrink-0 text-faint tabular-nums">{fmtElapsed(e.t)}</span>
+                <span className="shrink-0 text-faint tabular-nums">{formatTime(e.t)}</span>
                 <span className={LEVEL_COLOR[e.level]}>{e.text}</span>
               </li>
             ))}

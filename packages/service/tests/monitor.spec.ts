@@ -358,6 +358,20 @@ describe('createCohortMonitor detail depth (submissions, round state, honest co-
     expect(monitor.detail('c1').anchor).toMatchObject({ enabled: true, state: 'broadcast', txid: 'a'.repeat(64) });
   });
 
+  it('captures the opt-in pubkeys (hex) on the member for the Technical detail expander (D-28)', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner);
+    runner.emit('opt-in-received', {
+      cohortId: 'c1',
+      participantDid: 'did:example:alice',
+      participantPk: new Uint8Array([0xab, 0xcd]),
+      communicationPk: new Uint8Array([0xef, 0x01]),
+    });
+    const member = monitor.detail('c1').members[0];
+    expect(member.participantPk).toBe('abcd');
+    expect(member.communicationPk).toBe('ef01');
+  });
+
   it('flips awaitingPartialSigs true after the last nonce, then false on signing-complete (D-32)', () => {
     // A live size-1 cohort gives the fold a real capacity (minParticipants) to compare against.
     const identity = createIdentity(resolveNetwork(ACTIVE_NETWORK));
