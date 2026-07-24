@@ -145,7 +145,7 @@ Plans:
   4. This monitoring view is reachable only by the authenticated operator, not by anonymous participants.
   5. The live broadcast path is operable from the product itself (LIVE-01): a real boot enables live co-sign + broadcast behind guard rails (`BROADCAST=1` requires `LIVE=1`), the cohort-beacon funding stage advances honestly (waiting / seen / funded / dead-end), the funding wait fails with a specific reason before any library timer, and the participant awaiting-funding / stall / unconfirmed-signal-resolve copy is honest, verified hermetically by a mocked-chain funding leg and by an owner live-UAT walkthrough.
 
-**Plans**: 3/8 plans executed
+**Plans**: 4/8 plans executed
 Plans:
 **Wave 1**
 
@@ -161,7 +161,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3)*
 
-- [ ] 04-04-PLAN.md - Drill-down depth: submissions, per-member round state, honest co-sign, anchor detail, activity log, JSON export (SVC-03, Wave 4)
+- [x] 04-04-PLAN.md - Drill-down depth: submissions, per-member round state, honest co-sign, anchor detail, activity log, JSON export (SVC-03, Wave 4)
 
 **Wave 5** *(blocked on Wave 4)*
 
@@ -218,6 +218,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 1. Authenticated Operator Console + On-Demand Cohort Creation | 4/4 | Complete    | 2026-07-08 |
 | 2. Participant Discovery + Browse-and-Pick Join | 9/9 | Complete    | 2026-07-16 |
 | 3. Participant Submit, Co-Sign, Track, and Resolve | 9/9 | Complete    | 2026-07-22 |
-| 4. Operator Cohort Monitoring | 3/8 | In Progress|  |
+| 4. Operator Cohort Monitoring | 4/8 | In Progress|  |
 | 5. Operator Cohort Lifecycle Control | 0/TBD | Not started | - |
 | 6. Two-Stranger End-to-End + Real-Aggregator Framing | 0/TBD | Not started | - |
