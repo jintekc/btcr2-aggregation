@@ -12,7 +12,9 @@ import type { FundingView } from '../../lib/operator';
  * (bad) plus the terminal window-closed / blind-lapse verdicts (D-38/D-39). The recovery-key
  * disclosure is ALWAYS shown (D-40); the mainnet real-money + change-routing lines show only on
  * mainnet (D-42). The truncated-window (D-38), esplora-stale (D-43), mainnet, and recovery-key
- * disclosures stack as separate short paragraphs. Every string is verbatim from 04-UI-SPEC.md and
+ * disclosures stack as separate short paragraphs. Strings originate from 04-UI-SPEC.md (the
+ * waiting / suggested-minimum / dead-end copy was amended by the 04-08 live-UAT gap closure to
+ * make the single-payment requirement and the oldest-coin dead-end cause explicit) and are
  * em-dash-free.
  */
 
@@ -37,14 +39,21 @@ function stateLine(funding: FundingView): { text: string; tone: FundingTone } {
     case 'funded':
       return { text: 'Funded and confirmed. This cohort can anchor on-chain.', tone: 'good' };
     case 'dead-end':
+      // Plain-language WHY (04-08 live-UAT field finding): the library's coin selection is
+      // deepest-first, so an inadequate FIRST send is selected forever and a later top-up
+      // confirms shallower and is never picked. Say "oldest confirmed coin" (plain-first,
+      // D-12), never "deepest-first selectSpendableUtxo".
       return {
-        text: 'Funded below the minimum. Topping up cannot fix this, so re-create the cohort on a fresh address.',
+        text: 'Funded below the minimum. The beacon always spends the oldest confirmed coin at this address, so topping up cannot fix this. Re-create the cohort on a fresh address.',
         tone: 'bad',
       };
     case 'waiting':
     default:
+      // "one single payment" is load-bearing (04-08 live-UAT field finding): a below-minimum
+      // first send permanently dead-ends the address, so the requirement must be explicit
+      // BEFORE the operator sends anything.
       return {
-        text: `Waiting for funds. Send at least ${funding.suggestedMinSats} sats from your own wallet, then this stage advances automatically.`,
+        text: `Waiting for funds. Send at least ${funding.suggestedMinSats} sats in one single payment from your own wallet, then this stage advances automatically.`,
         tone: 'warn',
       };
   }
@@ -89,8 +98,11 @@ export function FundingStage({ funding, activeNetwork }: { funding: FundingView;
         </a>
       ) : null}
 
-      {/* The one consistent suggested-minimum line (D-37). */}
-      <p className="text-sm text-muted">Send at least {funding.suggestedMinSats} sats to this address.</p>
+      {/* The one consistent suggested-minimum line (D-37). "in a single payment" is load-bearing:
+          a below-minimum first send dead-ends the address permanently (deepest-first selection). */}
+      <p className="text-sm text-muted">
+        Send at least {funding.suggestedMinSats} sats to this address in a single payment.
+      </p>
 
       {/* The primary state line, tone-coded. */}
       <div className="flex items-start gap-2">
