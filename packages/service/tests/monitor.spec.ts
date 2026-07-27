@@ -781,6 +781,95 @@ describe('createCohortMonitor serviceHealth (mode + esplora reachability, D-17/D
   });
 });
 
+describe('GET /v1/operator/cohorts serves monitoring.health (review CR-01, D-17/D-43)', () => {
+  /**
+   * Regression pin for review CR-01. `serviceHealth()` was correct and unit-tested but served by
+   * NO route, so the console's health strip had no served mode to render and hardcoded
+   * 'Hermetic' - on a `LIVE=1 BROADCAST=1` service that claim is inverted. These assert the mode
+   * crosses the WIRE on the merged gated list read the console already polls, so the strip can
+   * never again be pinned to a constant.
+   */
+  function listApp(mode: 'hermetic' | 'live-no-broadcast' | 'live') {
+    const identity = createIdentity(resolveNetwork(ACTIVE_NETWORK));
+    const transport = new HttpServerTransport({ resolveSenderPk: resolveBtcr2SenderPk, heartbeatIntervalMs: 0 });
+    transport.registerActor(identity.did, identity.keys);
+    const runner = new AggregationServiceRunner({
+      transport,
+      did: identity.did,
+      keys: identity.keys,
+      onProvideTxData: async () => {
+        throw new Error('signing not exercised in this spec');
+      },
+    });
+    transport.start();
+    const operatorAuth: OperatorAuthConfig = {
+      sessions: createSessionStore(60_000),
+      throttle: createLoginThrottle({ maxAttempts: 1000, windowMs: 5 * 60_000 }),
+      expectedPassword: PASSWORD,
+      cookieSecure: false,
+      sessionTtlMs: 60_000,
+    };
+    const operatorCohorts = createOperatorCohorts({ activeNetwork: ACTIVE_NETWORK, runner, autoFallbackOnStall: true });
+    const monitor = createCohortMonitor(runner, undefined, undefined, mode);
+    const app = createHonoApp(transport, { operatorAuth, operatorCohorts, monitor, networkName: ACTIVE_NETWORK });
+    return { app, runner, monitor };
+  }
+
+  async function sessionCookie(app: ReturnType<typeof listApp>['app']): Promise<string> {
+    const res = await app.request('/v1/operator/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: PASSWORD }),
+    });
+    return res.headers.get('set-cookie')?.split(';')[0] ?? '';
+  }
+
+  it('carries the LIVE mode on a broadcasting service (never a hardcoded hermetic claim)', async () => {
+    const { app, runner } = listApp('live');
+    try {
+      const cookie = await sessionCookie(app);
+      const res = await app.request('/v1/operator/cohorts', { headers: { cookie } });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { monitoring?: { health?: { mode: string; esploraReachable: unknown } } };
+      expect(body.monitoring?.health).toEqual({ mode: 'live', esploraReachable: true });
+    } finally {
+      runner.stop();
+    }
+  });
+
+  it('carries hermetic + n/a on the fixture path, alongside the untouched rows/metrics keys', async () => {
+    const { app, runner } = listApp('hermetic');
+    try {
+      const cookie = await sessionCookie(app);
+      const res = await app.request('/v1/operator/cohorts', { headers: { cookie } });
+      const body = (await res.json()) as {
+        cohorts: unknown[];
+        monitoring?: { rows: unknown[]; metrics: unknown; health?: unknown };
+      };
+      expect(body.monitoring?.health).toEqual({ mode: 'hermetic', esploraReachable: 'n/a' });
+      // `health` is ADDITIVE: the pre-existing keys are still served unchanged.
+      expect(Array.isArray(body.cohorts)).toBe(true);
+      expect(Array.isArray(body.monitoring?.rows)).toBe(true);
+      expect(body.monitoring?.metrics).toEqual({ open: 0, inFlight: 0, anchored: 0, failed: 0 });
+    } finally {
+      runner.stop();
+    }
+  });
+
+  it('reflects a mid-flight esplora outage on the live path (D-43 disclosure reaches the wire)', async () => {
+    const { app, runner, monitor } = listApp('live');
+    try {
+      const cookie = await sessionCookie(app);
+      monitor.noteEsploraObservation(false);
+      const res = await app.request('/v1/operator/cohorts', { headers: { cookie } });
+      const body = (await res.json()) as { monitoring?: { health?: { esploraReachable: unknown } } };
+      expect(body.monitoring?.health?.esploraReachable).toBe(false);
+    } finally {
+      runner.stop();
+    }
+  });
+});
+
 describe('summarizeTx (lifted from dashboard-sse)', () => {
   it('does not throw on a fixture tx whose fee accessor throws (fee -> undefined, other fields kept)', () => {
     const fixtureTx = {

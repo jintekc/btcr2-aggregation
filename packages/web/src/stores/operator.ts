@@ -13,6 +13,7 @@ import {
   type CohortSummaryDTO,
   type DraftInput,
   type OperatorCohortDTO,
+  type ServiceHealthDTO,
   type ServiceMetricsDTO,
 } from '../lib/operator';
 
@@ -75,6 +76,15 @@ interface OperatorState {
   rows: CohortSummaryDTO[];
   /** Service-level live counts backing the metrics row (D-06); undefined until the first read. */
   metrics?: ServiceMetricsDTO;
+  /**
+   * The served service health (D-17/D-43): the honest broadcast mode + esplora reachability the
+   * health strip renders. `undefined` until the first ok list read lands (and after a sign-out or
+   * a session expiry), which the strip renders as "Checking mode" rather than presuming hermetic.
+   *
+   * Set ONLY from the served `monitoring.health` (review CR-01): a service that broadcasts real
+   * Bitcoin must never be able to display "Hermetic", so the mode is never defaulted client-side.
+   */
+  health?: ServiceHealthDTO;
   /**
    * True when the last LIST poll was unreachable, so the displayed list/metrics are frozen
    * last-known state (D-25) and the unreachable banner shows; cleared on the next ok read.
@@ -141,6 +151,7 @@ export const useOperator = create<OperatorState>((set, get) => ({
   cohorts: [],
   rows: [],
   metrics: undefined,
+  health: undefined,
   listStale: false,
   createStatus: 'idle',
   formError: undefined,
@@ -196,6 +207,9 @@ export const useOperator = create<OperatorState>((set, get) => ({
         cohorts: [],
         rows: [],
         metrics: undefined,
+        // Drop the served mode on sign-out: the next session must re-read it rather than render
+        // a stale mode claim against a service that may have been restarted into another mode.
+        health: undefined,
         listStale: false,
         formError: undefined,
         createStatus: 'idle',
@@ -224,6 +238,7 @@ export const useOperator = create<OperatorState>((set, get) => ({
         cohorts: [],
         rows: [],
         metrics: undefined,
+        health: undefined,
         listStale: false,
         view: { kind: 'list' },
         detail: undefined,
@@ -242,6 +257,10 @@ export const useOperator = create<OperatorState>((set, get) => ({
       cohorts: result.value.cohorts,
       rows: result.value.monitoring?.rows ?? [],
       metrics: result.value.monitoring?.metrics,
+      // Served mode + esplora reachability (review CR-01, D-17/D-43). Left undefined when the
+      // service serves no health (fail-closed boot / an older service): the strip then says
+      // "Checking mode" instead of claiming a mode the service never reported.
+      health: result.value.monitoring?.health,
       listStale: false,
       lastUpdated: Date.now(),
     });

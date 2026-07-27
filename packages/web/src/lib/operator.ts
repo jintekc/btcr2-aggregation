@@ -351,14 +351,39 @@ export interface ServiceMetricsDTO {
 }
 
 /**
+ * The broadcast mode this service actually runs in (mirrors the service `ServiceMode`, D-17):
+ * `hermetic` is the fixture co-sign path (no chain at all), `live-no-broadcast` builds a real tx
+ * against a live esplora without pushing it, and `live` broadcasts on-chain.
+ */
+export type ServiceMode = 'hermetic' | 'live-no-broadcast' | 'live';
+
+/**
+ * The service health projection (mirrors the service `ServiceHealthDTO`, D-17/D-43): the honest
+ * broadcast `mode` plus the last esplora observation. `esploraReachable` is `'n/a'` on the
+ * hermetic path (no esplora is ever contacted), and the last observed reading on a live path.
+ *
+ * This is the payload the health strip's mode chip renders. Before review CR-01 the server
+ * computed it and served it nowhere, so the strip claimed "Hermetic" on a live, broadcasting
+ * service; it now rides {@link OperatorCohortsDTO.monitoring}.
+ */
+export interface ServiceHealthDTO {
+  mode: ServiceMode;
+  esploraReachable: boolean | 'n/a';
+}
+
+/**
  * The merged `GET /v1/operator/cohorts` read model (D-06/D-26). `cohorts` is the operator's
  * own draft/advertised/expired list (byte-identical to before); the NEW `monitoring` sibling
  * key carries the summary chip rows + service-level metrics from the per-service fold, present
  * only when a monitor is wired (a fail-closed boot omits it).
+ *
+ * `monitoring.health` is optional on the WIRE (review CR-01): a service built before the health
+ * key existed serves `monitoring` without it, and the strip must render "Checking mode" rather
+ * than presume a mode it was never told.
  */
 export interface OperatorCohortsDTO {
   cohorts: OperatorCohortDTO[];
-  monitoring?: { rows: CohortSummaryDTO[]; metrics: ServiceMetricsDTO };
+  monitoring?: { rows: CohortSummaryDTO[]; metrics: ServiceMetricsDTO; health?: ServiceHealthDTO };
 }
 
 /**

@@ -37,6 +37,8 @@ function resetStore(): void {
     detail: undefined,
     detailStale: false,
     lastUpdated: undefined,
+    // Cleared too, so a health assertion never inherits a previous test's served mode.
+    health: undefined,
   });
 }
 
@@ -120,5 +122,61 @@ describe('operator store pollDetail branching', () => {
     expect(useOperator.getState().detail).toEqual(SAMPLE_DETAIL);
     expect(useOperator.getState().detailStale).toBe(false);
     expect(typeof useOperator.getState().lastUpdated).toBe('number');
+  });
+});
+
+/**
+ * Review CR-01: the health strip's mode chip must render the SERVED mode, never a client-side
+ * constant. A `LIVE=1 BROADCAST=1` service displaying "Hermetic" tells the operator this service
+ * does not touch the chain while it broadcasts real Bitcoin transactions. These pin the store leg
+ * (the served `monitoring.health` reaching `state.health`); the strip reads that field directly
+ * and renders "Checking mode" while it is undefined.
+ */
+describe('operator store health (served broadcast mode, D-17/D-43)', () => {
+  beforeEach(resetStore);
+
+  /** A merged list-read body with an optional `monitoring` sibling. */
+  function listBody(monitoring?: Record<string, unknown>): string {
+    return JSON.stringify({ cohorts: [], ...(monitoring ? { monitoring } : {}) });
+  }
+
+  it('stores the served live mode + esplora reachability from the merged list read', async () => {
+    vi.stubGlobal('fetch', () =>
+      Promise.resolve(
+        new Response(
+          listBody({
+            rows: [],
+            metrics: { open: 0, inFlight: 0, anchored: 0, failed: 0 },
+            health: { mode: 'live', esploraReachable: true },
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+    await useOperator.getState().refreshCohorts(BASE);
+    expect(useOperator.getState().health).toEqual({ mode: 'live', esploraReachable: true });
+  });
+
+  it('leaves health undefined when the service serves no health (never presumes hermetic)', async () => {
+    // A fail-closed / older service omits `monitoring.health`. The strip must say "Checking mode"
+    // rather than default to a mode the service never reported.
+    vi.stubGlobal('fetch', () =>
+      Promise.resolve(
+        new Response(listBody({ rows: [], metrics: { open: 0, inFlight: 0, anchored: 0, failed: 0 } }), {
+          status: 200,
+        }),
+      ),
+    );
+    await useOperator.getState().refreshCohorts(BASE);
+    expect(useOperator.getState().health).toBeUndefined();
+  });
+
+  it('clears the stored mode on a session expiry so the next session re-reads it', async () => {
+    useOperator.setState({ health: { mode: 'live', esploraReachable: false } });
+    vi.stubGlobal('fetch', () => Promise.resolve(new Response('no', { status: 401 })));
+    await useOperator.getState().refreshCohorts(BASE);
+    expect(useOperator.getState().health).toBeUndefined();
+    expect(useOperator.getState().auth).toBe('logged-out');
+    expect(useOperator.getState().error).toBe(SESSION_EXPIRED);
   });
 });

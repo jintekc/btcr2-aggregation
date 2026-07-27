@@ -399,10 +399,19 @@ export function createHonoApp(
       // consumers keep working); a NEW `monitoring` sibling key carries the summary chip
       // rows + service-level metrics from the fold (SVC-03, D-06), present only when a
       // monitor is wired. The public directory/status/anchor DTOs are untouched (D-26).
+      //
+      // `monitoring.health` is an ADDITIVE key on that same gated read (review CR-01, D-17/D-43):
+      // {@link CohortMonitor.serviceHealth} already computed the honest broadcast mode + esplora
+      // reachability, but NOTHING served it, so the console's health strip hardcoded 'Hermetic'
+      // even on a service broadcasting real Bitcoin transactions. It rides the read the console
+      // already polls rather than a second route, so the mode chip refreshes on the same tick as
+      // the rows/metrics and no new gated surface is introduced.
       app.get('/v1/operator/cohorts', (c) =>
         c.json({
           cohorts: operatorCohorts.listCohorts(),
-          monitoring: monitor ? { rows: monitor.summary(), metrics: monitor.serviceMetrics() } : undefined,
+          monitoring: monitor
+            ? { rows: monitor.summary(), metrics: monitor.serviceMetrics(), health: monitor.serviceHealth() }
+            : undefined,
         }),
       );
       app.delete('/v1/operator/cohorts/:id', (c) => {
