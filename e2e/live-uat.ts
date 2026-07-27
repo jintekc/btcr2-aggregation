@@ -53,7 +53,8 @@ import { resolveNetwork } from '@btcr2-aggregation/shared';
  * updates resolvable, never the first. See the "Register the first update" section of the checklist.
  *
  * Env knobs: ESPLORA_HOST (default http://127.0.0.1:3000), NETWORK (default regtest), PORT
- * (default 8080), OPERATOR_PASSWORD (default "live-uat"), MIN_PARTICIPANTS (seed config default 2;
+ * (default 8080), OPERATOR_PASSWORD (REQUIRED, no default: this boots a real operator control
+ * plane, so the harness refuses to start without one), MIN_PARTICIPANTS (seed config default 2;
  * the operator console overrides per cohort), FUND_SATS (printed funding hint, floored at
  * MIN_LIVE_FUNDING_SATS), FUND_WAIT_MS (the native funding window in ms; how long co-signing waits
  * for the beacon funding, default 900000 = 15 min), RECOVERY_KEY (optional; throwaway regtest sats,
@@ -72,7 +73,27 @@ async function main(): Promise<void> {
   const esploraHost = process.env.ESPLORA_HOST ?? 'http://127.0.0.1:3000';
   const net = resolveNetwork(process.env.NETWORK ?? 'regtest', esploraHost);
   const fundSats = Math.max(MIN_LIVE_FUNDING_SATS, Number(process.env.FUND_SATS ?? 100_000));
-  const operatorPassword = process.env.OPERATOR_PASSWORD ?? 'live-uat';
+  // The operator control plane gets NO committed default credential (review WR-07). Exposure was
+  // limited (this harness pins host 127.0.0.1 and is opt-in), but a documented default password in
+  // a repo whose top constraint is "no unauthenticated mutating/control surface" is one lifted
+  // host binding, one permissive local proxy, or one shared dev box away from an open control
+  // plane - on a harness that boots the real product path with BROADCAST=1.
+  const operatorPassword = process.env.OPERATOR_PASSWORD;
+  if (!operatorPassword) {
+    throw new Error(
+      'live-uat: set OPERATOR_PASSWORD (no default is provided for an operator control plane)',
+    );
+  }
+  // `operatorCookieSecure: false` below is correct for a plain-http localhost run, but it must
+  // never ride an off-host bind: assert the loopback binding in the same guard so the two cannot
+  // drift apart.
+  const bindHost = process.env.HOST ?? '127.0.0.1';
+  if (bindHost !== '127.0.0.1' && bindHost !== 'localhost' && bindHost !== '::1') {
+    throw new Error(
+      `live-uat: refusing to bind ${bindHost}. This harness runs the operator console over plain ` +
+        'http with the Secure cookie flag OFF, which is only safe on loopback',
+    );
+  }
   // The native funding window (04-06 D-38) the co-sign wait allows for the human to fund the
   // beacon address from Polar. Kept human-paced; the phase-stall timeout below MUST exceed it
   // (startDemoServer enforces this boot invariant under BROADCAST=1, 04-05 D-38 phase-timeout leg).
@@ -188,7 +209,9 @@ async function main(): Promise<void> {
   console.log('='.repeat(64));
   console.log('  live-UAT harness up (broadcast-enabled; chain is YOURS via Polar)');
   console.log(`  app:               ${baseUrl}`);
-  console.log(`  operator password: ${operatorPassword}`);
+  // The password itself is never echoed (review WR-07): the human supplied it, so it needs no
+  // reminder, and printing an operator credential to stdout puts it in shell scrollback and logs.
+  console.log('  operator password: the OPERATOR_PASSWORD you exported');
   console.log(`  esplora:           ${esploraHost} (tip height ${tip})`);
   console.log(`  network:           ${net.name}`);
   console.log('  fund + mine from Polar when addresses are printed; Ctrl-C stops');
