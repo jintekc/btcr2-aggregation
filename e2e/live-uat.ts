@@ -42,8 +42,15 @@ import { resolveNetwork } from '@btcr2-aggregation/shared';
  *   6. Failed-broadcast / funding-dead-end repro: simply do not fund the printed address; the
  *      funding stage advances to its honest dead-end / "funding never arrived" terminal copy.
  *
- * Registration addresses (the participant awaiting-funds screen) are derived in the browser, so
- * the harness never sees them: fund those straight from Polar too.
+ * Registration addresses (the participant "Register first update" card) are derived in the browser,
+ * so the harness never sees them: fund those straight from Polar too. This leg is REQUIRED before a
+ * resolve reflects a KEY (k1) participant's FIRST update (ADR 0007): the resolver only discovers
+ * signals at beacons already in the document under resolution, and a KEY genesis holds only the
+ * participant's own singleton beacons, never the cohort's aggregate beacon. So after the cohort
+ * anchor confirms, EACH participant must fund their registration address (>= the displayed minimum,
+ * ~1330 sats) from Polar, mine a block, let the page broadcast the registration tx, and mine one
+ * more block to confirm it - only then does resolve show the update. The cohort anchor makes 2nd+
+ * updates resolvable, never the first. See the "Register the first update" section of the checklist.
  *
  * Env knobs: ESPLORA_HOST (default http://127.0.0.1:3000), NETWORK (default regtest), PORT
  * (default 8080), OPERATOR_PASSWORD (default "live-uat"), MIN_PARTICIPANTS (seed config default 2;

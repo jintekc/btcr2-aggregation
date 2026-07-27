@@ -106,12 +106,38 @@ cohort fills and funds. On this re-run, expect:
       PROMPTLY. Confirm every surface flips to Anchored / Confirmed together, and the terminal logs
       `ANCHORED ... confirmed=true`.
 
+## Register the first update (EACH participant, before resolve can reflect it)
+
+**Why this step exists (ADR 0007):** the resolver only queries beacon addresses that are ALREADY
+in the document it is resolving. A KEY (k1) genesis document holds only the participant's own
+singleton beacons, never the cohort's aggregate beacon, so the very first aggregated update is
+undiscoverable from the cohort anchor alone. The first update becomes resolvable only once the
+participant publishes it through their OWN genesis singleton beacon: a funded, broadcast, and
+CONFIRMED registration signal. The cohort's aggregate anchor is what makes the SECOND and later
+updates resolvable; it never makes the first one resolvable. So each participant must register once
+before resolve will show their update. (This leg applies to KEY identities, which is what the
+"generate an identity" step above produces; an EXTERNAL x1 identity bakes the beacon into genesis
+and needs no registration.)
+
+Do this in EACH participant browser window that submitted an update:
+
+- [ ] On the completion screen, find the "Register first update" card. Confirm it shows the genesis
+      beacon address to fund (with copy) AND the suggested minimum in sats (at least 1330: a
+      1000-sat fee plus a dust-safe change output). Fund that address from your Polar wallet with
+      ONE payment at or above the displayed minimum (round up, e.g. a few thousand sats).
+- [ ] Mine 1 block in Polar so the funding confirms.
+- [ ] Click "Check funds and register". Confirm the card advances from awaiting-funds to broadcasting
+      and then to registered, showing the registration txid (with explorer link). This is the page
+      broadcasting the participant's own genesis singleton-beacon registration transaction.
+- [ ] Mine 1 more block in Polar so the registration transaction confirms.
+
 ## Resolve
 
-- [ ] Resolve the updated DID from the participant surface. Confirm it reflects the update (not a
-      stale genesis), OR, if you resolve against a still-unconfirmed signal, that it returns the
-      honest retryable "a beacon signal is awaiting confirmation, resolve again after it confirms"
-      outcome (D-46), never a raw 500.
+- [ ] Resolve the updated DID from the participant surface. Because the registration signal above is
+      now confirmed, confirm it reflects the update (not a stale genesis). If you resolve BEFORE the
+      registration confirms, expect the honest retryable "a beacon signal is awaiting confirmation,
+      resolve again after it confirms" outcome (D-46) and the note that the update will not show
+      until the participant's own registration signal confirms, never a raw 500.
 
 ## Honesty checks (must all read true)
 
@@ -120,6 +146,9 @@ cohort fills and funds. On this re-run, expect:
 - [ ] The resolve reflects the update once confirmed, and the copy read honestly throughout (no
       false "stalled collecting updates" on a genuine co-sign completion; no invented partial-sig
       progress).
+- [ ] The first update only resolved AFTER each participant's own genesis registration signal
+      confirmed (ADR 0007), and the resolve copy said so plainly while it was still unconfirmed
+      rather than looking like a broken resolve.
 
 ## Optional negative legs
 
