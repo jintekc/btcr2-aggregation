@@ -85,11 +85,29 @@ const ACTIVITY_RING_SIZE = 200;
 const OPEN_PHASES = new Set<string>(['Advertised', 'CohortSet', 'CollectingUpdates']);
 
 /**
- * In-flight (mid co-sign) phases for the `co-signing` chip + inFlight metric (mirrors
- * `operator-cohorts.ts` `IN_FLIGHT_PHASES`): the cohort's signing round is under way. Kept
- * local for the same reason as {@link OPEN_PHASES}.
+ * In-flight (post-seat, pre-terminal) phases for the `co-signing` chip + inFlight metric,
+ * mirroring `operator-cohorts.ts` `IN_FLIGHT_PHASES` EXACTLY - the two sets MUST stay in
+ * lockstep or the console contradicts the public directory. Kept local for the same reason
+ * as {@link OPEN_PHASES}.
+ *
+ * The set spans the WHOLE mid-signing arc, not just the MuSig2 nonce/partial-sig rounds:
+ * `UpdatesCollected`, `DataDistributed`, `Validated`, and `FallbackRequested` are the phases
+ * a cohort sits in during the 04-06 live funding wait (`onProvideTxData` is called from
+ * them). Omitting them made `summary()` assign NO chip and skip the row entirely during the
+ * funding wait (empirically phase `Validated`), so the `needs-funding` attention chip (D-44)
+ * never fired exactly when it mattered - the console showed a stale 'Filling' row instead of
+ * the funding nudge - and `serviceMetrics()` counted the cohort in neither open nor inFlight
+ * (SVC-JOIN-2 monitor leg).
  */
-const IN_FLIGHT_PHASES = new Set<string>(['SigningStarted', 'NoncesCollected', 'AwaitingPartialSigs']);
+const IN_FLIGHT_PHASES = new Set<string>([
+  'SigningStarted',
+  'NoncesCollected',
+  'AwaitingPartialSigs',
+  'UpdatesCollected',
+  'DataDistributed',
+  'Validated',
+  'FallbackRequested',
+]);
 
 /** Whether a folded member has only opted in (`pending`) or been seated (`seated`). */
 export type MemberStatus = 'pending' | 'seated';

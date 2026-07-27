@@ -6,7 +6,7 @@ import {
 import { resolveBtcr2SenderPk } from '@did-btcr2/method';
 import { createIdentity, resolveNetwork } from '@btcr2-aggregation/shared';
 import type { Transaction } from '@scure/btc-signer';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createCohortMonitor, summarizeTx, type FundingView } from '../src/monitor.js';
 import { BeaconBroadcaster } from '../src/broadcast.js';
 import { createAnchorState } from '../src/anchor-state.js';
@@ -864,6 +864,45 @@ describe('createCohortMonitor funding view (LIVE-01, D-36 through D-43)', () => 
       monitor.noteFunding(cohortId, { ...sampleView, state: 'funded' });
       expect(monitor.summary().find((r) => r.cohortId === cohortId)?.chip).not.toBe('needs-funding');
     } finally {
+      runner.stop();
+    }
+  });
+
+  it('needs-funding chip fires for a Validated-phase cohort awaiting funding, which counts inFlight (SVC-JOIN-2)', () => {
+    // The REAL funding wait runs while the cohort sits in the post-seat library phases
+    // (empirically Validated, proven by the e2e directory-presence guard) - NOT in a filling
+    // phase. Before the IN_FLIGHT_PHASES widening, summary() assigned no chip and skipped the
+    // row entirely, so the D-44 funding nudge never fired during the actual funding window and
+    // serviceMetrics() counted the cohort in neither open nor inFlight. Pin both reads here.
+    const identity = createIdentity(resolveNetwork(ACTIVE_NETWORK));
+    const transport = new HttpServerTransport({ resolveSenderPk: resolveBtcr2SenderPk, heartbeatIntervalMs: 0 });
+    transport.registerActor(identity.did, identity.keys);
+    const runner = new AggregationServiceRunner({
+      transport,
+      did: identity.did,
+      keys: identity.keys,
+      onProvideTxData: async () => {
+        throw new Error('signing not exercised in this spec');
+      },
+    });
+    transport.start();
+    const operatorCohorts = createOperatorCohorts({ activeNetwork: ACTIVE_NETWORK, runner });
+    const monitor = createCohortMonitor(runner, undefined, undefined, 'live');
+    try {
+      const draft = operatorCohorts.createDraft({ beaconType: 'CASBeacon', size: 2, threshold: 2 });
+      const cohortId = operatorCohorts.advertiseDraft(draft.draftId)!.draftId;
+      runner.emit('keygen-complete', { cohortId, beaconAddress: 'bcrt1pbeaconaddress' });
+      // Pin the cohort into the funding-wait phase the library actually reports mid-wait.
+      vi.spyOn(runner.session, 'getCohortPhase').mockReturnValue('Validated');
+
+      monitor.noteFunding(cohortId, { ...sampleView, state: 'waiting' });
+      const row = monitor.summary().find((r) => r.cohortId === cohortId);
+      expect(row).toBeDefined();
+      expect(row?.chip).toBe('needs-funding');
+      // The funding-wait phase counts inFlight (never open) in the service metrics.
+      expect(monitor.serviceMetrics()).toMatchObject({ open: 0, inFlight: 1 });
+    } finally {
+      vi.restoreAllMocks();
       runner.stop();
     }
   });
