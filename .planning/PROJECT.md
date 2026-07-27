@@ -33,19 +33,19 @@ This project is being onboarded into a structured workflow to **course-correct**
 - ✓ Participant joins an advertised cohort by choice (browse-and-pick with inline identity), waits with a truthful `joined/n seats` line until all n seats fill, is seated when the cohort locks, and a full or closed cohort cannot be joined (deterministic filled-or-closed outcome, Leave from a seated state) (PART-02 - Phase 2; multi-cohort management stays deferred as PMG-01)
 - ✓ Participant submits a DID update and takes part in the cohort's n-of-n MuSig2 co-signing round from the cohort they chose, via an explicit consent gate; the linear demo stepper is retired and the directory is the only entry path (PART-03 - Phase 3)
 - ✓ Participant tracks co-sign progress and anchor status in real time on one continuous cohort page and resolves the updated DID once anchored; every surface narrates the anchor state honestly ('Anchored' reserved for a confirmed tx, mode-honest hermetic/live copy, best-effort failure reasons with an honest fallback) (PART-04 - Phase 3; confirmed by human UAT 4/4 including a real live regtest broadcast)
+- ✓ Operator monitors members and submissions from a list-first console with per-cohort drill-down: seated vs pending members, per-member round state, submissions with wall-clock stamps, honest co-sign progress, anchor detail, bounded activity ring, gated JSON export, and an always-visible health strip serving the real service mode (polled read model, ADR 0016 supersedes 0004's SSE channel) (SVC-03 - Phase 4; confirmed by owner-run live UAT)
+- ✓ The live broadcast path is operable from the product itself: `BROADCAST=1` boot enablement (requires `LIVE=1`), watch-only cohort-beacon funding stage with one shared classify predicate and honest dead-end/lapse verdicts, bounded broadcast send retry, participant-side funding notice and KEY first-update registration guidance, and an owner-runnable `pnpm uat:live` walkthrough (LIVE-01 - Phase 4; validated end to end on Polar/regtest by the owner, including two real browser participants and a resolved first update)
 
 ### Active
 
 <!-- The realignment toward the intended two-sided, self-hostable product. Hypotheses until shipped and validated. -->
 
 Service side (operator experience):
-- [ ] Operator can **monitor** members and submissions (who joined, pending updates, co-sign progress, anchor status)
 - [ ] Operator can **run aggregation and manage cohort lifecycle** (open -> close -> finalize; pause/cancel/reconfigure) without restarting the process
 
 Self-hostable for real:
 - [ ] The full two-sided flow is **smooth end to end for two strangers** (a stranger operator plus a stranger participant complete the loop without insider knowledge)
 - [ ] The product **presents as a real aggregator**, not a booth/demo (retire the lingering "booth"/"attendee" framing in code, UI, and docs)
-- [ ] The **live broadcast path is operable from the product itself** (boot-time enablement plus operator funding/broadcast surfacing), not only from e2e harnesses - emerged from Phase 3 live UAT (owner direction: "the actual real server working out-of-the-box"; see the 7 pending todos)
 
 ### Out of Scope
 
@@ -114,4 +114,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-22 after Phase 3 (Participant Submit, Co-Sign, Track, and Resolve)*
+*Last updated: 2026-07-27 after Phase 4 (Operator Cohort Monitoring + Live-Path Operability)*
