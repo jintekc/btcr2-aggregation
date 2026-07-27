@@ -1179,7 +1179,9 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         set({ cohortId, status: 'live', optedIn: true });
         setStep('join', 'done');
         setStep('submit', 'active');
-        append('good', `joined cohort ${cohortId}; running distributed keygen`);
+        // D-11 sent-not-accepted semantics: the opt-in was SENT, no seat granted yet, and
+        // keygen has NOT started (the cohort still has to fill). Narrate exactly that.
+        append('good', `opt-in sent for cohort ${cohortId}; waiting for the cohort to fill`);
         // cohort-joined records the opt-in ONLY and arms nothing. Under the wait-for-n
         // model there is no "seat imminent" premise here: the picked cohort may stay
         // openly Advertised and filling for a long time, and failing at a fixed post-opt-in
@@ -1420,6 +1422,21 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       if (seated || pickedCohortId === null || (status !== 'connecting' && status !== 'live')) {
         return;
       }
+      // Reflect the picked cohort's live seat count whenever its row is present in the
+      // directory in ANY phase (IN-01, refined for SVC-JOIN-2). The directory now keeps a
+      // seated-but-unfinished cohort listed straight through the funding / co-sign window
+      // (the widened service DISPLAY_PHASES), so the picked row is still present in
+      // CohortSet / UpdatesCollected / Validated / ... after it leaves Advertised, carrying
+      // its final joined/capacity (e.g. 2/2). Set awaitingSeats from that row so the cohort
+      // page can render a truthful "{joined}/{capacity} seats" line the whole time. Only
+      // null the line when the row is absent from the directory ENTIRELY - a genuinely gone
+      // cohort - never merely because it advanced past Advertised.
+      const pickedRow = rows.find((r) => r.cohortId === pickedCohortId);
+      if (pickedRow) {
+        set({ awaitingSeats: { joined: pickedRow.joined, capacity: pickedRow.capacity } });
+      } else {
+        set({ awaitingSeats: null });
+      }
       if (!pickedCohortClosed(rows, pickedCohortId)) {
         // Defensive (IN-03): a cohort id never re-enters Advertised once it locks
         // membership (a re-advertise mints a fresh id), but if a flaky/replayed
@@ -1429,13 +1446,8 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         if (joinGrace !== null) {
           clearJoinGrace();
         }
-        // Still openly Advertised: keep waiting (wait-for-n). Capture the picked row's
-        // live joined / capacity so the join flow can render a truthful "Waiting for the
-        // cohort to fill" line. This is the only place awaitingSeats is set to a value.
-        const row = rows.find((r) => r.cohortId === pickedCohortId && r.phase === 'Advertised');
-        if (row) {
-          set({ awaitingSeats: { joined: row.joined, capacity: row.capacity } });
-        }
+        // Still openly Advertised with a free seat: keep waiting (wait-for-n). The live
+        // seat count was already captured above.
         return;
       }
       // The picked cohort has left the Advertised set while we are still unseated.
@@ -1459,17 +1471,27 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       // filled-or-closed terminal instead of hanging. The poll itself never fails a member.
       if (!joinGraceLogged) {
         joinGraceLogged = true;
-        // The row is gone from the Advertised set, so its frozen joined/capacity counts
-        // are stale - clear the "Waiting for the cohort to fill (j/n seats)" line rather
-        // than keep claiming a live fill count for the 90s grace window (IN-01). The
-        // waiting surface disappearing while the seat resolves is the honest state.
-        set({ awaitingSeats: null });
+        // Do NOT null awaitingSeats here (SVC-JOIN-2): the cohort has left the Advertised
+        // set but is still LISTED in the widened directory with its live counts (captured
+        // above), so the "{joined}/{capacity} seats" line stays truthful through the grace
+        // window rather than blanking. It nulls only if the row later leaves the directory
+        // entirely (handled at the top of this function).
         append('info', `cohort ${pickedCohortId} left the open set; awaiting seat confirmation`);
         joinGrace = setTimeout(() => {
-          const { seated, status } = get();
+          const { seated, status, awaitingSeats } = get();
           if (!seated && (status === 'connecting' || status === 'live')) {
             set({ joinClosed: true });
-            fail('That cohort filled or closed before you were seated. Pick another from the directory.');
+            // If the cohort locked with every seat filled (joined === capacity) yet no
+            // cohort-ready ever reached this browser, the honest cause is a missed seat
+            // confirmation, not "it filled before you got in" - name that specifically so
+            // the owner sees the real failure mode (the SVC-JOIN-1/2 live-UAT symptom).
+            if (awaitingSeats && awaitingSeats.joined === awaitingSeats.capacity) {
+              fail(
+                `The cohort locked with all ${awaitingSeats.capacity} seats filled, but this browser never received its seat confirmation.`,
+              );
+            } else {
+              fail('That cohort filled or closed before you were seated. Pick another from the directory.');
+            }
           }
         }, JOIN_SEAT_GRACE_MS);
       }

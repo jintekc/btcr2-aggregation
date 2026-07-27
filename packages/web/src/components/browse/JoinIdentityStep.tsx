@@ -33,7 +33,6 @@ export function JoinIdentityStep({
   const secret = useParticipant((s) => s.secret);
   const status = useParticipant((s) => s.status);
   const network = useParticipant((s) => s.network);
-  const awaitingSeats = useParticipant((s) => s.awaitingSeats);
   const configStatus = useParticipant((s) => s.configStatus);
   const generate = useParticipant((s) => s.generate);
   const importSecret = useParticipant((s) => s.importSecret);
@@ -194,13 +193,10 @@ export function JoinIdentityStep({
               Cancel
             </Button>
           </div>
-          {/* Truthful waiting surface (G-02-2): while opted in and the picked cohort is still
-              openly Advertised, show the live seat count instead of only a bare Joining spinner. */}
-          {joining && awaitingSeats && (
-            <p className="text-xs text-faint">
-              Waiting for the cohort to fill ({awaitingSeats.joined}/{awaitingSeats.capacity} seats)
-            </p>
-          )}
+          {/* The live seat-count line now lives on the cohort page (CohortPage), the surface
+              actually mounted once a join starts. The block that used to sit here was dead code:
+              its render gate never matched under BrowseView (03-05), so it could never show a
+              count. CohortPage is the sole reader of awaitingSeats now (PWEB-1). */}
         </div>
       )}
     </div>

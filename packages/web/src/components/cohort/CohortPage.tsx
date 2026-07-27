@@ -58,6 +58,7 @@ export function CohortPage({ baseUrl: _baseUrl, onBrowse }: { baseUrl: string; o
   const status = useParticipant((s) => s.status);
   const optedIn = useParticipant((s) => s.optedIn);
   const seated = useParticipant((s) => s.seated);
+  const awaitingSeats = useParticipant((s) => s.awaitingSeats);
   const pendingSubmit = useParticipant((s) => s.pendingSubmit);
   const steps = useParticipant((s) => s.steps);
   const anchor = useParticipant((s) => s.anchor);
@@ -134,6 +135,24 @@ export function CohortPage({ baseUrl: _baseUrl, onBrowse }: { baseUrl: string; o
           activeElapsedMs={now - stageEnteredAt}
           anchor={anchor}
         />
+        {/* The single live seat-count surface actually mounted during a join (PWEB-1). While
+            waiting for the cohort to fill, show the honest {joined}/{capacity} count polled from
+            the directory (awaitingSeats). Once every seat is filled (joined === capacity) the
+            cohort has locked and this browser is confirming its seat, so switch to the "all seats
+            filled" copy rather than freezing on "N/N seats" while cohort-ready arrives. The old
+            JoinIdentityStep seat line was dead code (its render gate never matched under
+            BrowseView, 03-05); the cohort page is the one reader now. */}
+        {stage === 'waiting-for-seats' && !failed && awaitingSeats ? (
+          awaitingSeats.joined === awaitingSeats.capacity ? (
+            <p className="text-sm text-muted">
+              All {awaitingSeats.capacity} seats are filled. Confirming your seat...
+            </p>
+          ) : (
+            <p className="text-sm text-muted">
+              Waiting for the cohort to fill ({awaitingSeats.joined}/{awaitingSeats.capacity} seats).
+            </p>
+          )
+        ) : null}
       </Card>
 
       {/* Live-cohort funding notice + honest wait copy (D-44). A LIVE (on-chain) cohort anchors its
