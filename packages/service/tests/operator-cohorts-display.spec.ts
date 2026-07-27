@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { AggregationServiceRunner, CohortConfig } from '@did-btcr2/aggregation/service';
+import type { AggregationServiceRunner } from '@did-btcr2/aggregation/service';
 import { createOperatorCohorts, type DirectoryCohortDTO } from '../src/operator-cohorts.js';
 
 /**
@@ -37,7 +37,7 @@ function stubRunner() {
       cohorts,
       getCohortPhase: (id: string) => phases.get(id),
     },
-    advertiseCohort: (_config: CohortConfig) => {
+    advertiseCohort: () => {
       const id = `cohort-${seq}`;
       seq += 1;
       cohorts.push({ id, participants: [] });
