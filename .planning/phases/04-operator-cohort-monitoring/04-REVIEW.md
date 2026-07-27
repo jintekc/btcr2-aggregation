@@ -63,7 +63,21 @@ findings:
   warning: 8
   info: 0
   total: 10
-status: issues_found
+status: fixed
+fixed: 10
+skipped: 0
+fixed_at: 2026-07-27
+fix_commits:
+  CR-01: d0cfef8
+  CR-02: ae0d543
+  WR-01: 565812a
+  WR-02: 7308ad3
+  WR-03: 8594f1a
+  WR-04: 83a2cd9
+  WR-05: 4a4bbd5
+  WR-06: 83449cc
+  WR-07: 156072c
+  WR-08: 8241917
 ---
 
 # Phase 4: Code Review Report
@@ -71,7 +85,7 @@ status: issues_found
 **Reviewed:** 2026-07-27
 **Depth:** standard
 **Files Reviewed:** 52
-**Status:** issues_found
+**Status:** fixed (10 of 10 applied 2026-07-27; per-finding status lines below)
 
 ## Summary
 
@@ -107,6 +121,13 @@ stay in lockstep.
 ## Critical Issues
 
 ### CR-01: The operator health strip claims "Hermetic" on a live, broadcasting service
+
+**Status:** FIXED (`d0cfef8`). Served `monitor.serviceHealth()` as an additive `monitoring.health`
+key on the existing gated `GET /v1/operator/cohorts` read, threaded it through `lib/operator.ts` +
+`stores/operator.ts`, and made `HealthStrip` render the served mode (`Checking mode` before the
+first read, never a presumed hermetic) plus the live-only esplora reachable/unreachable chip.
+Pinned by three route specs in `tests/monitor.spec.ts` and three store specs in
+`tests/operator.spec.ts`.
 
 **File:** `packages/web/src/components/operator/HealthStrip.tsx:49-52`
 **Also:** `packages/service/src/monitor.ts:1096-1110` (computed, never served),
@@ -188,6 +209,16 @@ mode chip is pinned to the served value, not to a constant.
 
 ### CR-02: A cohort that successfully anchors vanishes from the operator cohort list (and takes its drill-down and export with it)
 
+**Status:** FIXED (`ae0d543`). The list now renders the UNION of the operator cohorts and the
+monitoring rows, keyed by id. The join moved into a new `web/src/lib/operator-rows.ts` so it is
+gate-visible, and `CohortRow` gained a monitoring-only variant rendering exactly the monitoring
+DTO's facts (chip, seats, reason, id) rather than inventing network/beacon/k-of-n, with `Open`
+kept wired so the drill-down and export stay reachable. No service-side retention was added: the
+window is the monitor's existing bounded 24-entry, oldest-first `ended` map. Pinned by
+`tests/operator-rows.spec.ts` (7 cases). NOT done: the suggested `e2e/browser-operator.ts`
+"Back to cohorts" step, which cannot be executed or verified in this environment (headless
+Chromium is unavailable and the browser e2e jobs are known CI debt deferred to Phase 6).
+
 **File:** `packages/web/src/components/operator/OperatorCohortList.tsx:245-252`
 **Also:** `packages/service/src/operator-cohorts.ts:528-554` (`listCohorts`),
 `packages/service/src/operator-cohorts.ts:365-382` (`settleCompletion`),
@@ -261,6 +292,10 @@ row is present after completion.
 
 ### WR-01: The public funding signal keeps reporting `awaitingFunding: true` after the cohort has terminally lapsed
 
+**Status:** FIXED (`565812a`). `publicFunding` now requires `view.terminal === undefined`, so both
+the `window-closed` and the D-39 `blind-lapse` verdicts stop the anonymous read claiming the
+cohort still awaits funding. Two specs in `tests/monitor.spec.ts`.
+
 **File:** `packages/service/src/monitor.ts:1137-1150`
 **Issue:** `publicFunding` returns `true` for any view whose `state` is `waiting` or
 `awaiting-confirmation`, and never consults `view.terminal`. `index.ts:804-820` folds the
@@ -282,6 +317,16 @@ const awaitingFunding =
 ```
 
 ### WR-02: Unbounded per-cohort maps on the live path (three in `createService`, one in the monitor with a comment claiming the opposite)
+
+**Status:** FIXED (`7308ad3`). Real bounds, not just the comment: a shared `rememberBounded` helper
+in `index.ts` (`MAX_PER_COHORT_ENTRIES = 24`, delete-then-set so an in-flight cohort is never the
+one evicted) now backs `advertisedAt`, `fundingWatches`, and `lastFundingView`, plus a
+`releaseCohortTables` prune wired to BOTH terminal paths (a new `signing-complete` listener beside
+the existing `cohort-failed` one, since a cohort that SUCCEEDS never fires the latter). The
+monitor's `fundingViews` got the same 24-entry `remember`-and-evict idiom and its false
+"unbounded is fine" comment was replaced with the reason it was wrong. Two eviction specs in
+`tests/monitor.spec.ts`; the `index.ts` tables are not externally observable, so they rest on the
+prune wiring plus the cap.
 
 **File:** `packages/service/src/index.ts:540, 738, 741`; `packages/service/src/monitor.ts:629-633`
 **Issue:** Every other per-cohort map in this phase is explicitly bounded at 24 with
@@ -319,6 +364,13 @@ and correct the comment on `fundingViews` either way.
 
 ### WR-03: The authoritative funding wait is not abortable, so it keeps hitting esplora after `service.stop()`
 
+**Status:** FIXED (`8594f1a`). `createService` owns a stop `AbortController` threaded into
+`LiveTxConfig.signal`; `fundingSleep` reuses the cancelable `delay` idiom from `funding-watch.ts`
+and the loop checks the signal before each poll. An abort throws a distinct "the service stopped"
+reason rather than a lapse verdict, because a shutdown is not chain evidence (D-39). Pinned by a
+spec in `tests/tx-funding-wait.spec.ts` asserting both the message and that no further esplora
+reads land after the abort.
+
 **File:** `packages/service/src/tx.ts:79-142` (`waitForFunding`), `packages/service/src/tx.ts:55-62` (`fundingSleep`)
 **Issue:** `service.stop()` (`index.ts:888-903`) carefully aborts the broadcast confirm poll
 and every display funding watch, but `waitForFunding` takes no `AbortSignal`: `fundingSleep`
@@ -349,6 +401,15 @@ while (Date.now() - start < deadlineMs) {
 Reuse the cancelable `delay` idiom from `funding-watch.ts:194-215` for `fundingSleep`.
 
 ### WR-04: A malformed `FUNDING_WINDOW_MS` silently disables the boot invariant and makes the service emit a false "could not observe the chain" verdict
+
+**Status:** FIXED (`83a2cd9`). Added the `numericKnob` parser (the pattern `advertTtlMs` already
+used) and applied it to `FUNDING_WINDOW_MS`, `OPERATOR_SESSION_TTL_MS`, `COHORT_TTL_MS`,
+`PHASE_TIMEOUT_MS`, `MIN_PARTICIPANTS`, and `PORT` (minimum 0 there, so `PORT=0` keeps its
+ephemeral meaning). It guards the programmatic option too, since a caller can derive it from its
+own env (the live-UAT harness does). `computeFundingDeadline` also coerces a non-finite window to
+`Infinity` so no caller can reproduce the false blind-lapse. Three specs in `tests/live-boot.spec.ts`
+(the D-38 invariant still fires on `FUNDING_WINDOW_MS=12m`; the banner reports the fallback, never
+NaN; no `Max-Age=NaN` cookie) plus one in `tests/funding-watch.spec.ts`.
 
 **File:** `packages/service/src/demo-server.ts:341-355`
 **Also:** `packages/service/src/funding-watch.ts:138-155`, `packages/service/src/tx.ts:95, 137-141`
@@ -399,6 +460,13 @@ false blind-lapse.
 
 ### WR-05: The drill-down stage timeline uses a fourth, divergent copy of the phase set and shows "Submissions" while a cohort is mid-co-sign
 
+**Status:** FIXED (`4a4bbd5`), taking the consolidation option rather than the lockstep spec. New
+`packages/shared/src/phases.ts` exports `OPEN_PHASES`, `IN_FLIGHT_PHASES`, and `DISPLAY_PHASES` as
+the one source, imported by `operator-cohorts.ts`, `monitor.ts`, `web/src/lib/directory.ts`, and
+`OperatorStageTimeline.tsx`; all four local copies are gone. `deriveOperatorStage`/`stageOrder` are
+now exported so `tests/operator-stage.spec.ts` can pin every in-flight phase (including the four
+funding-wait phases) to the co-signing stage and assert the two tiers stay disjoint.
+
 **File:** `packages/web/src/components/operator/OperatorStageTimeline.tsx:33-35`
 **Issue:** `CO_SIGN_PHASES` here is `{SigningStarted, NoncesCollected, AwaitingPartialSigs}` -
 it omits the four funding-wait phases (`UpdatesCollected`, `DataDistributed`, `Validated`,
@@ -431,6 +499,13 @@ and import it in `operator-cohorts.ts`, `monitor.ts`, `web/src/lib/directory.ts`
 imports all copies and asserts set equality.
 
 ### WR-06: The per-cohort JSON export fails silently on a 401 or a fault
+
+**Status:** FIXED (`83449cc`). `downloadExport` and `discardDraft` both return `FetchResult` now; a
+new `exportCohort` store action routes a 401 through the same honest re-login path as every gated
+read and raises a bad-tone message otherwise, rendered beside the Export button (and, for discard,
+above the cohort list). The 401 handling was consolidated into one `expireSession` action so a
+session expiry cannot mean two different things. The object-URL revoke is deferred by 60s. Two
+store specs in `tests/operator.spec.ts`.
 
 **File:** `packages/web/src/lib/operator.ts:399-426`; `packages/web/src/components/operator/CohortDetail.tsx:340`
 **Issue:** `downloadExport` returns `false` on any non-ok response or thrown fetch, and the
@@ -468,6 +543,11 @@ identical to a successful one until the next list refresh.
 
 ### WR-07: The live-UAT harness hardcodes a default operator password and disables the `Secure` cookie flag
 
+**Status:** FIXED (`156072c`). `OPERATOR_PASSWORD` is now required with no default, the same guard
+asserts the bind host is loopback so the insecure-cookie mode cannot ride an off-host bind
+(`operatorCookieSecure: false` is kept, correct for plain-http localhost), the credential is no
+longer echoed to stdout, and the file-header env table was corrected.
+
 **File:** `e2e/live-uat.ts:75, 108`
 **Issue:** `const operatorPassword = process.env.OPERATOR_PASSWORD ?? 'live-uat';` combined with
 `operatorCookieSecure: false`, and the password is then printed to stdout. Exposure is limited
@@ -487,6 +567,11 @@ Keep `operatorCookieSecure: false` (correct for plain-http localhost) but assert
 is loopback in the same guard so the insecure-cookie mode cannot ride an off-host bind.
 
 ### WR-08: Deploy config still advertises the retired `/dashboard/events` telemetry feed
+
+**Status:** FIXED (`8241917`). The `OPERATOR_PASSWORD` comment now names the surfaces that exist
+(the gated `GET /v1/operator/cohorts` and `/v1/operator/cohorts/:id` reads), and `BROADCAST`,
+`FUNDING_WINDOW_MS`, `LIVE_CHANGE_ADDRESS`, and `SERVICE_NAME` were added so compose stays the
+complete env reference it claims to be.
 
 **File:** `docker-compose.yml:42` (drift introduced by this phase's ADR-0016 retirement; `docs/DEPLOY.md` is already clean)
 **Issue:** The `OPERATOR_PASSWORD` comment block still tells the self-hoster that without a
