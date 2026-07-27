@@ -6,6 +6,7 @@ import {
   readvertise as apiReadvertise,
   createDraft as apiCreateDraft,
   discardDraft as apiDiscardDraft,
+  downloadExport as apiDownloadExport,
   fetchOperatorCohorts,
   fetchCohortDetail,
   sessionProbe,
@@ -47,6 +48,12 @@ const INVALID_PASSWORD =
   'Incorrect password. Check the operator password set for this service and try again.';
 const THROTTLED = 'Too many attempts. Wait a few minutes and try again.';
 const UNREACHABLE = 'Could not reach the service. Check that it is running, then reload.';
+
+/** Bad-tone copy when the gated per-cohort JSON export could not be served (review WR-06). */
+export const EXPORT_FAILED = 'Could not download the monitoring record. Check the service, then try again.';
+
+/** Bad-tone copy when a draft discard did not take (review WR-06). */
+export const DISCARD_FAILED = 'Could not discard the draft. Try again.';
 
 /**
  * Exact session-expired copy (UI-SPEC, D-16), shown when a monitoring poll returns 401
@@ -100,6 +107,13 @@ interface OperatorState {
   advertisingId?: string;
   /** Transient good-tone confirmation shown after a successful advertise. */
   advertiseMessage?: string;
+  /**
+   * Bad-tone message for a one-shot operator ACTION that failed (export, discard), rendered
+   * beside the action that raised it (review WR-06). Distinct from `formError` (the create form)
+   * and from `error` (the login screen): those two surfaces are not visible from the drill-down,
+   * which is exactly why a failed export used to produce no feedback at all.
+   */
+  actionError?: string;
   /** SPA-internal drill-down view (D-03): the cohort list, or one open cohort detail. */
   view: OperatorView;
   /** Last-known monitoring detail for the open drill-down; undefined until the first poll lands. */
@@ -117,6 +131,12 @@ interface OperatorState {
   signIn: (baseUrl: string, password: string) => Promise<void>;
   /** Sign out server-side, then drop to logged-out regardless of the response. */
   signOut: (baseUrl: string) => Promise<void>;
+  /**
+   * Drop to the login screen with the honest session-expired copy (D-16), clearing every gated
+   * slice. The ONE place expiry is handled, shared by the polled reads and by the one-shot
+   * actions (review WR-06), so a 401 never means two different things.
+   */
+  expireSession: () => void;
   /** Reload the operator cohort list. */
   refreshCohorts: (baseUrl: string) => Promise<void>;
   /**
@@ -129,8 +149,19 @@ interface OperatorState {
   advertise: (baseUrl: string, id: string) => Promise<void>;
   /** Re-advertise an expired cohort; on success show the confirmation and refresh the list. */
   readvertise: (baseUrl: string, id: string) => Promise<void>;
-  /** Discard an un-advertised draft, then refresh the list. */
+  /**
+   * Discard an un-advertised draft, then refresh the list. Branches on the discriminated result
+   * (review WR-06): a 401 drops to the login screen with the session-expired copy, and any other
+   * failure raises {@link DISCARD_FAILED} instead of looking identical to a success.
+   */
   discard: (baseUrl: string, id: string) => Promise<void>;
+  /**
+   * Download the open cohort's gated JSON export (D-34). Branches on the discriminated result
+   * exactly like the polled reads (review WR-06): `unauthorized` routes through the SAME honest
+   * re-login path as a 401 poll (D-16), and `unreachable` surfaces {@link EXPORT_FAILED}, so a
+   * click can no longer be a silent no-op.
+   */
+  exportCohort: (baseUrl: string, id: string) => Promise<void>;
   /** Open a cohort's drill-down (D-03): set the detail view and clear any stale prior detail. */
   openCohort: (id: string) => void;
   /** Close the drill-down: return to the cohort list and clear the detail slice. */
@@ -158,6 +189,7 @@ export const useOperator = create<OperatorState>((set, get) => ({
   advertiseStatus: 'idle',
   advertisingId: undefined,
   advertiseMessage: undefined,
+  actionError: undefined,
   view: { kind: 'list' },
   detail: undefined,
   detailStale: false,
@@ -216,12 +248,30 @@ export const useOperator = create<OperatorState>((set, get) => ({
         advertiseStatus: 'idle',
         advertisingId: undefined,
         advertiseMessage: undefined,
+        actionError: undefined,
         view: { kind: 'list' },
         detail: undefined,
         detailStale: false,
         lastUpdated: undefined,
       });
     }
+  },
+
+  expireSession() {
+    set({
+      auth: 'logged-out',
+      error: SESSION_EXPIRED,
+      cohorts: [],
+      rows: [],
+      metrics: undefined,
+      health: undefined,
+      listStale: false,
+      actionError: undefined,
+      view: { kind: 'list' },
+      detail: undefined,
+      detailStale: false,
+      lastUpdated: undefined,
+    });
   },
 
   async refreshCohorts(baseUrl) {
@@ -231,20 +281,8 @@ export const useOperator = create<OperatorState>((set, get) => ({
     const result = await fetchOperatorCohorts(baseUrl);
     if (result.kind === 'unauthorized') {
       // Session expired mid-monitoring (D-16): drop to the login screen with the honest
-      // re-login copy and clear the drill-down, mirroring pollDetail's 401 branch.
-      set({
-        auth: 'logged-out',
-        error: SESSION_EXPIRED,
-        cohorts: [],
-        rows: [],
-        metrics: undefined,
-        health: undefined,
-        listStale: false,
-        view: { kind: 'list' },
-        detail: undefined,
-        detailStale: false,
-        lastUpdated: undefined,
-      });
+      // re-login copy and clear the drill-down, through the one shared expiry path.
+      get().expireSession();
       return;
     }
     if (result.kind === 'unreachable') {
@@ -334,8 +372,30 @@ export const useOperator = create<OperatorState>((set, get) => ({
   },
 
   async discard(baseUrl, id) {
-    await apiDiscardDraft(baseUrl, id);
+    set({ actionError: undefined });
+    const result = await apiDiscardDraft(baseUrl, id);
+    if (result.kind === 'unauthorized') {
+      // Session expiry takes the same honest re-login path as every gated read (D-16).
+      get().expireSession();
+      return;
+    }
+    if (result.kind === 'unreachable') {
+      set({ actionError: DISCARD_FAILED });
+      return;
+    }
     await get().refreshCohorts(baseUrl);
+  },
+
+  async exportCohort(baseUrl, id) {
+    set({ actionError: undefined });
+    const result = await apiDownloadExport(baseUrl, id);
+    if (result.kind === 'unauthorized') {
+      get().expireSession();
+      return;
+    }
+    if (result.kind === 'unreachable') {
+      set({ actionError: EXPORT_FAILED });
+    }
   },
 
   openCohort(id) {
@@ -359,14 +419,7 @@ export const useOperator = create<OperatorState>((set, get) => ({
       // Session expired mid-monitoring (D-16): honest re-login. Drop to the login screen
       // and back to the list view so the next sign-in starts clean; distinct from an
       // unreachable fault, which freezes the view below.
-      set({
-        auth: 'logged-out',
-        error: SESSION_EXPIRED,
-        view: { kind: 'list' },
-        detail: undefined,
-        detailStale: false,
-        lastUpdated: undefined,
-      });
+      get().expireSession();
       return;
     }
     if (result.kind === 'unreachable') {

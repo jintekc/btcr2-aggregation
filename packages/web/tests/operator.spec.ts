@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fetchCohortDetail, type CohortDetailDTO } from '../src/lib/operator';
-import { useOperator, SESSION_EXPIRED } from '../src/stores/operator';
+import { useOperator, EXPORT_FAILED, SESSION_EXPIRED } from '../src/stores/operator';
 
 /**
  * Hermetic coverage of the monitoring drill-down tracer end (SVC-03, D-16/D-25/D-03):
@@ -39,6 +39,7 @@ function resetStore(): void {
     lastUpdated: undefined,
     // Cleared too, so a health assertion never inherits a previous test's served mode.
     health: undefined,
+    actionError: undefined,
   });
 }
 
@@ -178,5 +179,33 @@ describe('operator store health (served broadcast mode, D-17/D-43)', () => {
     expect(useOperator.getState().health).toBeUndefined();
     expect(useOperator.getState().auth).toBe('logged-out');
     expect(useOperator.getState().error).toBe(SESSION_EXPIRED);
+  });
+});
+
+/**
+ * Review WR-06: the gated per-cohort JSON export failed SILENTLY. `downloadExport` returned a
+ * bare boolean the caller discarded, so on an expired session (the exact case the discriminated
+ * FetchResult vocabulary was built for, D-16) clicking `Download monitoring record (JSON)` did
+ * nothing at all: no download, no error, no re-login, no log line. These pin the store action's
+ * two failure branches.
+ */
+describe('operator store exportCohort (D-34 export, review WR-06)', () => {
+  beforeEach(resetStore);
+
+  it('routes a 401 export through the SAME honest re-login path as a gated read', async () => {
+    useOperator.getState().openCohort('cohort-1');
+    vi.stubGlobal('fetch', () => Promise.resolve(new Response('no', { status: 401 })));
+    await useOperator.getState().exportCohort(BASE, 'cohort-1');
+    expect(useOperator.getState().auth).toBe('logged-out');
+    expect(useOperator.getState().error).toBe(SESSION_EXPIRED);
+    expect(useOperator.getState().view).toEqual({ kind: 'list' });
+  });
+
+  it('surfaces a bad-tone message on an unreachable export instead of a silent no-op', async () => {
+    vi.stubGlobal('fetch', () => Promise.reject(new Error('offline')));
+    await useOperator.getState().exportCohort(BASE, 'cohort-1');
+    expect(useOperator.getState().actionError).toBe(EXPORT_FAILED);
+    // A transport fault is NOT a session change: the operator stays signed in.
+    expect(useOperator.getState().auth).toBe('logged-in');
   });
 });

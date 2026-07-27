@@ -5,7 +5,6 @@ import { OperatorStageTimeline } from './OperatorStageTimeline';
 import { FundingStage } from './FundingStage';
 import { useOperator } from '../../stores/operator';
 import { useParticipant } from '../../stores/participant';
-import { downloadExport } from '../../lib/operator';
 import type { AnchorDTO } from '../../lib/anchor';
 import type { CohortMemberDTO, MemberRound, SubmissionDTO } from '../../lib/operator';
 import type { LogEntry } from '../../lib/types';
@@ -172,6 +171,10 @@ export function CohortDetail({ baseUrl, cohortId }: { baseUrl: string; cohortId:
   const lastUpdated = useOperator((s) => s.lastUpdated);
   const pollDetail = useOperator((s) => s.pollDetail);
   const closeCohort = useOperator((s) => s.closeCohort);
+  // The export rides a store action (review WR-06) so a 401 takes the same honest re-login path
+  // as every gated read, and a fault surfaces a message instead of a silent no-op click.
+  const exportCohort = useOperator((s) => s.exportCohort);
+  const actionError = useOperator((s) => s.actionError);
   // The service's single active network, for the funding stage's beacon-address label (D-36).
   const activeNetwork = useParticipant((s) => s.network);
 
@@ -337,9 +340,14 @@ export function CohortDetail({ baseUrl, cohortId }: { baseUrl: string; cohortId:
           {/* Export (D-34): a gated per-cohort JSON download of exactly this drill-down + the log. */}
           <Card className="space-y-3 p-5">
             <SectionTitle>Export</SectionTitle>
-            <Button variant="ghost" onClick={() => void downloadExport(baseUrl, cohortId)}>
+            <Button variant="ghost" onClick={() => void exportCohort(baseUrl, cohortId)}>
               Download monitoring record (JSON)
             </Button>
+            {actionError ? (
+              <p className="rounded-lg border border-bad/40 bg-bad/10 px-3 py-2 text-sm text-bad">
+                {actionError}
+              </p>
+            ) : null}
             <p className="text-sm text-muted">
               Downloads exactly what this page shows, plus the activity log. Off-chain artifacts stay
               referenced by hash at /cas/.

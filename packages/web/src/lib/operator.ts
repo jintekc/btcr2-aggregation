@@ -416,12 +416,16 @@ export async function fetchOperatorCohorts(baseUrl: string): Promise<FetchResult
  * Download the gated per-cohort monitoring export as a JSON file (SVC-03, D-34). Fetches the
  * gated route with the session cookie (`credentials: 'same-origin'`, the read is
  * operator-gated), then turns the response into a blob and triggers a client download named
- * from the cohort id. Returns whether the export was served (a 401/unreachable returns false,
- * so the caller can leave the drill-down untouched rather than downloading an error body). The
- * server sets the authoritative `Content-Disposition` filename; the client `download` name is
- * a best-effort mirror built from the same id.
+ * from the cohort id. The server sets the authoritative `Content-Disposition` filename; the
+ * client `download` name is a best-effort mirror built from the same id.
+ *
+ * Discriminated like the other gated reads (review WR-06). It previously returned a bare boolean
+ * the caller discarded, so on an expired session - the exact case the {@link FetchResult}
+ * vocabulary was built for (D-16) - clicking `Download monitoring record (JSON)` did NOTHING:
+ * no download, no error, no re-login, no log line, and no way to tell a failed export from a
+ * click the browser ignored.
  */
-export async function downloadExport(baseUrl: string, id: string): Promise<boolean> {
+export async function downloadExport(baseUrl: string, id: string): Promise<FetchResult<true>> {
   let res: Response;
   try {
     res = await fetch(endpoint(baseUrl, `/v1/operator/cohorts/${encodeURIComponent(id)}/export`), {
@@ -430,33 +434,48 @@ export async function downloadExport(baseUrl: string, id: string): Promise<boole
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
   } catch {
-    return false;
+    return { kind: 'unreachable' };
+  }
+  if (res.status === 401) {
+    return { kind: 'unauthorized' };
   }
   if (!res.ok) {
-    return false;
+    return { kind: 'unreachable' };
   }
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
-  try {
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `cohort-${id}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-  return true;
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `cohort-${id}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  // DEFER the revoke (review WR-06): revoking in the same tick as `click()` can abort a download
+  // whose transfer has not started yet in Firefox and Safari. MDN's own example defers it too.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  return { kind: 'ok', value: true };
 }
 
-/** DELETE (discard) an un-advertised draft by id. */
-export async function discardDraft(baseUrl: string, id: string): Promise<void> {
-  await fetch(endpoint(baseUrl, `/v1/operator/cohorts/${encodeURIComponent(id)}`), {
-    method: 'DELETE',
-    credentials: 'same-origin',
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-  });
+/**
+ * DELETE (discard) an un-advertised draft by id. Discriminated like the reads (review WR-06):
+ * the response was previously ignored entirely, so a failed discard looked identical to a
+ * successful one until the next list refresh silently showed the draft still there.
+ */
+export async function discardDraft(baseUrl: string, id: string): Promise<FetchResult<true>> {
+  let res: Response;
+  try {
+    res = await fetch(endpoint(baseUrl, `/v1/operator/cohorts/${encodeURIComponent(id)}`), {
+      method: 'DELETE',
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+  } catch {
+    return { kind: 'unreachable' };
+  }
+  if (res.status === 401) {
+    return { kind: 'unauthorized' };
+  }
+  return res.ok ? { kind: 'ok', value: true } : { kind: 'unreachable' };
 }
 
 /**

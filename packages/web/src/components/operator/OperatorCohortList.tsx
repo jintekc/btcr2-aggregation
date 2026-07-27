@@ -215,6 +215,8 @@ export function OperatorCohortList({
   const rows = useOperator((s) => s.rows);
   const metrics = useOperator((s) => s.metrics);
   const advertiseMessage = useOperator((s) => s.advertiseMessage);
+  // A failed discard used to look identical to a successful one (review WR-06).
+  const actionError = useOperator((s) => s.actionError);
 
   // Bucket the UNION of the operator cohorts and the monitoring rows into exactly one group each
   // (single membership, keyed by id so nothing double-renders).
@@ -229,6 +231,10 @@ export function OperatorCohortList({
         <div className="rounded-lg border border-good/40 bg-good/10 px-3 py-2 text-sm text-good">
           {advertiseMessage}
         </div>
+      ) : null}
+
+      {actionError ? (
+        <div className="rounded-lg border border-bad/40 bg-bad/10 px-3 py-2 text-sm text-bad">{actionError}</div>
       ) : null}
 
       {/* The empty state keys on the RENDERED row count, not on `cohorts` alone: a service whose
