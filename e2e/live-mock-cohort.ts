@@ -13,6 +13,35 @@ import {
   type Identity,
 } from '@btcr2-aggregation/shared';
 
+/** Sleep whose timer does not keep Node alive (used by the directory-presence poller). */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref();
+  });
+}
+
+/** Minimal `/v1/directory` row shape the SVC-JOIN-2 presence guard reads. */
+interface DirectoryRow {
+  cohortId: string;
+  phase: string;
+  joined: number;
+  capacity: number;
+}
+
+/**
+ * The post-seat funding-wait phases the widened directory DISPLAY must keep listed (SVC-JOIN-2):
+ * the live funding wait runs inside `onProvideTxData`, which the library calls while the cohort
+ * sits in one of these. The presence guard asserts the row stayed listed through at least one of
+ * them (the phases that USED to drop the row and false-fail a seated participant).
+ */
+const FUNDING_WAIT_PHASES = new Set<string>([
+  'UpdatesCollected',
+  'DataDistributed',
+  'Validated',
+  'FallbackRequested',
+]);
+
 /**
  * Hermetic proof of the M3c LIVE beacon-tx wiring, with NO real chain. Drives a
  * real fixture cohort (CAS and SMT) through `createService({ live: true })` with a
@@ -507,6 +536,165 @@ async function runStatefulFundingMockCohort(beaconType: BeaconType, quiet: boole
   }
 }
 
+/**
+ * SVC-JOIN-2 regression guard: prove the public `/v1/directory` row STAYS PRESENT through the
+ * whole live funding wait. Boots an operator-enabled live+broadcast service over the stateful
+ * mock (unfunded for the first N reads), advertises ONE cohort via the operator HTTP routes, has
+ * n real participants join + auto-submit, and polls `/v1/directory` continuously from the moment
+ * the row first appears until signing-complete, asserting the row never vanishes mid-flight. It
+ * also asserts the guard actually spanned a funding-wait phase (UpdatesCollected / DataDistributed
+ * / Validated / FallbackRequested) - the phases that, before this fix, dropped the row for the
+ * entire funding window and made a seated participant's post-seat poll false-fail the cohort as
+ * "ended" after ~10s. Returns any problems (empty = pass).
+ */
+async function runFundingDirectoryPresenceCohort(beaconType: BeaconType, quiet: boolean): Promise<string[]> {
+  const n = 2;
+  const OPERATOR_PASSWORD = 'live-mock-operator-correct-horse-battery-staple';
+  const log = quiet ? () => {} : (msg: string) => console.log(msg);
+  const config = buildCohortConfig(n, beaconType);
+  const network = resolveNetwork(config.network).scureNetwork;
+  const broadcastTxid = 'ef'.repeat(32);
+  // Hold the unfunded window open long enough (~5s at 100ms cadence) that the directory poller
+  // lands many ticks inside the funding-wait phase.
+  const emptyReadsBeforeFunded = 50;
+
+  const bitcoin = mockBitcoin(network, 100000, { broadcast: true, broadcastTxid, emptyReadsBeforeFunded });
+  const service = createService({
+    identity: createIdentity(),
+    config,
+    live: true,
+    broadcast: true,
+    bitcoin: bitcoin as never,
+    // Operator-enabled so the cohort is advertised through the real operator flow and the public
+    // directory reflects it (the directory reads the operator surface).
+    operatorPassword: OPERATOR_PASSWORD,
+    operatorCookieSecure: false,
+    // ENABLE the funding wait with a generous window + tiny poll interval.
+    fundingWindowMs: 60_000,
+    fundingPollIntervalMs: 100,
+    confirmPollIntervalMs: 10,
+    confirmTimeoutMs: 3000,
+  });
+
+  let signedCohortId = '';
+  let signingDone = false;
+  const signingComplete = new Promise<void>((resolve) => {
+    service.runner.on('signing-complete', (result) => {
+      signedCohortId = result.cohortId;
+      // Flip BEFORE resolving so no poll tick after signing counts the legitimate Complete-prune
+      // as a mid-flight absence (the row rightfully drops once the cohort completes).
+      signingDone = true;
+      resolve();
+    });
+  });
+
+  const { baseUrl } = await service.start(0);
+  const participants: ReturnType<typeof createParticipant>[] = [];
+  try {
+    // Operator login (Node fetch has no cookie jar, so capture + echo the session cookie).
+    const loginRes = await fetch(`${baseUrl}/v1/operator/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: OPERATOR_PASSWORD }),
+    });
+    const setCookie = loginRes.headers.getSetCookie().find((c) => c.startsWith('operator_session='));
+    await loginRes.text();
+    if (!setCookie) {
+      return ['operator login issued no operator_session cookie'];
+    }
+    const cookie = setCookie.split(';')[0];
+
+    // Advertise ONE cohort (single-advert-slot discipline).
+    const createRes = await fetch(`${baseUrl}/v1/operator/cohorts`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ beaconType, size: n, threshold: n }),
+    });
+    if (createRes.status !== 201) {
+      return [`create draft should be 201, got ${createRes.status}`];
+    }
+    const draft = (await createRes.json()) as { draftId: string };
+    const advertiseRes = await fetch(`${baseUrl}/v1/operator/cohorts/${draft.draftId}/advertise`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+    if (advertiseRes.status !== 200) {
+      return [`advertise should be 200, got ${advertiseRes.status}`];
+    }
+    const cohortId = ((await advertiseRes.json()) as { draftId: string }).draftId;
+
+    // Background directory-presence guard: from the first sighting of the row until
+    // signing-complete, the /v1/directory row must be present on EVERY tick.
+    let polling = true;
+    let sawRow = false;
+    const absences: string[] = [];
+    const seenPhases = new Set<string>();
+    const presencePoll = (async () => {
+      while (polling) {
+        try {
+          const rows = (await fetch(`${baseUrl}/v1/directory`).then((r) => r.json())) as DirectoryRow[];
+          const found = rows.find((r) => r.cohortId === cohortId);
+          if (found) {
+            sawRow = true;
+            seenPhases.add(found.phase);
+          } else if (sawRow && !signingDone) {
+            // The row was present, then vanished, and the cohort has NOT completed: the
+            // SVC-JOIN-2 regression. A post-completion drop (signingDone) is legitimate.
+            absences.push('directory row vanished while the cohort was in flight');
+          }
+        } catch {
+          // A transient fetch error is not an absence; the next tick retries.
+        }
+        await sleep(150);
+      }
+    })();
+
+    // n real participants join the advertised cohort and auto-submit (no onSubmitGate).
+    for (const identity of Array.from({ length: n }, () => createIdentity())) {
+      participants.push(createParticipant({ identity, baseUrl, cohortId, beaconType }));
+    }
+    await Promise.all(participants.map((participant) => participant.start()));
+
+    // Wait for signing to complete THROUGH the funding wait, then stop the guard.
+    await withTimeout(signingComplete, 45000, `${beaconType} funding-presence signing`);
+    polling = false;
+    await presencePoll;
+
+    const problems: string[] = [];
+    if (signedCohortId !== cohortId) {
+      problems.push(`signing-complete cohort ${signedCohortId} != advertised ${cohortId}`);
+    }
+    if (!sawRow) {
+      problems.push('the directory row never appeared at all (advertise or discovery failed)');
+    }
+    if (absences.length > 0) {
+      problems.push(
+        `directory row vanished mid-flight ${absences.length}x during the funding wait (SVC-JOIN-2 regression)`,
+      );
+    }
+    // Prove the guard genuinely spanned the funding wait: at least one funding-wait phase must
+    // have been observed with the row PRESENT (else the guard did not exercise the widened set).
+    const spannedFundingWait = [...seenPhases].some((phase) => FUNDING_WAIT_PHASES.has(phase));
+    if (!spannedFundingWait) {
+      problems.push(
+        `guard never saw the row present in a funding-wait phase (observed: ${[...seenPhases].join(', ')})`,
+      );
+    }
+    if (problems.length === 0) {
+      log(
+        `[ok] ${beaconType}: /v1/directory row stayed present through the funding wait ` +
+          `(phases seen: ${[...seenPhases].join(', ')})`,
+      );
+    }
+    return problems;
+  } finally {
+    for (const participant of participants) {
+      participant.stop();
+    }
+    await service.stop();
+  }
+}
+
 async function main(): Promise<number> {
   const quiet = process.argv.includes('--quiet');
   const cas = await runLiveMockCohort('CASBeacon', quiet);
@@ -515,6 +703,8 @@ async function main(): Promise<number> {
   const smtBc = await runLiveBroadcastMockCohort('SMTBeacon', quiet);
   const casFund = await runStatefulFundingMockCohort('CASBeacon', quiet);
   const smtFund = await runStatefulFundingMockCohort('SMTBeacon', quiet);
+  const casDir = await runFundingDirectoryPresenceCohort('CASBeacon', quiet);
+  const smtDir = await runFundingDirectoryPresenceCohort('SMTBeacon', quiet);
   const problems = [
     ...cas.map((p) => `CAS: ${p}`),
     ...smt.map((p) => `SMT: ${p}`),
@@ -522,6 +712,8 @@ async function main(): Promise<number> {
     ...smtBc.map((p) => `SMT-broadcast: ${p}`),
     ...casFund.map((p) => `CAS-funding: ${p}`),
     ...smtFund.map((p) => `SMT-funding: ${p}`),
+    ...casDir.map((p) => `CAS-directory-presence: ${p}`),
+    ...smtDir.map((p) => `SMT-directory-presence: ${p}`),
   ];
 
   if (problems.length > 0) {
@@ -534,8 +726,10 @@ async function main(): Promise<number> {
   console.log(
     '\nLIVE-MOCK E2E PASSED: the live beacon-tx path built a real aggregation beacon tx over a ' +
       'mock-funded UTXO for both CAS and SMT cohorts (n-of-n MuSig2 -> 64-byte Taproot signature), ' +
-      'the broadcast wiring pushed the finalized tx + emitted the anchor lifecycle, and the D-38 ' +
-      'funding wait advanced awaiting-funding -> funded before signing + broadcasting (no real network).',
+      'the broadcast wiring pushed the finalized tx + emitted the anchor lifecycle, the D-38 ' +
+      'funding wait advanced awaiting-funding -> funded before signing + broadcasting, and the ' +
+      '/v1/directory row stayed present through the whole funding wait (SVC-JOIN-2 guard) - all ' +
+      'with no real network.',
   );
   return 0;
 }

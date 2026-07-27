@@ -196,6 +196,18 @@ export async function runBrowserParticipantCohort(options: BrowserParticipantOpt
     await page.getByRole('button', { name: 'Join cohort' }).click();
     log('[ok] joined by choice; awaiting the remaining seats');
 
+    // PWEB-1 DOM regression guard: BEFORE the peers fill the remaining seat, the cohort page must
+    // render the live seat count for this lone joiner (1 of COHORT_SIZE). This is the single
+    // seat-count surface actually mounted during a join (CohortPage); the old JoinIdentityStep
+    // line was dead code (its render gate never matched under BrowseView). If this text never
+    // appears, the participant surface has regressed to a bare spinner with no fill feedback -
+    // exactly the live-UAT symptom where two browsers joined one cohort and neither saw a count.
+    await page
+      .getByText(new RegExp(`Waiting for the cohort to fill \\(1/${COHORT_SIZE} seats\\)`))
+      .first()
+      .waitFor({ state: 'visible', timeout: timeoutMs });
+    log(`[ok] PWEB-1: cohort page shows the live seat count (1/${COHORT_SIZE} seats) while waiting`);
+
     // Start the (n-1) headless in-process peers that fill the remaining seats and AUTO-submit
     // (no onSubmitGate: byte-identical to every other headless caller, Pitfall 1). They co-sign
     // the same cohort the browser page picked.
