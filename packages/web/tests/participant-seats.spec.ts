@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { useParticipant } from '../src/stores/participant';
+import { seatLineCopy, useParticipant } from '../src/stores/participant';
 import type { DirectoryCohortDTO } from '../src/lib/directory';
 
 /**
@@ -11,9 +11,11 @@ import type { DirectoryCohortDTO } from '../src/lib/directory';
  *   - a post-Advertised row (e.g. CohortSet 2/2) UPDATES awaitingSeats without nulling and arms
  *     the join grace (the directory now keeps a seated cohort listed, so the 2/2 count survives);
  *   - a row absent from the directory entirely nulls awaitingSeats;
- *   - grace expiry with full counts fails with the locked-with-all-seats copy, and with not-full
- *     counts keeps the old filled-or-closed copy;
- *   - the cohort-joined log reads the D-11 sent-not-accepted copy, not "running distributed keygen".
+ *   - grace expiry with full counts fails with the honest locked-full uncertainty copy, and with
+ *     not-full counts keeps the old filled-or-closed copy;
+ *   - the cohort-joined log reads the D-11 sent-not-accepted copy, not "running distributed keygen";
+ *   - the pure `seatLineCopy` helper (the cohort page's seat-line render authority) covers all
+ *     three branches: filling, locked-full honest-uncertainty, and null.
  *
  * Runs in the root vitest node env like the other web store specs. NEW spec under
  * `packages/web/tests/` (tests-outside-src convention); imports via `../src/...`.
@@ -110,16 +112,19 @@ describe('handleDirectorySnapshot seat-count reflection (SVC-JOIN-2 / IN-01)', (
 });
 
 describe('join-grace expiry copy (SVC-JOIN-1/2)', () => {
-  it('fails with the locked-with-all-seats-filled copy when the last-known counts were full', () => {
+  it('fails with the honest locked-full uncertainty copy when the last-known counts were full', () => {
     vi.useFakeTimers();
     armWaiting();
     // The cohort locked with every seat filled (2/2) but this browser never got cohort-ready.
+    // The copy must state only observed facts + uncertainty: the library silently drops the
+    // loser of a last-seat race (no reject signal), so "your seat confirmation was lost" is
+    // only ONE possibility - asserting a delivery failure outright would be a fabrication.
     useParticipant.getState().handleDirectorySnapshot([row({ phase: 'CohortSet', joined: 2, capacity: 2 })]);
     vi.advanceTimersByTime(JOIN_SEAT_GRACE_MS);
     const { status, error } = useParticipant.getState();
     expect(status).toBe('failed');
     expect(error).toBe(
-      'The cohort locked with all 2 seats filled, but this browser never received its seat confirmation.',
+      'The cohort locked with all 2 seats filled and this browser was not seated; it may have filled without you, or your seat confirmation was lost.',
     );
   });
 
@@ -147,5 +152,24 @@ describe('cohort-joined log copy (D-11 sent-not-accepted)', () => {
     expect(texts.some((t) => t.includes('opt-in sent for cohort cohort-1; waiting for the cohort to fill'))).toBe(true);
     // Tear the poll interval down (fake timers keep it inert, but be tidy).
     useParticipant.getState().leave();
+  });
+});
+
+describe('seatLineCopy (the cohort page seat-line render authority, PWEB-1)', () => {
+  it('renders the truthful filling count while seats remain', () => {
+    expect(seatLineCopy({ joined: 1, capacity: 2 })).toBe('Waiting for the cohort to fill (1/2 seats).');
+    expect(seatLineCopy({ joined: 0, capacity: 3 })).toBe('Waiting for the cohort to fill (0/3 seats).');
+  });
+
+  it('renders honest uncertainty at n/n - checking, never a claimed seat', () => {
+    // The library silently drops the loser of a last-seat race (no reject signal), so at n/n
+    // this browser may or may not hold a seat: the copy must not say "confirming YOUR seat".
+    const line = seatLineCopy({ joined: 2, capacity: 2 });
+    expect(line).toBe('All 2 seats are filled; checking whether this browser got a seat.');
+    expect(line).not.toMatch(/your seat/i);
+  });
+
+  it('renders nothing for a null input (not awaiting a seat / row gone)', () => {
+    expect(seatLineCopy(null)).toBeNull();
   });
 });

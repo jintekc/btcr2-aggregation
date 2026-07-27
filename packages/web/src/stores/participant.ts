@@ -635,6 +635,30 @@ export function postSeatCohortGone(rows: DirectoryCohortDTO[], pickedId: string)
 }
 
 /**
+ * Pure seat-line copy derivation for the cohort page's waiting surface (PWEB-1). Extracted
+ * from the render so every branch is unit-testable without a DOM stack; {@link
+ * file://../components/cohort/CohortPage.tsx} is the sole consumer.
+ *
+ * - Filling ({@link ParticipantState.awaitingSeats} below capacity): the truthful live
+ *   count, "Waiting for the cohort to fill (j/n seats)."
+ * - Locked full (joined === capacity): honest UNCERTAINTY, not a claimed seat. The library
+ *   silently drops a surplus/duplicate opt-in (no reject signal ever reaches the loser of
+ *   the last-seat race), so at n/n this browser may or may not hold a seat until
+ *   cohort-ready arrives - say "checking whether this browser got a seat", never
+ *   "confirming YOUR seat" (D-25/CR-01 posture: observed facts only).
+ * - Null input (not awaiting a seat, or the row left the directory): no line.
+ */
+export function seatLineCopy(awaitingSeats: { joined: number; capacity: number } | null): string | null {
+  if (!awaitingSeats) {
+    return null;
+  }
+  if (awaitingSeats.joined >= awaitingSeats.capacity) {
+    return `All ${awaitingSeats.capacity} seats are filled; checking whether this browser got a seat.`;
+  }
+  return `Waiting for the cohort to fill (${awaitingSeats.joined}/${awaitingSeats.capacity} seats).`;
+}
+
+/**
  * The D-01 live-journey stage. This is the SINGLE render authority (Pattern 3): the
  * cohort page and the persistent "Your cohort" chip both derive it from existing store
  * facts via {@link deriveStage}, so the rendered stage can never drift from the event
@@ -1481,13 +1505,15 @@ export const useParticipant = create<ParticipantState>((set, get) => {
           const { seated, status, awaitingSeats } = get();
           if (!seated && (status === 'connecting' || status === 'live')) {
             set({ joinClosed: true });
-            // If the cohort locked with every seat filled (joined === capacity) yet no
-            // cohort-ready ever reached this browser, the honest cause is a missed seat
-            // confirmation, not "it filled before you got in" - name that specifically so
-            // the owner sees the real failure mode (the SVC-JOIN-1/2 live-UAT symptom).
+            // Full-lock terminal (D-25/CR-01 honesty): when the cohort locked at n/n and no
+            // cohort-ready ever reached this browser, TWO causes are indistinguishable from
+            // here - the library silently drops a surplus/duplicate opt-in (no reject signal
+            // ever reaches the loser of the last-seat race), OR a genuinely granted seat's
+            // confirmation was lost. State only the observed facts (locked full, not seated)
+            // plus the honest uncertainty; never assert a delivery failure we cannot observe.
             if (awaitingSeats && awaitingSeats.joined === awaitingSeats.capacity) {
               fail(
-                `The cohort locked with all ${awaitingSeats.capacity} seats filled, but this browser never received its seat confirmation.`,
+                `The cohort locked with all ${awaitingSeats.capacity} seats filled and this browser was not seated; it may have filled without you, or your seat confirmation was lost.`,
               );
             } else {
               fail('That cohort filled or closed before you were seated. Pick another from the directory.');

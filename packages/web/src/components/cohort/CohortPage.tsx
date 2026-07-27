@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { deriveStage, terminalReason, useParticipant } from '../../stores/participant';
+import { deriveStage, seatLineCopy, terminalReason, useParticipant } from '../../stores/participant';
 import { fmtElapsed } from '../../lib/clock';
 import type { LogLevel } from '../../lib/types';
 import { Badge, Button, Card, CopyField, SectionTitle } from '../../ui/primitives';
@@ -82,6 +82,9 @@ export function CohortPage({ baseUrl: _baseUrl, onBrowse }: { baseUrl: string; o
   const failed = status === 'failed';
   const hasCohort =
     status === 'connecting' || status === 'live' || status === 'complete' || seated || optedIn;
+  // The waiting seat-count line (PWEB-1): derived once via the pure helper so the render
+  // stays a plain projection of it (all branch logic is unit-tested in the helper's spec).
+  const seatLine = stage === 'waiting-for-seats' && !failed ? seatLineCopy(awaitingSeats) : null;
 
   // Quiet elapsed indicator for the active stage (D-05): reset the clock on each stage change
   // and tick every second so "Active for {mm:ss}" advances without a countdown or a promise.
@@ -135,24 +138,15 @@ export function CohortPage({ baseUrl: _baseUrl, onBrowse }: { baseUrl: string; o
           activeElapsedMs={now - stageEnteredAt}
           anchor={anchor}
         />
-        {/* The single live seat-count surface actually mounted during a join (PWEB-1). While
-            waiting for the cohort to fill, show the honest {joined}/{capacity} count polled from
-            the directory (awaitingSeats). Once every seat is filled (joined === capacity) the
-            cohort has locked and this browser is confirming its seat, so switch to the "all seats
-            filled" copy rather than freezing on "N/N seats" while cohort-ready arrives. The old
-            JoinIdentityStep seat line was dead code (its render gate never matched under
-            BrowseView, 03-05); the cohort page is the one reader now. */}
-        {stage === 'waiting-for-seats' && !failed && awaitingSeats ? (
-          awaitingSeats.joined === awaitingSeats.capacity ? (
-            <p className="text-sm text-muted">
-              All {awaitingSeats.capacity} seats are filled. Confirming your seat...
-            </p>
-          ) : (
-            <p className="text-sm text-muted">
-              Waiting for the cohort to fill ({awaitingSeats.joined}/{awaitingSeats.capacity} seats).
-            </p>
-          )
-        ) : null}
+        {/* The single live seat-count surface actually mounted during a join (PWEB-1). The copy
+            derivation lives in the pure `seatLineCopy` helper (store module) so every branch -
+            filling, locked-full honest-uncertainty, null - is unit-tested without a DOM stack.
+            At n/n the copy deliberately says "checking whether this browser got a seat", never
+            "confirming YOUR seat": the library silently drops the loser of a last-seat race, so a
+            seat cannot be claimed until cohort-ready arrives (D-25/CR-01). The old JoinIdentityStep
+            seat line was dead code (its render gate never matched under BrowseView, 03-05); the
+            cohort page is the one reader now. */}
+        {seatLine ? <p className="text-sm text-muted">{seatLine}</p> : null}
       </Card>
 
       {/* Live-cohort funding notice + honest wait copy (D-44). A LIVE (on-chain) cohort anchors its
