@@ -1145,7 +1145,15 @@ export function createCohortMonitor(
       }
       const view = fundingViews.get(cohortId);
       const awaitingFunding =
-        view !== undefined && (view.state === 'waiting' || view.state === 'awaiting-confirmation');
+        view !== undefined &&
+        // A TERMINALLY lapsed cohort is no longer awaiting anything (review WR-01). `index.ts`
+        // folds the lapse verdict in as `{ ...last, terminal }` while leaving `state` at its
+        // last-known value (typically `waiting`), so a state-only test kept telling every
+        // anonymous caller that a dead cohort was still awaiting funding - indefinitely, since
+        // a terminal view is never re-read. A participant polling that id then renders "Waiting
+        // for the operator to fund this cohort's beacon address" for a cohort already failed.
+        view.terminal === undefined &&
+        (view.state === 'waiting' || view.state === 'awaiting-confirmation');
       return { awaitingFunding };
     },
 

@@ -1033,6 +1033,39 @@ describe('createCohortMonitor funding view (LIVE-01, D-36 through D-43)', () => 
     expect(monitor.detail('c1').funding?.terminal).toBe('window-closed');
   });
 
+  it('stops reporting awaitingFunding once the cohort has terminally lapsed (review WR-01)', () => {
+    // index.ts folds the lapse verdict in as `{ ...last, terminal }` and leaves `state` at its
+    // last-known `waiting`. A state-only public read then told every anonymous caller the dead
+    // cohort was still awaiting funding, forever - the surface a second observer or a re-opened
+    // participant tab hits after the cohort's own teardown has already run.
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner, undefined, undefined, 'live');
+    runner.emit('keygen-complete', { cohortId: 'c1', beaconAddress: 'bcrt1pbeaconaddress' });
+
+    monitor.noteFunding('c1', { ...sampleView, state: 'waiting' });
+    expect(monitor.publicFunding('c1')).toEqual({ awaitingFunding: true });
+
+    monitor.noteFunding('c1', { ...sampleView, state: 'waiting', terminal: 'window-closed' });
+    expect(monitor.publicFunding('c1')).toEqual({ awaitingFunding: false });
+  });
+
+  it('stops reporting awaitingFunding on a BLIND lapse too (D-39 uncertainty is still terminal)', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner, undefined, undefined, 'live');
+    runner.emit('keygen-complete', { cohortId: 'c1', beaconAddress: 'bcrt1pbeaconaddress' });
+
+    monitor.noteFunding('c1', { ...sampleView, state: 'awaiting-confirmation', esploraStale: true });
+    expect(monitor.publicFunding('c1')).toEqual({ awaitingFunding: true });
+
+    monitor.noteFunding('c1', {
+      ...sampleView,
+      state: 'awaiting-confirmation',
+      esploraStale: true,
+      terminal: 'blind-lapse',
+    });
+    expect(monitor.publicFunding('c1')).toEqual({ awaitingFunding: false });
+  });
+
   it('is absent before any funding reading lands', () => {
     const runner = bareRunner();
     const monitor = createCohortMonitor(runner, undefined, undefined, 'live');
