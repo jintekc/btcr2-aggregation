@@ -65,15 +65,20 @@ cohort fills and funds. On this re-run, expect:
 - While waiting for the cohort to fill, the cohort page shows a live seat-count line,
   "Waiting for the cohort to fill (1/2 seats).", updating as each participant joins. (Before the
   fix this line was dead code and never appeared, which is why the earlier run showed nothing.)
-- The moment every seat is filled, that line switches to "All 2 seats are filled. Confirming your
-  seat...", while the cohort locks and keygen runs.
+- You MAY briefly see that line switch to "All 2 seats are filled; checking whether this browser
+  got a seat." when the last seat lands, but on the happy path it usually never renders: the seat
+  confirmation arrives over SSE within a second of the last join while the seat count updates on a
+  ~5-second poll, so the page typically jumps straight ahead. The DEFINITIVE signal that your seat
+  landed is the page advancing to the submit window; the seat-count line is primarily visible
+  while waiting for the cohort to fill.
 - The cohort now stays listed as "In progress" in the public directory for the ENTIRE funding
   wait (it no longer vanishes while the operator funds the beacon address), so a second
   participant who opens the app later still sees a live, honest row instead of a cohort that looks
   dead, and a seated participant is no longer false-failed as "ended" during the funding window.
-- If a browser somehow never receives its seat confirmation after the cohort locks with every seat
-  filled, it now fails with the specific "The cohort locked with all N seats filled, but this
-  browser never received its seat confirmation." message rather than a generic stall.
+- If the cohort locks with every seat filled and a browser is never seated (for example it lost a
+  race for the last seat), it now fails with the honest "The cohort locked with all N seats filled
+  and this browser was not seated; it may have filled without you, or your seat confirmation was
+  lost." message rather than a generic stall.
 
 ## Funding (the operator's job, from Polar)
 
