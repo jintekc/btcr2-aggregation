@@ -101,7 +101,10 @@ export function classifyFunding(
 
 /** The clamp inputs (D-38): the configured funding window and the cohort's remaining TTL. */
 export interface FundingDeadlineInput {
-  /** Operator-configured funding window (ms). `undefined` => no configured window (unbounded leg). */
+  /**
+   * Operator-configured funding window (ms). `undefined` (or a non-finite value) => no configured
+   * window, so this leg does not bound the deadline.
+   */
   configuredWindowMs?: number;
   /**
    * Remaining cohort TTL (ms) at the moment the wait starts. `undefined` (or a non-finite value)
@@ -140,7 +143,13 @@ export function computeFundingDeadline({
   remainingTtlMs,
   slackMs,
 }: FundingDeadlineInput): FundingDeadline {
-  const windowLeg = configuredWindowMs ?? Infinity;
+  // Defensive (review WR-04): a NON-FINITE configured window (a NaN a programmatic caller derived
+  // from its own malformed env) would make `Math.min(NaN, ttlLeg)` NaN, and the wait loop's
+  // `Date.now() - start < NaN` is then false on its FIRST evaluation - so the wait never polls
+  // once yet still throws the "could not observe the chain" blind-lapse reason. Coerce to the same
+  // unbounded leg an ABSENT window takes, so no caller can reproduce that false verdict.
+  const windowLeg =
+    configuredWindowMs === undefined || !Number.isFinite(configuredWindowMs) ? Infinity : configuredWindowMs;
   const ttlLeg =
     remainingTtlMs === undefined || !Number.isFinite(remainingTtlMs)
       ? Infinity

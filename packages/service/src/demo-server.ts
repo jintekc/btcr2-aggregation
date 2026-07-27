@@ -246,6 +246,50 @@ export interface DemoServer {
 }
 
 /**
+ * Parse a numeric boot knob (an env string or the programmatic option) into a finite number at or
+ * above `minimum`, warning loudly and falling back to `fallback` on anything malformed. An
+ * absent/empty value is NOT malformed: it simply takes the fallback, silently.
+ *
+ * Review WR-04. A bare `Number(process.env.X)` yields `NaN` for any non-numeric value
+ * (`FUNDING_WINDOW_MS=12m`, a stray quote, a typo), and NaN then poisons every downstream
+ * comparison SILENTLY, because every comparison against NaN is false. The concrete trace for
+ * `FUNDING_WINDOW_MS`:
+ *
+ * 1. `useBroadcast && phaseTimeoutMs <= fundingWindowMs` is false, so the D-38 fail-fast boot
+ *    invariant is skipped and the service boots anyway.
+ * 2. `computeFundingDeadline` yields `deadlineMs = NaN` and discloses no truncation.
+ * 3. `while (Date.now() - start < NaN)` is false on the FIRST evaluation, so the wait never polls
+ *    once and falls straight through to the blind-lapse throw - telling the operator the service
+ *    "could not observe the chain", when it never tried. Every cohort then dies instantly with a
+ *    verdict sending the operator to a block explorer to chase a chain problem that does not
+ *    exist, which is exactly the lie the D-39 honesty rule exists to prevent.
+ *
+ * `OPERATOR_SESSION_TTL_MS` has the identical hazard with a worse outcome: `Date.now() > NaN` is
+ * always false, so sessions NEVER expire, and `Math.floor(NaN / 1000)` emits an invalid
+ * `Max-Age=NaN` cookie attribute.
+ *
+ * The pattern was already established for `advertTtlMs` ({@link file://./index.ts}, with a
+ * dedicated NaN spec) and was simply not applied to the newer knobs.
+ */
+function numericKnob(
+  name: string,
+  raw: string | number | undefined,
+  fallback: number | undefined,
+  warn: (msg: string) => void,
+  minimum = 1,
+): number | undefined {
+  if (raw === undefined || raw === '') {
+    return fallback;
+  }
+  const n = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isFinite(n) || n < minimum) {
+    warn(`ignoring malformed ${name}="${String(raw)}"; using ${fallback ?? 'the built-in default'}`);
+    return fallback;
+  }
+  return n;
+}
+
+/**
  * Long-lived self-hosted aggregation service: serves the aggregation protocol, the
  * gated dashboard feed, and the built SPA on a real port. It advertises NOTHING on its
  * own - a cohort comes into existence only when the authenticated operator advertises a
@@ -254,15 +298,19 @@ export interface DemoServer {
  * (no node, no broadcast) unless the live path is opted in.
  */
 export async function startDemoServer(opts: DemoServerOptions = {}): Promise<DemoServer> {
-  const minParticipants = opts.minParticipants ?? 2;
-  const cohortTtlMs = opts.cohortTtlMs ?? DEFAULT_COHORT_TTL_MS;
-  const phaseTimeoutMs = opts.phaseTimeoutMs ?? DEFAULT_PHASE_TIMEOUT_MS;
+  const log = opts.quiet ? () => {} : (msg: string) => console.log(`[demo] ${msg}`);
+  // Every numeric knob rides {@link numericKnob} (review WR-04) so a malformed value warns loudly
+  // and falls back, instead of silently poisoning a downstream comparison with NaN. Guarded even
+  // for the programmatic option, because a caller that computed it from its own env (the live-UAT
+  // harness does) can hand a NaN straight through.
+  const minParticipants = numericKnob('minParticipants', opts.minParticipants, 2, log)!;
+  const cohortTtlMs = numericKnob('COHORT_TTL_MS', opts.cohortTtlMs, DEFAULT_COHORT_TTL_MS, log)!;
+  const phaseTimeoutMs = numericKnob('PHASE_TIMEOUT_MS', opts.phaseTimeoutMs, DEFAULT_PHASE_TIMEOUT_MS, log)!;
   // ADR 042 k-of-n script-path fallback (F1c): default ON for the self-hosted product
   // so a stalled signing round recovers instead of hard-failing; `AUTO_FALLBACK=0`
   // opts out. Only converts a SIGNING-phase stall into a fallback (the library scopes
   // it); an idle Advertised cohort still expires on the same stall timer (plan 02-06).
   const autoFallbackOnStall = opts.autoFallbackOnStall ?? process.env.AUTO_FALLBACK !== '0';
-  const log = opts.quiet ? () => {} : (msg: string) => console.log(`[demo] ${msg}`);
 
   // Serve the built web SPA from this origin when available (explicit path,
   // explicit null to disable, or the default dist if it has been built).
@@ -338,9 +386,15 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
   // Funding-window knob (D-38; env FUNDING_WINDOW_MS). Threaded into createService for the
   // 04-06 funding stage; enforced here by the phase-timeout leg of the boot invariant.
   const changeAddress = opts.changeAddress ?? process.env.LIVE_CHANGE_ADDRESS;
-  const fundingWindowMs =
-    opts.fundingWindowMs ??
-    (process.env.FUNDING_WINDOW_MS ? Number(process.env.FUNDING_WINDOW_MS) : DEFAULT_FUNDING_WINDOW_MS);
+  // Guarded (review WR-04): a malformed value used to make `phaseTimeoutMs <= fundingWindowMs`
+  // false, silently skipping the D-38 boot invariant below, and then made the wait never poll once
+  // while still emitting the "could not observe the chain" blind-lapse verdict.
+  const fundingWindowMs = numericKnob(
+    'FUNDING_WINDOW_MS',
+    opts.fundingWindowMs ?? process.env.FUNDING_WINDOW_MS,
+    DEFAULT_FUNDING_WINDOW_MS,
+    log,
+  )!;
   // D-38 phase-timeout leg: under BROADCAST the funding wait must be able to throw its own
   // "funding never arrived" reason from inside onProvideTxData BEFORE the library's phase-stall
   // timer fires, else the operator sees a generic stall instead of the honest funding message.
@@ -381,9 +435,15 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
   const serviceName = (opts.serviceName ?? process.env.SERVICE_NAME)?.trim() || undefined;
 
   const operatorPassword = opts.operatorPassword ?? process.env.OPERATOR_PASSWORD;
-  const operatorSessionTtlMs =
-    opts.operatorSessionTtlMs ??
-    (process.env.OPERATOR_SESSION_TTL_MS ? Number(process.env.OPERATOR_SESSION_TTL_MS) : undefined);
+  // Guarded (review WR-04): a NaN TTL made `Date.now() > expiresAt` always false, so operator
+  // sessions NEVER expired, and `Math.floor(NaN / 1000)` emitted an invalid `Max-Age=NaN` cookie
+  // attribute. Falls back to undefined, which is the auth module's own 24h default.
+  const operatorSessionTtlMs = numericKnob(
+    'OPERATOR_SESSION_TTL_MS',
+    opts.operatorSessionTtlMs ?? process.env.OPERATOR_SESSION_TTL_MS,
+    undefined,
+    log,
+  );
   const operatorCookieSecure =
     opts.operatorCookieSecure ?? (process.env.OPERATOR_COOKIE_SECURE === '0' ? false : undefined);
   if (!operatorPassword) {
@@ -488,15 +548,19 @@ const invokedDirectly =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (invokedDirectly) {
-  const port = Number(process.env.PORT ?? 8080);
+  // Every numeric env knob rides {@link numericKnob} (review WR-04): a malformed value warns and
+  // falls back instead of handing a silent NaN to startDemoServer. `PORT` takes a minimum of 0 so
+  // `PORT=0` keeps its ephemeral-port meaning; the rest must be strictly positive.
+  const warn = (msg: string): void => console.warn(`[demo] ${msg}`);
+  const port = numericKnob('PORT', process.env.PORT, 8080, warn, 0)!;
   // Bind loopback by default (safe for a local run behind nothing); a container or
   // any deployment that must accept off-host traffic sets HOST=0.0.0.0 and fronts
   // this with a TLS-terminating reverse proxy (see docs/DEPLOY.md). An explicit
   // empty HOST= coalesces to unset (loopback), never a bind-all-interfaces `''`.
   const host = process.env.HOST || undefined;
-  const minParticipants = Number(process.env.MIN_PARTICIPANTS ?? 2);
-  const cohortTtlMs = process.env.COHORT_TTL_MS ? Number(process.env.COHORT_TTL_MS) : undefined;
-  const phaseTimeoutMs = process.env.PHASE_TIMEOUT_MS ? Number(process.env.PHASE_TIMEOUT_MS) : undefined;
+  const minParticipants = numericKnob('MIN_PARTICIPANTS', process.env.MIN_PARTICIPANTS, 2, warn)!;
+  const cohortTtlMs = numericKnob('COHORT_TTL_MS', process.env.COHORT_TTL_MS, undefined, warn);
+  const phaseTimeoutMs = numericKnob('PHASE_TIMEOUT_MS', process.env.PHASE_TIMEOUT_MS, undefined, warn);
   // Live+broadcast contract (D-35): LIVE=1 controls the esplora connection; BROADCAST=1
   // (requires LIVE=1) enables real cohort beacon broadcast; LIVE_CHANGE_ADDRESS + FUNDING_WINDOW_MS
   // tune the funded path. startDemoServer also reads these from process.env, so passing them
@@ -504,7 +568,7 @@ if (invokedDirectly) {
   const live = process.env.LIVE === '1';
   const broadcast = process.env.BROADCAST === '1';
   const changeAddress = process.env.LIVE_CHANGE_ADDRESS || undefined;
-  const fundingWindowMs = process.env.FUNDING_WINDOW_MS ? Number(process.env.FUNDING_WINDOW_MS) : undefined;
+  const fundingWindowMs = numericKnob('FUNDING_WINDOW_MS', process.env.FUNDING_WINDOW_MS, undefined, warn);
   startDemoServer({ port, host, minParticipants, cohortTtlMs, phaseTimeoutMs, live, broadcast, changeAddress, fundingWindowMs })
     .then((server) => {
       let shuttingDown = false;

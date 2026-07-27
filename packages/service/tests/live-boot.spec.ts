@@ -110,4 +110,63 @@ describe('startDemoServer live+broadcast boot enablement (D-35/D-38/D-40)', () =
     // so a live+broadcast boot with no explicit knobs never trips its own fail-fast.
     expect(DEFAULT_PHASE_TIMEOUT_MS).toBeGreaterThan(DEFAULT_FUNDING_WINDOW_MS);
   });
+
+  it('rejects a malformed FUNDING_WINDOW_MS so the D-38 boot invariant still fires (review WR-04)', async () => {
+    // A bare Number('12m') is NaN, and every comparison against NaN is false - so the invariant
+    // `phaseTimeoutMs <= fundingWindowMs` silently passed and the service booted with a window
+    // that made the wait never poll once while still emitting the blind-lapse verdict. With the
+    // guard the malformed value falls back to DEFAULT_FUNDING_WINDOW_MS (12 min), which a 1000ms
+    // phase timeout does NOT exceed, so the boot correctly refuses.
+    process.env.FUNDING_WINDOW_MS = '12m';
+    try {
+      await expect(
+        startDemoServer(bootOpts({ live: true, broadcast: true, phaseTimeoutMs: 1000, quiet: true })),
+      ).rejects.toThrow(/must EXCEED the funding window/);
+    } finally {
+      delete process.env.FUNDING_WINDOW_MS;
+    }
+  });
+
+  it('warns and falls back on a malformed FUNDING_WINDOW_MS, never bannering NaN', async () => {
+    // The mirror: the FALLBACK (not NaN) is what the invariant is checked against, so a phase
+    // timeout above the default window boots - and the operator is told the value was ignored.
+    process.env.FUNDING_WINDOW_MS = 'not-a-number';
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const server = await startDemoServer(
+        bootOpts({ live: true, broadcast: true, phaseTimeoutMs: DEFAULT_FUNDING_WINDOW_MS + 60_000 }),
+      );
+      started.push(server);
+      const logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(logged).toMatch(/ignoring malformed FUNDING_WINDOW_MS="not-a-number"/);
+      // The live+broadcast banner reports the FALLBACK window, never NaN.
+      expect(logged).toMatch(new RegExp(`funding window: ${DEFAULT_FUNDING_WINDOW_MS}ms`));
+    } finally {
+      delete process.env.FUNDING_WINDOW_MS;
+    }
+  });
+
+  it('rejects a malformed OPERATOR_SESSION_TTL_MS rather than minting never-expiring sessions', async () => {
+    // NaN made `Date.now() > expiresAt` always false (sessions NEVER expired) and emitted an
+    // invalid `Max-Age=NaN` cookie attribute. The guard falls back to the auth module's default.
+    process.env.OPERATOR_SESSION_TTL_MS = '24h';
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const server = await startDemoServer(bootOpts({}));
+      started.push(server);
+      const logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(logged).toMatch(/ignoring malformed OPERATOR_SESSION_TTL_MS="24h"/);
+      const res = await fetch(`${server.baseUrl}/v1/operator/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: server.baseUrl },
+        body: JSON.stringify({ password: OPERATOR_PASSWORD }),
+      });
+      expect(res.status).toBe(200);
+      const cookie = res.headers.get('set-cookie') ?? '';
+      expect(cookie).toContain('operator_session=');
+      expect(cookie).not.toMatch(/Max-Age=NaN/i);
+    } finally {
+      delete process.env.OPERATOR_SESSION_TTL_MS;
+    }
+  });
 });

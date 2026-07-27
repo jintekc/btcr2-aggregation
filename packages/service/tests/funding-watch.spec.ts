@@ -140,6 +140,21 @@ describe('computeFundingDeadline (D-38 clamp)', () => {
     expect(deadlineMs).toBe(600_000);
     expect(truncatedWindowMin).toBeUndefined();
   });
+
+  it('treats a NON-FINITE configured window as unbounded, never producing a NaN deadline (review WR-04)', () => {
+    // A NaN window (a caller that derived it from its own malformed env) used to yield
+    // `Math.min(NaN, ttlLeg) = NaN`. The wait's `Date.now() - start < NaN` is then false on the
+    // FIRST evaluation, so it never polled once and still threw the "could not observe the chain"
+    // blind-lapse reason - the exact false verdict D-39 exists to prevent.
+    const noTtl = computeFundingDeadline({ configuredWindowMs: NaN, remainingTtlMs: undefined, slackMs: 10_000 });
+    expect(noTtl.deadlineMs).toBe(Infinity);
+    expect(noTtl.truncatedWindowMin).toBeUndefined();
+
+    // With a TTL armed, the TTL leg simply becomes the binding one (and discloses the truncation).
+    const withTtl = computeFundingDeadline({ configuredWindowMs: NaN, remainingTtlMs: 120_000, slackMs: 10_000 });
+    expect(withTtl.deadlineMs).toBe(110_000);
+    expect(withTtl.truncatedWindowMin).toBe(2);
+  });
 });
 
 /** A mock connection whose `getUtxos` yields the queued results in order (a thrown result = an outage). */
