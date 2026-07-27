@@ -1,20 +1,14 @@
 import { useState } from 'react';
 import { Badge, Button, Card, CopyField, SectionTitle, StatusDot } from '../../ui/primitives';
 import { cosignCaption, cosignValue } from '../../lib/directory';
+import { groupRenderRows, type ChipKey, type GroupKey, type RenderRow } from '../../lib/operator-rows';
 import { useOperator } from '../../stores/operator';
-import type { CohortSummaryDTO, OperatorCohortDTO, ServiceMetricsDTO } from '../../lib/operator';
+import type { OperatorCohortDTO, ServiceMetricsDTO } from '../../lib/operator';
 
 /** Friendly beacon-type label (matches the create form's CAS/SMT options). */
 function beaconLabel(beaconType: OperatorCohortDTO['beaconType']): string {
   return beaconType === 'CASBeacon' ? 'CAS' : 'SMT';
 }
-
-/**
- * The fixed status-chip key for a list row. A DRAFT and an EXPIRED cohort are operator-list
- * states (not monitoring chips), so they extend the monitoring {@link CohortSummaryDTO.chip}
- * union here with the two inherited row states.
- */
-type ChipKey = CohortSummaryDTO['chip'] | 'draft' | 'expired';
 
 /**
  * The FIXED status-chip tone map (D-04, 04-UI-SPEC Color). Tone + label + whether the
@@ -34,7 +28,6 @@ const CHIP: Record<ChipKey, { tone: 'neutral' | 'accent' | 'good' | 'warn' | 'ba
 };
 
 /** The four list groups, in render order (04-UI-SPEC list group headings). */
-type GroupKey = 'attention' | 'active' | 'drafts' | 'ended';
 const GROUP_ORDER: GroupKey[] = ['attention', 'active', 'drafts', 'ended'];
 const GROUP_HEADING: Record<GroupKey, string> = {
   attention: 'Needs attention',
@@ -42,41 +35,6 @@ const GROUP_HEADING: Record<GroupKey, string> = {
   drafts: 'Drafts',
   ended: 'Ended',
 };
-
-/**
- * Derive one row's status chip. A draft/expired cohort reads its inherited row state; an
- * advertised cohort reads its live monitoring chip, defaulting to `filling` when the monitor
- * has no row yet (a freshly advertised, zero-opt-in cohort is live and filling).
- */
-function chipForCohort(cohort: OperatorCohortDTO, row?: CohortSummaryDTO): ChipKey {
-  if (cohort.state === 'draft') {
-    return 'draft';
-  }
-  if (cohort.state === 'expired') {
-    return 'expired';
-  }
-  return row?.chip ?? 'filling';
-}
-
-/**
- * Assign a chip to exactly ONE group (single membership, so a cohort never double-renders):
- * `needs-funding` / `fallback` / `failed` need a human, so they surface under Needs attention
- * (this also backs the drill-down cross-cohort attention badge, D-11); `filling` / `co-signing`
- * are live under Active; `draft` under Drafts; a clean `anchored` and an `expired` window are
- * settled under Ended. The tone map above still colors each chip identically wherever it renders.
- */
-function groupForChip(chip: ChipKey): GroupKey {
-  if (chip === 'needs-funding' || chip === 'fallback' || chip === 'failed') {
-    return 'attention';
-  }
-  if (chip === 'filling' || chip === 'co-signing') {
-    return 'active';
-  }
-  if (chip === 'draft') {
-    return 'drafts';
-  }
-  return 'ended';
-}
 
 /** A status chip: a Badge carrying the fixed tone + a StatusDot that pulses only when live. */
 function StatusChip({ chip }: { chip: ChipKey }) {
@@ -122,19 +80,24 @@ function ServiceMetricsRow({ metrics }: { metrics?: ServiceMetricsDTO }) {
  * shows its live status chip (from the monitoring summary) and its `{joined}/{capacity}` seats,
  * and opens the live drill-down (D-01/D-03). An EXPIRED cohort shows the bad-tone `Expired` chip
  * with its reason and a single primary `Re-advertise` action, so an expired cohort is visible
- * and revivable instead of silently vanishing. All render the network, beacon type, and a
- * copyable id.
+ * and revivable instead of silently vanishing.
+ *
+ * A MONITORING-ONLY row (`entry.cohort` absent, review CR-02) is a cohort the operator list no
+ * longer carries: `settleCompletion` prunes a cohort the moment it completes successfully and
+ * mints no terminal record, so an anchored cohort exists ONLY as the monitor's ended row. Such a
+ * row renders exactly the facts the monitoring DTO carries (chip, seats, reason, id) - the
+ * network, beacon type, and k-of-n numbers are deliberately omitted rather than invented - and
+ * keeps `Open` wired so the drill-down and its JSON export stay reachable for as long as the
+ * monitor retains the record.
  */
 function CohortRow({
   baseUrl,
-  cohort,
-  row,
+  entry,
   onOpen,
 }: {
   baseUrl: string;
-  cohort: OperatorCohortDTO;
-  /** The cohort's live monitoring row, when the fold has one (advertised/ended cohorts). */
-  row?: CohortSummaryDTO;
+  /** The joined row: an operator cohort, a monitoring row, or (usually) both. */
+  entry: RenderRow;
   onOpen?: (id: string) => void;
 }) {
   const discard = useOperator((s) => s.discard);
@@ -144,36 +107,45 @@ function CohortRow({
   const advertisingId = useOperator((s) => s.advertisingId);
   const [confirming, setConfirming] = useState(false);
 
-  const isDraft = cohort.state === 'draft';
-  const isExpired = cohort.state === 'expired';
-  const isAdvertised = cohort.state === 'advertised';
-  const isAdvertising = advertiseStatus === 'advertising' && advertisingId === cohort.draftId;
-  const chip = chipForCohort(cohort, row);
+  const { id, chip, cohort, row } = entry;
+  const isDraft = cohort?.state === 'draft';
+  const isExpired = cohort?.state === 'expired';
+  const isAdvertised = cohort?.state === 'advertised';
+  const isAdvertising = advertiseStatus === 'advertising' && advertisingId === id;
   // Prefer the live monitoring seats (authoritative for an advertised/ended cohort); fall back
   // to the operator DTO's own count for a draft (0 of n) that has no monitoring row yet.
-  const joined = row ? row.seatsJoined : cohort.joined;
-  const capacity = row ? row.capacity : cohort.capacity;
+  const joined = row ? row.seatsJoined : (cohort?.joined ?? 0);
+  const capacity = row ? row.capacity : (cohort?.capacity ?? 0);
   // A short reason line: the expired window reason, or a failed cohort's failure reason.
-  const reason = cohort.reason ?? row?.reason;
+  const reason = cohort?.reason ?? row?.reason;
+  // A monitoring-only row has no operator cohort behind it, so the drill-down is the only action
+  // it can offer; an advertised cohort opens the same drill-down (D-01/D-03/D-09).
+  const canOpen = isAdvertised || cohort === undefined;
 
   return (
     <Card className="space-y-3 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <StatusChip chip={chip} />
-          <span className="text-sm text-muted">{cohort.network}</span>
-          <span className="text-sm text-muted">{beaconLabel(cohort.beaconType)}</span>
+          {/* Network / beacon type / k-of-n ride the operator DTO only: the monitoring row does
+              not carry them, and a settled cohort must not have them invented for it. */}
+          {cohort ? (
+            <>
+              <span className="text-sm text-muted">{cohort.network}</span>
+              <span className="text-sm text-muted">{beaconLabel(cohort.beaconType)}</span>
+            </>
+          ) : null}
           <span className="text-sm text-muted">
             {joined}/{capacity} seats
           </span>
-          <span className="text-sm text-muted">Co-sign: {cosignValue(cohort)}</span>
-          {cohort.threshold < cohort.capacity ? (
+          {cohort ? <span className="text-sm text-muted">Co-sign: {cosignValue(cohort)}</span> : null}
+          {cohort && cohort.threshold < cohort.capacity ? (
             <span className="text-xs text-faint">{cosignCaption(cohort)}</span>
           ) : null}
         </div>
         {isDraft && !confirming ? (
           <div className="flex flex-wrap gap-2">
-            <Button variant="primary" disabled={isAdvertising} onClick={() => void advertise(baseUrl, cohort.draftId)}>
+            <Button variant="primary" disabled={isAdvertising} onClick={() => void advertise(baseUrl, id)}>
               {isAdvertising ? 'Advertising…' : 'Advertise cohort'}
             </Button>
             <Button variant="danger" onClick={() => setConfirming(true)}>
@@ -182,13 +154,12 @@ function CohortRow({
           </div>
         ) : null}
         {isExpired ? (
-          <Button variant="primary" disabled={isAdvertising} onClick={() => void readvertise(baseUrl, cohort.draftId)}>
+          <Button variant="primary" disabled={isAdvertising} onClick={() => void readvertise(baseUrl, id)}>
             {isAdvertising ? 'Re-advertising…' : 'Re-advertise'}
           </Button>
         ) : null}
-        {isAdvertised && onOpen ? (
-          // Only advertised cohorts open the live monitoring drill-down (D-01/D-03/D-09).
-          <Button variant="ghost" onClick={() => onOpen(cohort.draftId)}>
+        {canOpen && onOpen ? (
+          <Button variant="ghost" onClick={() => onOpen(id)}>
             Open
           </Button>
         ) : null}
@@ -196,7 +167,7 @@ function CohortRow({
 
       {reason ? <p className="text-sm text-muted">{isExpired ? `Expired: ${reason}` : reason}</p> : null}
 
-      <CopyField label={isDraft ? 'draft id' : 'cohort id'} value={cohort.draftId} />
+      <CopyField label={isDraft ? 'draft id' : 'cohort id'} value={id} />
 
       {confirming ? (
         <div className="space-y-2 rounded-lg border border-bad/40 bg-bad/10 px-3 py-2 text-sm text-bad">
@@ -205,7 +176,7 @@ function CohortRow({
             directory yet.
           </p>
           <div className="flex flex-wrap gap-2">
-            <Button variant="danger" onClick={() => void discard(baseUrl, cohort.draftId)}>
+            <Button variant="danger" onClick={() => void discard(baseUrl, id)}>
               Discard draft
             </Button>
             <Button variant="ghost" onClick={() => setConfirming(false)}>
@@ -226,6 +197,11 @@ function CohortRow({
  * still renders (every counter 0) above the honest `No cohorts yet` empty state, whose body
  * carries the in-memory-clears-on-restart line (D-24). A transient good-tone banner confirms a
  * successful advertise.
+ *
+ * The rows are the UNION of the operator's cohorts and the monitoring rows
+ * ({@link groupRenderRows}, review CR-02), so a cohort that has ANCHORED - which
+ * `settleCompletion` prunes from the operator list without minting a terminal record - keeps its
+ * Ended row, its drill-down, and its JSON export instead of vanishing the instant it succeeds.
  */
 export function OperatorCohortList({
   baseUrl,
@@ -240,16 +216,10 @@ export function OperatorCohortList({
   const metrics = useOperator((s) => s.metrics);
   const advertiseMessage = useOperator((s) => s.advertiseMessage);
 
-  // Per-cohort chip lookup: an advertised cohort's live cohort id equals its draft id, so the
-  // monitoring rows join to the operator cohorts on that single key.
-  const rowByCohort = new Map(rows.map((r) => [r.cohortId, r]));
-
-  // Bucket each cohort into exactly one group by its derived chip (single membership).
-  const grouped: Record<GroupKey, OperatorCohortDTO[]> = { attention: [], active: [], drafts: [], ended: [] };
-  for (const cohort of cohorts) {
-    const chip = chipForCohort(cohort, rowByCohort.get(cohort.draftId));
-    grouped[groupForChip(chip)].push(cohort);
-  }
+  // Bucket the UNION of the operator cohorts and the monitoring rows into exactly one group each
+  // (single membership, keyed by id so nothing double-renders).
+  const grouped = groupRenderRows(cohorts, rows);
+  const rowCount = GROUP_ORDER.reduce((n, g) => n + grouped[g].length, 0);
 
   return (
     <div className="space-y-6">
@@ -261,7 +231,9 @@ export function OperatorCohortList({
         </div>
       ) : null}
 
-      {cohorts.length === 0 ? (
+      {/* The empty state keys on the RENDERED row count, not on `cohorts` alone: a service whose
+          only cohort has already anchored has an empty operator list but a live monitoring row. */}
+      {rowCount === 0 ? (
         <Card className="space-y-1 p-5">
           <p className="text-sm text-ink">No cohorts yet</p>
           <p className="text-sm text-muted">
@@ -275,14 +247,8 @@ export function OperatorCohortList({
             grouped[g].length === 0 ? null : (
               <div key={g} className="space-y-3">
                 <SectionTitle>{GROUP_HEADING[g]}</SectionTitle>
-                {grouped[g].map((cohort) => (
-                  <CohortRow
-                    key={cohort.draftId}
-                    baseUrl={baseUrl}
-                    cohort={cohort}
-                    row={rowByCohort.get(cohort.draftId)}
-                    onOpen={onOpen}
-                  />
+                {grouped[g].map((entry) => (
+                  <CohortRow key={entry.id} baseUrl={baseUrl} entry={entry} onOpen={onOpen} />
                 ))}
               </div>
             ),
