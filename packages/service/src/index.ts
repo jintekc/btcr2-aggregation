@@ -571,6 +571,14 @@ export function createService(opts: CreateServiceOptions): Service {
   // driven by an operator-triggerable action on a long-lived self-hosted service (T-04-01-02).
   const advertisedAt = new Map<string, number>();
 
+  /**
+   * Aborted by `stop()` (review WR-03). The AUTHORITATIVE funding wait in `tx.ts` runs inside the
+   * in-flight `onProvideTxData` promise, which `stop()` can only abandon, not cancel - so without
+   * this signal a stopped service kept polling esplora for the rest of the funding window. The
+   * operator DISPLAY watches already had this via their own handles; this gives the wait parity.
+   */
+  const stopController = new AbortController();
+
   let live: LiveTxConfig | undefined;
   let netConfig: NetworkConfig | undefined;
   if (opts.live) {
@@ -596,6 +604,8 @@ export function createService(opts: CreateServiceOptions): Service {
               return at === undefined ? undefined : opts.cohortTtlMs! - (Date.now() - at);
             }
           : undefined,
+      // Cancel the wait on `service.stop()` (review WR-03), mirroring the display watches.
+      signal: stopController.signal,
     };
   }
 
@@ -950,6 +960,10 @@ export function createService(opts: CreateServiceOptions): Service {
       for (const handle of fundingWatches.values()) {
         handle.stop();
       }
+      // ...and the AUTHORITATIVE funding wait inside onProvideTxData (review WR-03), which the
+      // runner teardown below can only abandon: without this it kept hitting esplora for the rest
+      // of the funding window on a service that had already stopped.
+      stopController.abort();
       runner.stop();
       transport.stop();
       return new Promise<void>((resolve) => {

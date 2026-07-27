@@ -49,15 +49,43 @@ export interface LiveTxConfig {
   fundingPollIntervalMs?: number;
   /** Slack (ms) subtracted from the remaining-TTL clamp leg. Default {@link FUNDING_SLACK_MS}. */
   fundingSlackMs?: number;
+  /**
+   * Aborts the funding wait, wired to `service.stop()` exactly like the operator DISPLAY watch's
+   * signal ({@link file://./funding-watch.ts}). Without it a stopped service kept issuing outbound
+   * esplora requests for the remainder of the funding window (default 12 min, 15 in the live-UAT
+   * harness): `stop()` aborted the broadcast confirm poll and every display watch, but the
+   * in-flight `onProvideTxData` promise was merely abandoned, not cancelled, so a test that stops
+   * and restarts services leaked network I/O across cases.
+   */
+  signal?: AbortSignal;
 }
 
-/** A cancelable-agnostic unref'd sleep for the funding wait (the runner settles the cohort on stop). */
-function fundingSleep(ms: number): Promise<void> {
+/**
+ * A cancelable, unref'd sleep for the funding wait, resolving early if `signal` aborts. Mirrors
+ * the {@link file://./funding-watch.ts} `delay` idiom (kept local so the two waits stay
+ * independent modules): the timer is unref'd so the wait never keeps the process alive, and an
+ * abort resolves it at once so `service.stop()` is not held up by a poll interval.
+ */
+function fundingSleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, ms);
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      cleanup();
+      resolve();
+    };
+    const cleanup = (): void => signal?.removeEventListener('abort', onAbort);
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
     if (typeof (timer as { unref?: () => void }).unref === 'function') {
       (timer as { unref: () => void }).unref();
     }
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
 
@@ -75,6 +103,9 @@ function fundingSleep(ms: number): Promise<void> {
  * - clean lapse (the LAST read SUCCEEDED): the honest "funding never arrived" reason (D-38).
  * - blind lapse (the last read FAILED, an esplora gap): an uncertainty-honest reason instead of a
  *   false terminal verdict (D-39).
+ * - service stopped ({@link LiveTxConfig.signal} aborted): a distinct, non-verdict reason. A
+ *   shutdown is NOT evidence about the chain, so it must never be reported as a lapse (D-39
+ *   honesty) - the operator is told the service stopped, not that funding did or did not arrive.
  */
 async function waitForFunding(
   live: LiveTxConfig,
@@ -93,6 +124,14 @@ async function waitForFunding(
   let lastState: FundingState = { state: 'waiting' };
 
   while (Date.now() - start < deadlineMs) {
+    if (live.signal?.aborted) {
+      // The service stopped mid-wait (review WR-03): abandon the poll loop BEFORE issuing another
+      // esplora request rather than polling on for the rest of the window.
+      throw new Error(
+        `live beacon tx: the service stopped while waiting for funding at ${beaconAddress}; ` +
+          'the funding window did not elapse, so this says nothing about whether funds arrived',
+      );
+    }
     let utxos: AddressUtxo[];
     try {
       utxos = await live.bitcoin.rest.address.getUtxos(beaconAddress);
@@ -101,7 +140,7 @@ async function waitForFunding(
       // Esplora outage: the read failed, so we cannot classify. Keep the last-known state and
       // record the gap (D-39), then retry after a poll interval.
       lastObservationOk = false;
-      await fundingSleep(pollIntervalMs);
+      await fundingSleep(pollIntervalMs, live.signal);
       continue;
     }
     lastState = classifyFunding(utxos, suggestedMinSats, beaconAddress);
@@ -121,7 +160,16 @@ async function waitForFunding(
           'on a fresh beacon address funded with a single adequate UTXO',
       );
     }
-    await fundingSleep(pollIntervalMs);
+    await fundingSleep(pollIntervalMs, live.signal);
+  }
+
+  // An abort that landed during the final sleep exits the loop by the deadline test below; answer
+  // with the shutdown reason, not a lapse verdict, for the same honesty reason as above.
+  if (live.signal?.aborted) {
+    throw new Error(
+      `live beacon tx: the service stopped while waiting for funding at ${beaconAddress}; ` +
+        'the funding window did not elapse, so this says nothing about whether funds arrived',
+    );
   }
 
   // The funding window lapsed. D-39: a terminal "funding never arrived" verdict is honest ONLY

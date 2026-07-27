@@ -176,6 +176,45 @@ describe('makeProvideTxData - D-38 funding wait', () => {
     expect(Date.now() - start).toBeLessThan(2000);
   });
 
+  it('aborts on the stop signal instead of polling out the window (review WR-03)', async () => {
+    // `service.stop()` aborted the broadcast confirm poll and every display watch, but the wait
+    // took no signal: the abandoned onProvideTxData promise kept calling getUtxos every poll
+    // interval for the rest of the funding window (12 min by default, 15 in the live-UAT harness),
+    // so a stopped service went on issuing outbound esplora requests.
+    const { beaconAddress, internalKey } = makeBeacon();
+    const controller = new AbortController();
+    let reads = 0;
+    const inner = mockBitcoin(['empty']);
+    const counting = {
+      rest: {
+        ...inner.rest,
+        address: {
+          getUtxos: async (addr: string): Promise<AddressUtxo[]> => {
+            reads += 1;
+            return inner.rest.address.getUtxos(addr);
+          },
+        },
+      },
+    } as unknown as BitcoinConnection;
+
+    const provide = makeProvideTxData(
+      () => fakeRunner({ internalKey }),
+      liveConfig(counting, { fundingWindowMs: 60_000, fundingPollIntervalMs: 15, signal: controller.signal }),
+    );
+    const pending = provide({ cohortId: 'c1', beaconAddress, signalBytes: SIGNAL, feeEstimator });
+    setTimeout(() => controller.abort(), 60);
+    const start = Date.now();
+    // A shutdown is NOT chain evidence, so it must NOT be reported as either lapse verdict.
+    await expect(pending).rejects.toThrow(/the service stopped while waiting for funding/);
+    await expect(pending).rejects.not.toThrow(/funding never arrived|could not\s+observe the chain/);
+    // It gave up far short of the 60s window...
+    expect(Date.now() - start).toBeLessThan(5000);
+    // ...and stopped hitting esplora: no further reads land after the abort.
+    const readsAtAbort = reads;
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(reads).toBe(readsAtAbort);
+  });
+
   it('the clamp math is min(window, remaining TTL - slack)', () => {
     expect(
       computeFundingDeadline({ configuredWindowMs: 600_000, remainingTtlMs: 120_000, slackMs: 10_000 })
