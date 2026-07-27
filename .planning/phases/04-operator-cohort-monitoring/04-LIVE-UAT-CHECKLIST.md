@@ -25,7 +25,7 @@ the participant-side awaiting-funding notice + honest stall/resolve copy. The ha
 
 ## Boot
 
-- [ ] Start the harness against your chain (set the ACTUAL esplora port):
+- [x] Start the harness against your chain (set the ACTUAL esplora port):
 
       ```bash
       ESPLORA_HOST=http://127.0.0.1:3000 pnpm uat:live
@@ -35,18 +35,18 @@ the participant-side awaiting-funding notice + honest stall/resolve copy. The ha
       to see too), `NETWORK=regtest` (default), `PORT=8080`, `OPERATOR_PASSWORD` (default
       `live-uat`), `FUND_WAIT_MS` (funding window, default 15 min).
 
-- [ ] Confirm the boot banner prints the LIVE + BROADCAST loud banner (each cohort's beacon tx is
+- [x] Confirm the boot banner prints the LIVE + BROADCAST loud banner (each cohort's beacon tx is
       broadcast on-chain; fund each beacon address; the funding window; and the recovery-key state).
       If `RECOVERY_KEY` is unset, confirm the loud THROWAWAY warning appears.
-- [ ] Confirm the printed app URL, operator password, esplora host + tip height, and network line.
-- [ ] Open the app URL in a browser.
+- [x] Confirm the printed app URL, operator password, esplora host + tip height, and network line.
+- [x] Open the app URL in a browser.
 
 ## Operator: create and advertise a live cohort
 
-- [ ] Go to `/operator`, sign in with the operator password.
-- [ ] Confirm the health strip reads a LIVE mode (not hermetic), the active network, and esplora
+- [x] Go to `/operator`, sign in with the operator password.
+- [x] Confirm the health strip reads a LIVE mode (not hermetic), the active network, and esplora
       reachability.
-- [ ] Create a cohort (pick a small size, e.g. 2, k = n) and advertise it. Confirm you land in the
+- [x] Create a cohort (pick a small size, e.g. 2, k = n) and advertise it. Confirm you land in the
       cohort's drill-down (not an empty page).
 
 ## Participants: join and submit
@@ -56,6 +56,24 @@ the participant-side awaiting-funding notice + honest stall/resolve copy. The ha
 - [ ] Confirm the participant sees the join-time on-chain notice and, after seats fill, the honest
       "waiting for the operator to fund this cohort's beacon address" copy (D-44), NOT a generic
       stall.
+
+## What the participant surface shows while waiting (re-run expectations after the seat-count fix)
+
+The gap-closure fix (SVC-JOIN-1/2, PWEB-1) changed what a joining participant sees while the
+cohort fills and funds. On this re-run, expect:
+
+- While waiting for the cohort to fill, the cohort page shows a live seat-count line,
+  "Waiting for the cohort to fill (1/2 seats).", updating as each participant joins. (Before the
+  fix this line was dead code and never appeared, which is why the earlier run showed nothing.)
+- The moment every seat is filled, that line switches to "All 2 seats are filled. Confirming your
+  seat...", while the cohort locks and keygen runs.
+- The cohort now stays listed as "In progress" in the public directory for the ENTIRE funding
+  wait (it no longer vanishes while the operator funds the beacon address), so a second
+  participant who opens the app later still sees a live, honest row instead of a cohort that looks
+  dead, and a seated participant is no longer false-failed as "ended" during the funding window.
+- If a browser somehow never receives its seat confirmation after the cohort locks with every seat
+  filled, it now fails with the specific "The cohort locked with all N seats filled, but this
+  browser never received its seat confirmation." message rather than a generic stall.
 
 ## Funding (the operator's job, from Polar)
 
@@ -101,6 +119,22 @@ the participant-side awaiting-funding notice + honest stall/resolve copy. The ha
 - [ ] **Funding never arrives:** do not fund at all. Confirm the cohort dead-ends after the funding
       window with the specific "funding never arrived" reason (or, if you kill esplora over the
       lapse, the uncertainty-honest blind-lapse copy), not a generic phase stall.
+
+## Known upstream limits for this walkthrough
+
+These are @did-btcr2/aggregation@0.4.0 limits (filed upstream); work within them for a clean
+walkthrough:
+
+- Join within the cohort TTL window. The advert replay window now equals the discovery window
+  (the SVC-JOIN-1 fix), but the advert cache is still bounded, so join reasonably promptly after
+  advertising rather than leaving a cohort open for a long time before the second participant joins.
+- Do not reload a participant tab after joining. A seat is never released upstream, so a reload
+  abandons the seat with no way to reclaim it (the keep-this-tab-open warning already says this).
+- Do not advertise a second cohort before both participants have joined the first. The transport
+  keeps a single advert slot upstream, so a newer advert evicts the older one and late joiners
+  would then only ever discover the newest cohort.
+- Create each identity fresh per session. An imported duplicate secret (a key already seated) is
+  silently dropped upstream, so reusing one produces no visible seat.
 
 ---
 
