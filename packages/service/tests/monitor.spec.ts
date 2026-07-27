@@ -907,6 +907,43 @@ describe('createCohortMonitor funding view (LIVE-01, D-36 through D-43)', () => 
     }
   });
 
+  it('never regresses a funded cohort to dead-end (post-anchor change-UTXO backstop, live-UAT 04-08)', () => {
+    // The display watch retires itself at `funded`, so this guard only ever sees a straggler poll
+    // that was already in flight. The failure it blocks is the UAT one: the beacon tx routes change
+    // BACK to the beacon address by default (ADR 044), so a late read sees only that small change
+    // output and classifies it `dead-end` - and last-write-wins would have shown "Funded below the
+    // minimum" on a cohort that anchored successfully.
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner, undefined, undefined, 'live');
+    runner.emit('keygen-complete', { cohortId: 'c1', beaconAddress: 'bcrt1pbeaconaddress' });
+
+    monitor.noteFunding('c1', { ...sampleView, state: 'waiting' });
+    monitor.noteFunding('c1', { ...sampleView, state: 'funded' });
+    // The straggler: every unfunded state is refused once the cohort has read funded.
+    monitor.noteFunding('c1', { ...sampleView, state: 'dead-end' });
+    monitor.noteFunding('c1', { ...sampleView, state: 'awaiting-confirmation' });
+    monitor.noteFunding('c1', { ...sampleView, state: 'waiting' });
+
+    expect(monitor.detail('c1').funding?.state).toBe('funded');
+    // The summary chip stays off the `needs-funding` attention path, and the public non-oracle
+    // read stays honest (a funded cohort is not awaiting funding).
+    expect(monitor.summary().find((r) => r.cohortId === 'c1')?.chip).not.toBe('needs-funding');
+    expect(monitor.publicFunding('c1')).toEqual({ awaitingFunding: false });
+  });
+
+  it('still writes a dead-end verdict through on a cohort that never reached funded (shipped semantics preserved)', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner, undefined, undefined, 'live');
+    runner.emit('keygen-complete', { cohortId: 'c1', beaconAddress: 'bcrt1pbeaconaddress' });
+
+    monitor.noteFunding('c1', { ...sampleView, state: 'waiting' });
+    monitor.noteFunding('c1', { ...sampleView, state: 'dead-end' });
+    expect(monitor.detail('c1').funding?.state).toBe('dead-end');
+    // The terminal lapse folds (D-38/D-39) also still write through unchanged.
+    monitor.noteFunding('c1', { ...sampleView, state: 'dead-end', terminal: 'window-closed' });
+    expect(monitor.detail('c1').funding?.terminal).toBe('window-closed');
+  });
+
   it('is absent before any funding reading lands', () => {
     const runner = bareRunner();
     const monitor = createCohortMonitor(runner, undefined, undefined, 'live');

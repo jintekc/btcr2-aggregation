@@ -1117,6 +1117,20 @@ export function createCohortMonitor(
       if (serviceMode !== 'live') {
         return;
       }
+      // No-regression backstop (D-44, live-UAT field finding on 04-08): once a cohort reads
+      // `funded`, the funding view never falls back to an unfunded state. The display watch already
+      // retires itself at `funded` ({@link file://./funding-watch.ts}), so this only catches a
+      // straggler in-flight poll landing after that stop - but the failure it prevents is severe:
+      // the beacon tx routes change BACK to the beacon address by default (ADR 044), so a late read
+      // sees only the small post-anchor change UTXO and classifyFunding (stateless, and right for a
+      // never-funded address) calls it `dead-end`. Without this guard, last-write-wins would show
+      // "Funded below the minimum" on a cohort that anchored successfully. Cohorts that NEVER reach
+      // `funded` are untouched: their dead-end / window-closed / blind-lapse verdicts still write
+      // through exactly as before.
+      const previous = fundingViews.get(cohortId);
+      if (previous?.state === 'funded' && view.state !== 'funded') {
+        return;
+      }
       fundingViews.set(cohortId, view);
     },
 

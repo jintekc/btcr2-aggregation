@@ -177,7 +177,11 @@ export interface FundingWatchOptions {
 
 /** Handle for a running funding watch. */
 export interface FundingWatchHandle {
-  /** Stop polling (idempotent). */
+  /**
+   * Stop polling (idempotent). Safe to call after the loop has already retired itself on the
+   * terminal `funded` state (see {@link createFundingWatch}) - it only aborts a signal nobody
+   * is waiting on any more.
+   */
   stop(): void;
 }
 
@@ -226,6 +230,20 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
  * `tx.ts`: they share the predicate + minimum but poll separately, so the operator sees funding
  * progress from the moment keygen completes even though the builder's wait is what actually gates
  * signing.
+ *
+ * `funded` is a TERMINAL DISPLAY state: the loop emits it once and then retires itself. The funding
+ * stage's whole job ends there (the anchor stages take over from that point), and continuing to
+ * poll is actively DISHONEST rather than merely wasteful - a live-UAT field finding on plan 04-08.
+ * The beacon tx routes its change BACK to the beacon address by default ({@link file://./tx.ts}
+ * `LiveTxConfig.changeAddress`, ADR 044), so seconds after the cohort anchors the address holds
+ * only a small change UTXO. {@link classifyFunding} is stateless and would (correctly, for a
+ * never-funded address) classify that leftover as `dead-end`, and the monitor's last-write-wins
+ * funding view would then show "Funded below the minimum" on a cohort that just anchored
+ * successfully. Retiring at `funded` removes the source of that regression; the monitor keeps a
+ * matching no-regression guard as a backstop for any straggler in-flight poll (D-44).
+ *
+ * The AUTHORITATIVE wait in `tx.ts` is unaffected: it runs its own independent poll with its own
+ * exit conditions and never consults this handle.
  */
 export function createFundingWatch(opts: FundingWatchOptions): FundingWatchHandle {
   const controller = new AbortController();
@@ -251,6 +269,16 @@ export function createFundingWatch(opts: FundingWatchOptions): FundingWatchHandl
         return;
       }
       opts.onState(lastState, { lastObservationOk: observationOk });
+      // Terminal DISPLAY state: `funded` is the last thing this watch has to say. Retire the loop
+      // so a post-anchor change UTXO at the beacon address (change routes back there by default,
+      // ADR 044) can never be re-classified as `dead-end` and overwrite the funded view. Only a
+      // SUCCESSFUL classification can produce `funded` (a failed read re-emits the frozen
+      // last-known state, and the loop has already retired if that state was funded), so this
+      // never retires on a stale reading. Abort first so `stop()` stays idempotent either way.
+      if (lastState.state === 'funded') {
+        controller.abort();
+        return;
+      }
       await delay(pollIntervalMs, signal);
     }
   };

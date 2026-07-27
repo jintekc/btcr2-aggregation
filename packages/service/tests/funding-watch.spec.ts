@@ -196,3 +196,98 @@ describe('createFundingWatch (D-43 / D-39 lastObservationOk)', () => {
     expect(seen.state).toBe('waiting');
   });
 });
+
+/**
+ * A stateful mock esplora that yields each queued read IN ORDER and then repeats the final read
+ * forever - the way a real beacon address behaves once its funding UTXO is spent and only the
+ * change output remains. `calls()` exposes the read count so a retired poll loop is provable by
+ * the absence of further reads (not merely by the absence of further emissions).
+ */
+function sequencedConnection(reads: AddressUtxo[][]): { bitcoin: BitcoinConnection; calls: () => number } {
+  let i = 0;
+  const bitcoin = {
+    rest: {
+      address: {
+        getUtxos: async () => {
+          const next = reads[Math.min(i, reads.length - 1)];
+          i += 1;
+          return next;
+        },
+      },
+    },
+  } as unknown as BitcoinConnection;
+  return { bitcoin, calls: () => i };
+}
+
+/** Poll `predicate` until it holds, failing loudly rather than hanging the suite on a regression. */
+async function waitUntil(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+  const startedAt = Date.now();
+  while (!predicate()) {
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error('timed out waiting for the funding watch');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+}
+
+describe('createFundingWatch retires at funded (post-anchor change UTXO, live-UAT 04-08)', () => {
+  it('emits funded once, stops polling, and never regresses to dead-end on the leftover change UTXO', async () => {
+    const min = computeSuggestedMinSats(); // 2000
+    // The exact live sequence the UAT hit: an empty address, then the operator's adequate confirmed
+    // funding, then - after the beacon tx spends it - ONLY the small change output, which routes
+    // back to the beacon address by default (ADR 044). That leftover is confirmed, above dust, and
+    // below the minimum, so a still-running watch would classify it `dead-end` and (last-write-wins)
+    // show "Funded below the minimum" on a cohort that had just anchored successfully.
+    const chain = sequencedConnection([[], [utxo(100_000)], [utxo(600, { height: 200 })]]);
+    const states: string[] = [];
+    const handle = createFundingWatch({
+      bitcoin: chain.bitcoin,
+      beaconAddress: ADDR,
+      suggestedMinSats: min,
+      pollIntervalMs: 5,
+      onState: (state) => {
+        states.push(state.state);
+      },
+    });
+    try {
+      await waitUntil(() => states.includes('funded'));
+      const callsAtFunded = chain.calls();
+      // Wait out many poll intervals: a live loop would have read the change-only set several times.
+      await new Promise((resolve) => setTimeout(resolve, 80));
+
+      // (a) the view reaches funded, and (b) funded is the LAST word - no dead-end ever follows.
+      expect(states).toEqual(['waiting', 'funded']);
+      // (c) the loop retired: not one further esplora read after the funded classification.
+      expect(chain.calls()).toBe(callsAtFunded);
+    } finally {
+      // Idempotent even though the loop already retired itself.
+      handle.stop();
+    }
+  });
+
+  it('keeps polling through the unfunded states (only funded is terminal)', async () => {
+    // The retirement is specific to `funded`: a cohort that is still waiting (or has a pre-funding
+    // dead-end verdict) must keep being observed, so topping-up / confirmation still surfaces.
+    const min = computeSuggestedMinSats();
+    const chain = sequencedConnection([[], [utxo(100_000, { confirmed: false })], [utxo(600)]]);
+    const states: string[] = [];
+    const handle = createFundingWatch({
+      bitcoin: chain.bitcoin,
+      beaconAddress: ADDR,
+      suggestedMinSats: min,
+      pollIntervalMs: 5,
+      onState: (state) => {
+        states.push(state.state);
+      },
+    });
+    try {
+      await waitUntil(() => states.length >= 4);
+      expect(states.slice(0, 3)).toEqual(['waiting', 'awaiting-confirmation', 'dead-end']);
+      // A pre-funding dead-end keeps being re-observed exactly as shipped (the watch is watch-only
+      // and the operator surface owns the terminal messaging, not the loop).
+      expect(states[3]).toBe('dead-end');
+    } finally {
+      handle.stop();
+    }
+  });
+});
