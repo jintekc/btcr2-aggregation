@@ -1,3 +1,4 @@
+import { IN_FLIGHT_PHASES } from '@btcr2-aggregation/shared';
 import { StatusDot } from '../../ui/primitives';
 import type { CohortDetailDTO } from '../../lib/operator';
 
@@ -31,11 +32,27 @@ const STAGE_LABEL: Record<OperatorStage, string> = {
 
 /** Library phases that place a cohort at (at least) the Submissions stage. */
 const SUBMISSION_PHASES = new Set<string>(['CohortSet', 'CollectingUpdates']);
-/** Library phases that place a cohort at (at least) the Co-signing stage. */
-const CO_SIGN_PHASES = new Set<string>(['SigningStarted', 'NoncesCollected', 'AwaitingPartialSigs']);
+/**
+ * Library phases that place a cohort at (at least) the Co-signing stage: the shared in-flight set
+ * (review WR-05).
+ *
+ * This was a FOURTH, divergent copy that omitted the four funding-wait phases
+ * (`UpdatesCollected`, `DataDistributed`, `Validated`, `FallbackRequested`) the service's
+ * `operator-cohorts.ts` / `monitor.ts` and the web `lib/directory.ts` were all deliberately
+ * widened to include (SVC-JOIN-2). On a HERMETIC cohort sitting in one of them with nonces not
+ * yet observed, `deriveOperatorStage` bumped only to `submissions`, so the drill-down's primary
+ * visual anchor reported the cohort was collecting submissions while it was actually mid-signing.
+ * The live path's `detail.funding` bump masked it; the hermetic path (the default, and the one the
+ * e2e exercises) showed it.
+ */
+const CO_SIGN_PHASES = IN_FLIGHT_PHASES;
 
-/** Build the ordered stage list: the funding stage is present only for a live+broadcast cohort. */
-function stageOrder(hasFunding: boolean): OperatorStage[] {
+/**
+ * Build the ordered stage list: the funding stage is present only for a live+broadcast cohort.
+ * Exported alongside {@link deriveOperatorStage} so the stage derivation is directly spec-able
+ * (review WR-05); the component itself needs no DOM harness to pin its honesty.
+ */
+export function stageOrder(hasFunding: boolean): OperatorStage[] {
   const base: OperatorStage[] = ['advertise', 'filling', 'submissions', 'co-signing'];
   if (hasFunding) {
     base.push('funding');
@@ -51,7 +68,7 @@ function stageOrder(hasFunding: boolean): OperatorStage[] {
  * anchor state each ratchet the stage forward. A hermetic cohort with no anchor stays at co-signing
  * (its honest terminal); a live+broadcast cohort awaiting funds sits at the funding stage.
  */
-function deriveOperatorStage(detail: CohortDetailDTO, order: OperatorStage[]): OperatorStage {
+export function deriveOperatorStage(detail: CohortDetailDTO, order: OperatorStage[]): OperatorStage {
   let idx = order.indexOf('filling');
   const bump = (stage: OperatorStage): void => {
     const i = order.indexOf(stage);

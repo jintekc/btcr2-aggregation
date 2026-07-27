@@ -43,6 +43,11 @@
  */
 
 import { bytesToHex } from '@noble/hashes/utils';
+// The `filling` / `co-signing` chips and the open/inFlight metrics classify the same phase
+// strings the public directory does, and this module previously stated outright that its local
+// copies "MUST stay in lockstep or the console contradicts the public directory". Review WR-05
+// replaced all four copies with ONE shared source - see {@link file://../../shared/src/phases.ts}.
+import { IN_FLIGHT_PHASES, OPEN_PHASES } from '@btcr2-aggregation/shared';
 import type { Transaction } from '@scure/btc-signer';
 import type { AggregationServiceEvents, AggregationServiceRunner } from '@did-btcr2/aggregation/service';
 import type { BeaconBroadcaster } from './broadcast.js';
@@ -75,39 +80,6 @@ const MAX_TERMINAL = 24;
  * nonces + signing + broadcast frames) so a typical cohort never evicts mid-life.
  */
 const ACTIVITY_RING_SIZE = 200;
-
-/**
- * Cohort phases that count as OPEN/filling for the summary chip + open metric (mirrors
- * `operator-cohorts.ts` `OPEN_PHASES`): a cohort still discovering/gathering participants,
- * before signing starts. Kept as local string members so this module does not depend on
- * the library's phase enum value shape (same convention as operator-cohorts.ts).
- */
-const OPEN_PHASES = new Set<string>(['Advertised', 'CohortSet', 'CollectingUpdates']);
-
-/**
- * In-flight (post-seat, pre-terminal) phases for the `co-signing` chip + inFlight metric,
- * mirroring `operator-cohorts.ts` `IN_FLIGHT_PHASES` EXACTLY - the two sets MUST stay in
- * lockstep or the console contradicts the public directory. Kept local for the same reason
- * as {@link OPEN_PHASES}.
- *
- * The set spans the WHOLE mid-signing arc, not just the MuSig2 nonce/partial-sig rounds:
- * `UpdatesCollected`, `DataDistributed`, `Validated`, and `FallbackRequested` are the phases
- * a cohort sits in during the 04-06 live funding wait (`onProvideTxData` is called from
- * them). Omitting them made `summary()` assign NO chip and skip the row entirely during the
- * funding wait (empirically phase `Validated`), so the `needs-funding` attention chip (D-44)
- * never fired exactly when it mattered - the console showed a stale 'Filling' row instead of
- * the funding nudge - and `serviceMetrics()` counted the cohort in neither open nor inFlight
- * (SVC-JOIN-2 monitor leg).
- */
-const IN_FLIGHT_PHASES = new Set<string>([
-  'SigningStarted',
-  'NoncesCollected',
-  'AwaitingPartialSigs',
-  'UpdatesCollected',
-  'DataDistributed',
-  'Validated',
-  'FallbackRequested',
-]);
 
 /** Whether a folded member has only opted in (`pending`) or been seated (`seated`). */
 export type MemberStatus = 'pending' | 'seated';

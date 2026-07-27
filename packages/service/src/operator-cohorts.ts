@@ -57,62 +57,22 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { buildCohortConfig, type BeaconType, type NetworkName } from '@btcr2-aggregation/shared';
+// The phase sets are ONE cross-package source of truth (review WR-05): this module, `monitor.ts`,
+// `web/src/lib/directory.ts`, and `web/.../OperatorStageTimeline.tsx` each carried their own copy,
+// and the timeline's had drifted out of lockstep. See {@link file://../../shared/src/phases.ts} for
+// the full rationale, including why the four funding-wait phases are DISPLAY/in-flight phases
+// (SVC-JOIN-2) and why widening the DISPLAY set never widens the joinable set or the open count.
+import {
+  buildCohortConfig,
+  DISPLAY_PHASES,
+  OPEN_PHASES,
+  type BeaconType,
+  type NetworkName,
+} from '@btcr2-aggregation/shared';
 import type { AggregationServiceRunner, CohortConfig } from '@did-btcr2/aggregation/service';
 
 /** The two aggregation beacon types an operator may draft (singleton is single-party). */
 const KNOWN_BEACON_TYPES = new Set<string>(['CASBeacon', 'SMTBeacon']);
-
-/**
- * Cohort phases that count as open/joinable for the public directory (A1, RESEARCH).
- * These are exactly the pre-signing phases: a cohort still discovering or gathering
- * participants. Once signing starts (SigningStarted and later) or the cohort settles
- * (Complete/Failed) it is no longer an open entry. Filtering conservatively to this
- * set keeps a signing or finished cohort out of the "open" directory even before the
- * enrichment map is pruned. Kept as string members so this file does not depend on the
- * library's enum value shape.
- */
-const OPEN_PHASES = new Set<string>(['Advertised', 'CohortSet', 'CollectingUpdates']);
-
-/**
- * The in-flight (mid-signing) phases the public directory DISPLAYS as honest,
- * non-joinable "In progress" rows (D-26, RESEARCH Finding 5), so a service with a
- * cohort mid-signing still looks alive to a stranger browsing by choice. These are
- * strictly display-only: they widen {@link directory} but are DELIBERATELY kept out of
- * {@link OPEN_PHASES} so they never enter the join gate or the public open count.
- * Kept as string members so this file does not depend on the library's enum value shape.
- *
- * The set spans the WHOLE mid-signing arc, not just the MuSig2 nonce/partial-sig rounds:
- * `UpdatesCollected`, `DataDistributed`, `Validated`, and `FallbackRequested` are the
- * library phases a cohort sits in AFTER seats lock while the operator funds the beacon
- * address (the 04-06 live funding wait runs inside `onProvideTxData`, which the library
- * calls from these phases). Omitting them made the `/v1/directory` row VANISH for the
- * entire funding window: a seated participant's post-seat poll then saw the cohort go
- * dark and false-failed it as "ended" after ~10s (the SVC-JOIN-2 live-UAT killer). The
- * row must stay listed from seating straight through to Complete/Failed, so all four are
- * DISPLAY phases. Deliberate additive public-DTO change: `/v1/directory` rows may now
- * carry these four new phase strings (the client renders them as "In progress").
- */
-const IN_FLIGHT_PHASES = new Set<string>([
-  'SigningStarted',
-  'NoncesCollected',
-  'AwaitingPartialSigs',
-  'UpdatesCollected',
-  'DataDistributed',
-  'Validated',
-  'FallbackRequested',
-]);
-
-/**
- * The DISPLAY set for the public directory: the joinable pre-signing {@link OPEN_PHASES}
- * PLUS the in-flight {@link IN_FLIGHT_PHASES}. `directory()` filters on THIS union so
- * in-flight cohorts are listed (D-26), while the joinable gate ({@link OPEN_PHASES}, and
- * the web `isJoinable`/`pickedCohortClosed`) stays Advertised-tier only. Widening the
- * DISPLAY set here must never widen the open COUNT: `status().openCohorts` narrows back to
- * the {@link OPEN_PHASES} tier so the public open count stays exactly the joinable set
- * (D-09/D-26, RESEARCH Pitfall 3).
- */
-const DISPLAY_PHASES = new Set<string>([...OPEN_PHASES, ...IN_FLIGHT_PHASES]);
 
 /**
  * The exact UI-SPEC validation string for the single cohort-size floor; the browser
