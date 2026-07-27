@@ -1,6 +1,15 @@
 import { useState } from 'react';
-import { REGISTRATION_FEE_SATS, resolveNetwork } from '@btcr2-aggregation/shared';
-import { anchorSummaryState, roundTripOutcome, useParticipant } from '../../stores/participant';
+import {
+  MIN_REGISTRATION_FUNDING_SATS,
+  REGISTRATION_FEE_SATS,
+  resolveNetwork,
+} from '@btcr2-aggregation/shared';
+import {
+  anchorSummaryState,
+  firstUpdateResolveNote,
+  roundTripOutcome,
+  useParticipant,
+} from '../../stores/participant';
 import {
   findAppendedBeacon,
   serviceEndpointString,
@@ -45,6 +54,9 @@ export function CompletionSummary({ baseUrl, onBrowse }: { baseUrl: string; onBr
   const resolution = useParticipant((s) => s.resolution);
   const resolveError = useParticipant((s) => s.resolveError);
   const resolve = useParticipant((s) => s.resolve);
+  // The KEY-DID registration facts (D-46, ADR 0007) drive the honest first-update resolve note.
+  const idType = useParticipant((s) => s.idType);
+  const regStatus = useParticipant((s) => s.regStatus);
 
   if (!result) {
     return null;
@@ -67,6 +79,15 @@ export function CompletionSummary({ baseUrl, onBrowse }: { baseUrl: string; onBr
   const roundTrip = roundTripOutcome({ beaconPresent: Boolean(beacon), anchorEnabled });
   const version = resolution?.didDocumentMetadata?.versionId;
   const resolving = resolveStatus === 'resolving';
+  // ADR 0007 first-update chicken-and-egg: a KEY DID's first aggregated update resolves only after
+  // the controller's own genesis registration signal confirms (the cohort anchor covers later
+  // updates, never the first). Surface an honest note whenever that leg is still missing/unconfirmed.
+  const firstUpdateNote = firstUpdateResolveNote({
+    idType,
+    anchorEnabled,
+    beaconPresent: Boolean(beacon),
+    regStatus,
+  });
 
   return (
     <div className="space-y-4">
@@ -154,6 +175,15 @@ export function CompletionSummary({ baseUrl, onBrowse }: { baseUrl: string; onBr
             may still be indexing. Try Resolve again.
           </p>
         )}
+
+        {/* ADR 0007 first-update honesty (D-46): a KEY DID's first update resolves only after its own
+            genesis registration signal confirms. Rendered once a resolve attempt has settled so it
+            explains a not-yet-reflected result rather than flickering during the initial resolve. */}
+        {firstUpdateNote && (resolveStatus === 'resolved' || resolveStatus === 'failed') ? (
+          <p className="rounded-md border border-edge bg-canvas px-3 py-2 text-xs text-muted">
+            {firstUpdateNote}
+          </p>
+        ) : null}
 
         {doc ? (
           <Expander title="Resolved DID document">
@@ -280,6 +310,12 @@ function RegistrationStage({ baseUrl }: { baseUrl: string }) {
         resolves with the beacon appended; later updates ride the aggregate beacon.
       </p>
       <CopyField label={`fund this genesis beacon (${NET.label})`} value={`bitcoin:${beaconRegAddress}`} />
+      <p className="text-xs text-faint">
+        Fund it with one payment of at least{' '}
+        <span className="text-muted">{MIN_REGISTRATION_FUNDING_SATS.toString()} sats</span> (a{' '}
+        {REGISTRATION_FEE_SATS.toString()}-sat fee plus a dust-safe change output). A smaller UTXO cannot
+        build the registration transaction.
+      </p>
 
       {NET.isMainnet ? (
         <div className="space-y-2 rounded-md border border-bad/40 bg-bad/10 px-3 py-2 text-xs text-bad">
@@ -325,8 +361,8 @@ function RegistrationStage({ baseUrl }: { baseUrl: string }) {
 
       {regStatus === 'awaiting-funds' ? (
         <p className="rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
-          No spendable funds at that address yet. Send test coins to the address (a mutinynet faucet, for
-          example), then click again.
+          No spendable funds at that address yet. Send at least {MIN_REGISTRATION_FUNDING_SATS.toString()}{' '}
+          sats in one payment to the address (a mutinynet faucet, for example), then click again.
         </p>
       ) : null}
 

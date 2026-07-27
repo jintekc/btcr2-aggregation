@@ -753,6 +753,47 @@ export function roundTripOutcome(input: { beaconPresent: boolean; anchorEnabled:
 }
 
 /**
+ * Pure honest-resolve note for the KEY first-update chicken-and-egg (ADR 0007, D-46). A resolver
+ * only discovers beacon signals at beacon services ALREADY in the document under resolution
+ * ({@link file://../../../../docs/adr/0007-resolve-driver-and-first-update-discovery.md}). A KEY
+ * (k1) genesis document contains only the controller's own singleton beacons, never the cohort's
+ * aggregate beacon, so the FIRST aggregated update resolves only after the controller's OWN genesis
+ * P2TR registration signal (built by `buildSingletonRegistrationTx`) is funded, broadcast, and
+ * CONFIRMED. The cohort's aggregate anchor makes 2nd+ updates resolvable, never the first. An
+ * EXTERNAL (x1) DID bakes the aggregate beacon into genesis, so it needs no such leg.
+ *
+ * Returns a plain-language note when a KEY controller's first update is anchored on a live
+ * (broadcasting) service but the aggregate beacon is not yet in the resolved document AND their own
+ * registration signal is missing or unconfirmed - otherwise null. Uses the store's existing
+ * `regStatus` fact (broadcast-tracked, not confirmation-tracked): `registered` means the signal was
+ * broadcast but may still be unconfirmed, so the note stays honest about the confirmation wait.
+ */
+export function firstUpdateResolveNote(input: {
+  idType: IdType;
+  anchorEnabled: boolean;
+  beaconPresent: boolean;
+  regStatus: RegistrationStatus;
+}): string | null {
+  // The registration leg is a KEY-only concern (x1 bakes the beacon into genesis).
+  if (input.idType !== 'KEY') {
+    return null;
+  }
+  // Hermetic (no-broadcast) services have no on-chain signal to discover at all: the genesis
+  // registration note only applies to a live cohort whose anchor really broadcasts.
+  if (!input.anchorEnabled) {
+    return null;
+  }
+  // Once the aggregate beacon is present the first update already resolved: nothing to explain.
+  if (input.beaconPresent) {
+    return null;
+  }
+  if (input.regStatus === 'registered') {
+    return 'Your registration signal is broadcast, but resolution will not show your update until that signal confirms on-chain. Mine or wait a block, then resolve again.';
+  }
+  return 'Your update is anchored, but resolution will not show it until your own genesis registration signal confirms. Complete the "Register first update" step below, then resolve again.';
+}
+
+/**
  * Pure mode-honest anchor narration selector (WR-01, D-07/D-22; 03-VERIFICATION.md Truth 7 /
  * 03-REVIEW.md WR-01). Maps every anchor read to exactly one of five honest completion-summary
  * states, replacing the two-way anchored-or-hermetic collapse WR-01 flagged (which mis-narrated
