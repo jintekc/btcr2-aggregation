@@ -51,9 +51,9 @@ the participant-side awaiting-funding notice + honest stall/resolve copy. The ha
 
 ## Participants: join and submit
 
-- [ ] In one or more participant browser windows (or tabs), browse the directory, pick the cohort,
+- [x] In one or more participant browser windows (or tabs), browse the directory, pick the cohort,
       generate an identity, join, and submit the DID update. Fill every seat.
-- [ ] Confirm the participant sees the join-time on-chain notice and, after seats fill, the honest
+- [x] Confirm the participant sees the join-time on-chain notice and, after seats fill, the honest
       "waiting for the operator to fund this cohort's beacon address" copy (D-44), NOT a generic
       stall.
 
@@ -85,6 +85,11 @@ cohort fills and funds. On this re-run, expect:
 - [ ] When seats fill, keygen runs. Confirm the operator console surfaces the funding stage in the
       drill-down and a `Needs funding` chip on the cohort, showing the beacon address (with copy +
       explorer link) and ONE suggested minimum in sats. The terminal also prints FUND THIS ADDRESS.
+- [ ] **WARNING (verified in the field): fund the beacon address with ONE payment of at least the
+      displayed suggested minimum.** A below-minimum FIRST send permanently dead-ends the address:
+      the beacon always spends the oldest confirmed coin there (deepest-first coin selection), so
+      a later top-up confirms shallower and is never picked, and the only way out is re-creating
+      the cohort on a fresh address. Do not split the amount across two sends.
 - [ ] From Polar, send ONE UTXO at or above the suggested minimum to the beacon address, then mine
       1 block so it confirms.
 - [ ] Watch the funding stage advance honestly: waiting -> seen (unconfirmed in mempool, if you
@@ -140,6 +145,11 @@ walkthrough:
   would then only ever discover the newest cohort.
 - Create each identity fresh per session. An imported duplicate secret (a key already seated) is
   silently dropped upstream, so reusing one produces no visible seat.
+- Fund each beacon address with ONE adequate payment. The coin selection in @did-btcr2/method
+  (selectSpendableUtxo) is deepest-first with only a dust floor: it cannot skip an inadequate
+  older coin, so a below-minimum first send dead-ends the address permanently and topping up
+  cannot fix it. An enhancement request against @did-btcr2/method (prefer the deepest ADEQUATE
+  utxo above a caller-supplied floor) joins the upstream issue list.
 
 ---
 
