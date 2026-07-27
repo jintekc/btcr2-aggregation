@@ -1033,6 +1033,41 @@ describe('createCohortMonitor funding view (LIVE-01, D-36 through D-43)', () => 
     expect(monitor.detail('c1').funding?.terminal).toBe('window-closed');
   });
 
+  it('bounds the funding-view map at 24 with oldest-first eviction (review WR-02)', () => {
+    // The map carried a comment claiming "unbounded is fine: one entry per live cohort, and the
+    // live cohort set is itself bounded by the runner's session". Nothing removed an entry when a
+    // cohort left the session, and index.ts writes one MORE at cohort-failed, so it grew without
+    // limit under an operator-triggerable action. It now uses the same 24-entry, oldest-first
+    // `remember` idiom as `ended` / `entries` / anchor-state.
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner, undefined, undefined, 'live');
+    for (let i = 0; i < 30; i += 1) {
+      const cohortId = `c${i}`;
+      runner.emit('keygen-complete', { cohortId, beaconAddress: 'bcrt1pbeaconaddress' });
+      monitor.noteFunding(cohortId, { ...sampleView, state: 'waiting' });
+    }
+    // The 6 oldest funding views are evicted; the newest 24 are still served.
+    expect(monitor.publicFunding('c0')).toEqual({ awaitingFunding: false });
+    expect(monitor.publicFunding('c5')).toEqual({ awaitingFunding: false });
+    expect(monitor.publicFunding('c6')).toEqual({ awaitingFunding: true });
+    expect(monitor.publicFunding('c29')).toEqual({ awaitingFunding: true });
+  });
+
+  it('re-noting a cohort refreshes its insertion order, so an active cohort is not the one evicted', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner, undefined, undefined, 'live');
+    for (let i = 0; i < 24; i += 1) {
+      runner.emit('keygen-complete', { cohortId: `c${i}`, beaconAddress: 'bcrt1pbeaconaddress' });
+      monitor.noteFunding(`c${i}`, { ...sampleView, state: 'waiting' });
+    }
+    // c0 is the oldest, but it is still actively funding: a fresh reading moves it to the end.
+    monitor.noteFunding('c0', { ...sampleView, state: 'awaiting-confirmation' });
+    // One more cohort tips the map over the cap; c1 (now the oldest) goes, not c0.
+    monitor.noteFunding('c24', { ...sampleView, state: 'waiting' });
+    expect(monitor.publicFunding('c0')).toEqual({ awaitingFunding: true });
+    expect(monitor.publicFunding('c1')).toEqual({ awaitingFunding: false });
+  });
+
   it('stops reporting awaitingFunding once the cohort has terminally lapsed (review WR-01)', () => {
     // index.ts folds the lapse verdict in as `{ ...last, terminal }` and leaves `state` at its
     // last-known `waiting`. A state-only public read then told every anonymous caller the dead

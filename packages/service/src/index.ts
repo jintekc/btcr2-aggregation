@@ -412,6 +412,34 @@ export interface Service {
 }
 
 /**
+ * Upper bound on the per-cohort side-tables this module keeps outside the runner (review WR-02).
+ * Mirrors the 24-entry bound every other per-cohort map in this phase uses (`monitor.ts`
+ * `MAX_MONITORED` / `MAX_TERMINAL`, `operator-cohorts.ts` `MAX_TERMINAL`, `anchor-state.ts`), so
+ * a long-lived self-hosted service cannot grow them without limit under an operator-triggerable
+ * action (T-04-01-02 / T-04-02-03 DoS). The tables are also pruned on both terminal paths; this
+ * cap is the backstop for a cohort that reaches neither (a service stopped mid-cohort).
+ */
+const MAX_PER_COHORT_ENTRIES = 24;
+
+/**
+ * Insert into a per-cohort side-table, evicting oldest-first past {@link MAX_PER_COHORT_ENTRIES}.
+ * Mirrors the `remember` delete-then-set idiom of {@link file://./anchor-state.ts}: the delete
+ * moves a progressing cohort's key to the end of the insertion order, so an in-flight cohort is
+ * never the entry evicted.
+ */
+function rememberBounded<V>(map: Map<string, V>, cohortId: string, value: V): void {
+  map.delete(cohortId);
+  map.set(cohortId, value);
+  while (map.size > MAX_PER_COHORT_ENTRIES) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) {
+      break;
+    }
+    map.delete(oldest);
+  }
+}
+
+/**
  * Derive a block-explorer URL for a beacon ADDRESS from the network's txid explorer template
  * (D-36 funding stage "View on explorer" link). {@link NetworkConfig} exposes only
  * `explorerTxUrl(txid)` (`.../tx/{txid}`); every mempool-style explorer this app targets uses the
@@ -537,6 +565,10 @@ export function createService(opts: CreateServiceOptions): Service {
   // Advertise timestamps per cohort, for the funding wait's remaining-TTL clamp (D-38). The
   // library's `cohortTtlMs` is armed at advertise and never reset, so the wait must subtract the
   // already-elapsed time; `cohort-advertised` is the earliest per-cohort signal we can stamp.
+  //
+  // BOUNDED at {@link MAX_PER_COHORT_ENTRIES} with oldest-first eviction, and pruned on both
+  // terminal paths (review WR-02): one entry per advertise, never deleted, was unbounded growth
+  // driven by an operator-triggerable action on a long-lived self-hosted service (T-04-01-02).
   const advertisedAt = new Map<string, number>();
 
   let live: LiveTxConfig | undefined;
@@ -725,7 +757,7 @@ export function createService(opts: CreateServiceOptions): Service {
   // config's `remainingCohortTtlMs` closure and the funding watch's truncated-window disclosure.
   runner.on('cohort-advertised', ({ cohortId }) => {
     if (!advertisedAt.has(cohortId)) {
-      advertisedAt.set(cohortId, Date.now());
+      rememberBounded(advertisedAt, cohortId, Date.now());
     }
   });
 
@@ -735,10 +767,36 @@ export function createService(opts: CreateServiceOptions): Service {
   // poll that feeds the monitor's funding view (the gated detail read) + the `needs-funding`
   // attention chip. This display watch is separate from the AUTHORITATIVE wait that gates signing
   // in tx.ts (onProvideTxData); both share classifyFunding + the suggested minimum so they agree.
+  //
+  // Bounded + pruned on both terminal paths like {@link advertisedAt} (review WR-02): a cohort
+  // that SUCCEEDS used to leave its retired handle in this map forever (only `cohort-failed`
+  // deleted), so a service that anchored many cohorts grew it without limit.
   const fundingWatches = new Map<string, FundingWatchHandle>();
   // The last funding view reported per cohort, so `cohort-failed` can compose the terminal lapse
-  // outcome (window-closed vs blind-lapse) from the last-known funding state (D-38/D-39).
+  // outcome (window-closed vs blind-lapse) from the last-known funding state (D-38/D-39). Written
+  // on every watch tick and, before review WR-02, deleted on NO path at all: bounded + pruned the
+  // same way. Each entry retains a FundingView (beacon address, explorer URL, flags).
   const lastFundingView = new Map<string, FundingView>();
+
+  /**
+   * Release every per-cohort side-table entry for a settled cohort (review WR-02). Called from
+   * BOTH terminal listeners - `signing-complete` (success) and `cohort-failed` - because a cohort
+   * leaves the runner's live set on either, and nothing else ever removed these entries. Stopping
+   * the watch here is idempotent (the display watch retires itself at `funded`).
+   */
+  function releaseCohortTables(cohortId: string): void {
+    fundingWatches.get(cohortId)?.stop();
+    fundingWatches.delete(cohortId);
+    lastFundingView.delete(cohortId);
+    advertisedAt.delete(cohortId);
+  }
+
+  // Success path: a cohort that anchors settles here and never fires `cohort-failed`, so without
+  // this listener its side-table entries were retained for the life of the process. Registered
+  // unconditionally (cheap, and `advertisedAt` is populated on the hermetic path too).
+  runner.on('signing-complete', ({ cohortId }) => {
+    releaseCohortTables(cohortId);
+  });
   if (opts.broadcast && live && netConfig) {
     const netConf = netConfig;
     const liveConf = live;
@@ -788,14 +846,14 @@ export function createService(opts: CreateServiceOptions): Service {
             // last-known one (the watch does not fabricate), only this bit flips.
             esploraStale: !lastObservationOk,
           };
-          lastFundingView.set(cohortId, view);
+          rememberBounded(lastFundingView, cohortId, view);
           monitor.noteFunding(cohortId, view);
           // Flip the health strip's esplora bit in step (D-43): a failed funding read is exactly the
           // mid-flight outage that must freeze every cohort stale-honest.
           monitor.noteEsploraObservation(lastObservationOk);
         },
       });
-      fundingWatches.set(cohortId, handle);
+      rememberBounded(fundingWatches, cohortId, handle);
     });
 
     // A cohort that FAILED without reaching `funded` fails for want of funding (the wait threw): fold
@@ -815,8 +873,9 @@ export function createService(opts: CreateServiceOptions): Service {
           terminal: last.esploraStale ? 'blind-lapse' : 'window-closed',
         });
       }
-      handle.stop();
-      fundingWatches.delete(cohortId);
+      // Release the watch handle AND the side-table entries (review WR-02); the terminal verdict
+      // above has already been folded into the monitor, which owns its own bounded retention.
+      releaseCohortTables(cohortId);
     });
   }
 

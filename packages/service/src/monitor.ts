@@ -627,8 +627,16 @@ export function createCohortMonitor(
   const ended = new Map<string, EndedRecord>();
   /**
    * Latest operator funding view per live+broadcast cohort (D-36 through D-43), set by the live-path
-   * funding watch via {@link noteFunding}. Never populated on the hermetic path. Unbounded is fine:
-   * one entry per live cohort, and the live cohort set is itself bounded by the runner's session.
+   * funding watch via {@link noteFunding}. Never populated on the hermetic path.
+   *
+   * BOUNDED at {@link MAX_TERMINAL} with oldest-first eviction, like every other per-cohort map in
+   * this module (review WR-02). It previously carried a comment claiming "unbounded is fine: one
+   * entry per live cohort, and the live cohort set is itself bounded by the runner's session" -
+   * that claim was false and load-bearing (it was the stated reason no bound existed). NOTHING
+   * removes an entry when a cohort leaves the session, and `index.ts` writes one MORE entry at
+   * `cohort-failed`, so on a long-lived self-hosted service this grew without limit under an
+   * operator-triggerable action, in a module family that treats exactly that as a DoS concern
+   * (T-04-01-02 / T-04-02-03).
    */
   const fundingViews = new Map<string, FundingView>();
 
@@ -691,6 +699,25 @@ export function createCohortMonitor(
         break;
       }
       entries.delete(oldest);
+    }
+  }
+
+  /**
+   * Store a cohort's latest funding view, bounded at {@link MAX_TERMINAL} with oldest-first
+   * eviction (review WR-02). Reuses the {@link remember} delete-then-set idiom: the delete moves a
+   * progressing cohort's key to the end of the insertion order, so an actively-funding cohort is
+   * never the one evicted. A funding view that ages out simply stops being served - the funding
+   * stage is a bounded live view, exactly like the metrics (D-06).
+   */
+  function rememberFunding(cohortId: string, view: FundingView): void {
+    fundingViews.delete(cohortId);
+    fundingViews.set(cohortId, view);
+    while (fundingViews.size > MAX_TERMINAL) {
+      const oldest = fundingViews.keys().next().value;
+      if (oldest === undefined) {
+        break;
+      }
+      fundingViews.delete(oldest);
     }
   }
 
@@ -1131,7 +1158,7 @@ export function createCohortMonitor(
       if (previous?.state === 'funded' && view.state !== 'funded') {
         return;
       }
-      fundingViews.set(cohortId, view);
+      rememberFunding(cohortId, view);
     },
 
     publicFunding(cohortId: string): { awaitingFunding: boolean } {
