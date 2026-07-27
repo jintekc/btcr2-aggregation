@@ -81,8 +81,27 @@ const OPEN_PHASES = new Set<string>(['Advertised', 'CohortSet', 'CollectingUpdat
  * strictly display-only: they widen {@link directory} but are DELIBERATELY kept out of
  * {@link OPEN_PHASES} so they never enter the join gate or the public open count.
  * Kept as string members so this file does not depend on the library's enum value shape.
+ *
+ * The set spans the WHOLE mid-signing arc, not just the MuSig2 nonce/partial-sig rounds:
+ * `UpdatesCollected`, `DataDistributed`, `Validated`, and `FallbackRequested` are the
+ * library phases a cohort sits in AFTER seats lock while the operator funds the beacon
+ * address (the 04-06 live funding wait runs inside `onProvideTxData`, which the library
+ * calls from these phases). Omitting them made the `/v1/directory` row VANISH for the
+ * entire funding window: a seated participant's post-seat poll then saw the cohort go
+ * dark and false-failed it as "ended" after ~10s (the SVC-JOIN-2 live-UAT killer). The
+ * row must stay listed from seating straight through to Complete/Failed, so all four are
+ * DISPLAY phases. Deliberate additive public-DTO change: `/v1/directory` rows may now
+ * carry these four new phase strings (the client renders them as "In progress").
  */
-const IN_FLIGHT_PHASES = new Set<string>(['SigningStarted', 'NoncesCollected', 'AwaitingPartialSigs']);
+const IN_FLIGHT_PHASES = new Set<string>([
+  'SigningStarted',
+  'NoncesCollected',
+  'AwaitingPartialSigs',
+  'UpdatesCollected',
+  'DataDistributed',
+  'Validated',
+  'FallbackRequested',
+]);
 
 /**
  * The DISPLAY set for the public directory: the joinable pre-signing {@link OPEN_PHASES}

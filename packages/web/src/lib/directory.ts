@@ -37,9 +37,20 @@ export const JOINABLE_PHASE = 'Advertised';
  * The mid-signing phases the widened directory DISPLAY set surfaces (D-26): a service that
  * is busy co-signing still looks alive to a stranger, listed as a non-joinable "In progress"
  * row. These mirror the service's `IN_FLIGHT_PHASES` (`packages/service/src/operator-cohorts.ts`)
- * and are never in {@link JOINABLE_PHASE}, so {@link isJoinable} stays Advertised-only.
+ * EXACTLY - including the post-seat funding-wait phases (`UpdatesCollected`, `DataDistributed`,
+ * `Validated`, `FallbackRequested`) the service now also lists so the row never vanishes during
+ * the live funding window (SVC-JOIN-2). They are never in {@link JOINABLE_PHASE}, so
+ * {@link isJoinable} stays Advertised-only; this only decides the plain-language label.
  */
-const IN_FLIGHT_PHASES = new Set<string>(['SigningStarted', 'NoncesCollected', 'AwaitingPartialSigs']);
+const IN_FLIGHT_PHASES = new Set<string>([
+  'SigningStarted',
+  'NoncesCollected',
+  'AwaitingPartialSigs',
+  'UpdatesCollected',
+  'DataDistributed',
+  'Validated',
+  'FallbackRequested',
+]);
 
 /** The plain-language status labels the directory renders (D-09/D-26). */
 export type StatusLabel = 'Open' | 'Filling' | 'Collecting updates' | 'In progress' | 'Full' | string;
