@@ -179,6 +179,22 @@ export interface CreateServiceOptions {
    */
   maxBodyBytes?: number;
   /**
+   * Advert-cache TTL, in ms: how long the transport keeps a cohort's advert in its
+   * SSE replay window so a LATE-connecting participant still receives it on subscribe.
+   * The library default is 5 minutes, but the public directory advertises a cohort as
+   * joinable for the full {@link cohortTtlMs} discovery window (the demo default is 30
+   * min). With the two out of step, a second participant who opens the app more than ~5
+   * min after a cohort was advertised sees it as joinable in the directory yet never
+   * receives the advert over SSE, so it never opts in and sits at "connecting" forever
+   * (the SVC-JOIN-1 live-UAT stall). Left undefined, `createService` defaults this to
+   * `cohortTtlMs` so the advert replay window equals the directory discovery window on
+   * the product path; the boot-time perpetual auto-advertise loop that used to re-emit
+   * adverts is gone (D-17), so the replay window is the ONLY thing keeping a still-open
+   * cohort discoverable to a late subscriber. Passed through to the transport only when
+   * resolvable, matching the {@link maxBodyBytes} spread pattern.
+   */
+  advertTtlMs?: number;
+  /**
    * Per-cohort overall TTL, in ms: the two-sided cohort lifetime budget from
    * advertise to signing-complete. Left undefined the runner NEVER times a
    * cohort out, so a participant who joins then walks away mid-flow leaves the
@@ -485,6 +501,17 @@ export function createService(opts: CreateServiceOptions): Service {
     // Bound the opt-in body before the genesis hash check (default 64 KiB); passed
     // through only when set so the transport default otherwise applies.
     ...(opts.maxBodyBytes !== undefined ? { maxBodyBytes: opts.maxBodyBytes } : {}),
+    // Equalize the advert SSE replay window with the directory discovery window
+    // (SVC-JOIN-1). The library default is 5 min, but a cohort stays joinable in the
+    // public directory for the full cohortTtl (demo default 30 min) and no
+    // auto-republish loop re-emits the advert (D-17), so a late-connecting second
+    // participant would otherwise never receive the advert and hang at "connecting".
+    // Default to cohortTtlMs; honor an explicit advertTtlMs override. Passed through
+    // only when resolvable so the transport default otherwise applies.
+    ...(() => {
+      const advertTtlMs = opts.advertTtlMs ?? opts.cohortTtlMs;
+      return advertTtlMs !== undefined ? { advertTtlMs } : {};
+    })(),
   });
   transport.registerActor(did, keys);
 
