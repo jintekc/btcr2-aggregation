@@ -4,16 +4,16 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 04
 current_phase_name: operator-cohort-monitoring
-status: executing
-stopped_at: Completed 04-07-PLAN.md
-last_updated: "2026-07-24T21:25:37.756Z"
-last_activity: 2026-07-24
-last_activity_desc: Executed 04-02 (dashboard-SSE retirement + monitor summary read model)
+status: executed
+stopped_at: Completed 04-08-PLAN.md (phase 4 execution complete, pending verification)
+last_updated: "2026-07-27T19:40:00.000Z"
+last_activity: 2026-07-27
+last_activity_desc: Executed 04-08 (proof harnesses + docs + owner live-UAT gate approved; SVC-03 + LIVE-01 validated)
 progress:
   total_phases: 4
   completed_phases: 3
   total_plans: 30
-  completed_plans: 29
+  completed_plans: 30
 ---
 
 # Project State
@@ -27,12 +27,12 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 
 ## Current Position
 
-Phase: 04 (operator-cohort-monitoring) — EXECUTING
-Plan: 8 of 8 (04-01, 04-02 complete)
-Status: Ready to execute
-Last activity: 2026-07-24 — Executed 04-02 (dashboard-SSE retirement + monitor summary read model)
+Phase: 04 (operator-cohort-monitoring) - EXECUTION COMPLETE, pending verification
+Plan: 8 of 8 (all 8 plans complete)
+Status: Ready to verify (/gsd-verify-work 4)
+Last activity: 2026-07-27 - Executed 04-08 (proof harnesses + docs + owner live-UAT gate approved; SVC-03 + LIVE-01 validated)
 
-Progress: [██████████] 97%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -89,6 +89,7 @@ Progress: [██████████] 97%
 | Phase 04 P05 | 15min | 3 tasks | 7 files |
 | Phase 04 P06 | 35min | 3 tasks | 13 files |
 | Phase 04 P07 | 22min | 3 tasks | 8 files |
+| Phase 04 P08 | 3 days elapsed (checkpoint-dominated) | 3 tasks | 32 files |
 
 ## Accumulated Context
 
@@ -123,19 +124,23 @@ Recent decisions affecting current work (Phase 2):
 - [Phase ?]: 04-05: LIVE-01 boot half - BROADCAST=1 (requires LIVE=1) passes {live,broadcast} into createService behind ADR 0010 rails; bounded broadcast send retry (duplicate-acceptance=success, honest exhaustion); monitor serviceHealth mode+esplora bit. LIVE=1 alone unchanged (fixture co-sign). LIVE-01 advanced, completed by 04-06 funding stage + 04-08 UAT.
 - [Phase ?]: [Phase 04] 04-06 (LIVE-01 funding half): ONE selectSpendableUtxo predicate (classifyFunding) + one suggested minimum shared by the operator display watch and the authoritative onProvideTxData wait (D-36/D-37); the wait clamps its deadline to min(window, remaining TTL - slack) and throws 'funding never arrived' (clean lapse) or an uncertainty-honest reason (blind lapse, D-39) before either library timer, engaged only when fundingWindowMs is set (single-shot pre-flight preserved). Monitor FundingView + needs-funding chip (D-44) + FundingStage.tsx (recovery-key always, mainnet lines, truncated-window/esplora-stale disclosures) gated to live+broadcast. recoveryKeyOperatorHeld is a new option (config.recoveryKey is always auto-filled so cannot distinguish); demo-server passes Boolean(RECOVERY_KEY). Stateful []-then-funded e2e proves awaiting-funding -> funded auto-advance. 452 tests + web build + mock e2e green. LIVE-01 advanced (completed by 04-08 UAT).
 
+- [Phase 04] 04-08 (SVC-03 + LIVE-01 close-out): the proof layer is three-tier - hermetic fixture `e2e:monitor` leg on operator-cohort.ts, a local playwright-core `e2e:browser:operator` capstone (CI wiring stays Phase-6 debt, D-49), and the committed opt-in `pnpm uat:live` harness reshaped onto the env-passthrough LIVE=1 BROADCAST=1 demo-server boot with the getUtxos monkey-patch dropped (D-48). Docs: ADR 0016 records the polled monitoring read model with `Supersedes: ADR 0004` + `Amends: ADR 0015` (the retired /dashboard/events + EventSource-header rationale removed; the cookie session survives on its own merits), DEPLOY gained the honest going-live section (BROADCAST/RECOVERY_KEY/FUNDING_WINDOW_MS/LIVE_CHANGE_ADDRESS/SERVICE_NAME, the funding walkthrough, mutinynet flagship / regtest local / hermetic default), and three scoping one-pagers landed under .planning/scoping/ (D-52/D-53/D-54).
+- [Phase 04] 04-08 (live-UAT gate APPROVED after 3 gap-closure rounds): the owner drove the full two-sided loop on Polar/regtest (advertise -> two browser participants join -> single-payment cohort funding -> co-sign -> broadcast -> confirmed anchor -> per-participant KEY registration -> resolve reflected the update). Nine of our own defects fixed: advert replay window equalized with the 30-min directory window via advertTtlMs threading (finite-positive guarded, typed HttpServerTransportConfig so an upstream rename fails tsc); the four funding-wait phases (UpdatesCollected/DataDistributed/Validated/FallbackRequested) added to IN_FLIGHT_PHASES in ALL THREE mirrored places (operator-cohorts.ts, monitor.ts, web directory.ts) so a funding cohort stays listed, keeps its needs-funding chip, and counts inFlight; the live seat count moved to CohortPage (its only prior home was dead since 03-05); honest race-loser copy via the pure seatLineCopy() helper; single-payment funding copy + the oldest-coin dead-end explanation; firstUpdateResolveNote() explaining the ADR 0007 KEY first-update chicken-and-egg + the 1330-sat register minimum, claiming 'anchored' ONLY on state === 'confirmed'; and `funded` made a terminal DISPLAY state (the watch retires, the monitor never regresses) because beacon change routes back to the beacon address.
+- [Phase 04] 04-08: six library-level defects surfaced by the live UAT were deliberately NOT worked around in this consumer app (standing constraint: reference consumer, not a fork) - single advert slot, no seat release, silent duplicate/surplus opt-in drop, ignored advertRepeatIntervalMs, 60s envelope-skew replay rejection (all @did-btcr2/aggregation@0.4.0), and deepest-first selectSpendableUtxo with only a dust floor (@did-btcr2/method@0.51.0). They are documented in 04-LIVE-UAT-CHECKLIST.md under 'Known upstream limits' and queued for upstream issue filing.
+
 ### Pending Todos
 
 [From .planning/todos/pending/ - ideas captured during sessions]
 
-7 pending (captured 2026-07-21/22 from Phase 3 UAT product-direction feedback and live testing; none block Phase 3):
+All 7 pending todos (captured 2026-07-21/22 from Phase 3 UAT) were folded into Phase 4 and are now resolved or scoped:
 
-- Fix terminalReason misattributed stall copy (CohortPage narrates any unexplained signing-window death as a submit stall; confirmed user-visible in live UAT)
-- Handle unconfirmed beacon signals during resolution (upstream Invalid-date throw in @did-btcr2/method when a signal tx is mempool-resident; hit live during UAT)
-- Let participants supply their own esplora endpoint (trust minimization; proxy stays the default)
-- Add operator UI flow to fund cohort beacon address (live path is e2e-only today)
-- Surface live beacon broadcast in the UI (demo-server never passes live/broadcast to createService; also blocks UAT Test 1 live half + Test 4)
-- Support external signers instead of pasted private keys (MuSig2 leg needs upstream signer interface; PSBT for registration leg sooner)
-- Scope ToS, contracts, payments, and participant notifications (new milestone-level scope)
+- ✓ Fix terminalReason misattributed stall copy - shipped in 04-07
+- ✓ Handle unconfirmed beacon signals during resolution - resolve guard shipped in 04-07
+- ✓ Add operator UI flow to fund cohort beacon address - funding stage shipped in 04-06
+- ✓ Surface live beacon broadcast in the UI - BROADCAST=1 boot enablement shipped in 04-05
+- → Let participants supply their own esplora endpoint - SCOPED in .planning/scoping/participant-esplora-override.md (no build this phase, D-54)
+- → Support external signers instead of pasted private keys - SCOPED in .planning/scoping/external-signers.md (PSBT registration leg sooner; full MuSig2 needs an upstream signer interface)
+- → Scope ToS, contracts, payments, and participant notifications - SCOPED in .planning/scoping/tos-payments-notifications.md (milestone-level scope)
 
 ### Blockers/Concerns
 
@@ -143,7 +148,8 @@ Recent decisions affecting current work (Phase 2):
 
 - ✓ [Phase 1] Operator authentication shipped (ADR 0015) - the control plane is no longer unauthenticated; this must stay green in every later phase. Non-blocking follow-up before public-internet deploy: T-01-06 login-throttle-per-proxy + WR-02 NaN-TTL hardening (see 01-SECURITY.md / 01-REVIEW.md).
 - Cohort state is single-process and in-memory; durability/crash-recovery is deferred to v2 (DUR-01). The boot-time auto-advertise loop that used to drive cohorts was removed in Phase 1 - cohorts now exist only on operator action.
-- [Phase 3 UAT] Live-path operability gaps found over a real regtest chain (Polar): the product boot path cannot enable broadcast, cohort-beacon funding has no UI, resolution fails on unconfirmed signals (upstream @did-btcr2/method), and the stall copy misattributes signing failures - all captured as pending todos; fold into Phase 4/5 planning. (The Phase 2 WR-02 mid-join-feedback concern was RESOLVED by Phase 3's D-24/D-25 states.)
+- ✓ [Phase 3 UAT] Live-path operability gaps found over a real regtest chain (Polar) are CLOSED by Phase 4 (LIVE-01): BROADCAST=1 boot enablement (04-05), the cohort-beacon funding stage (04-06), the participant awaiting-funding / stall-copy / unconfirmed-signal-resolve fixes (04-07), and the owner-approved live walkthrough (04-08). (The Phase 2 WR-02 mid-join-feedback concern was RESOLVED by Phase 3's D-24/D-25 states.)
+- [Phase 4 UAT] Six upstream defects are OPEN against the published libraries and shape how a live cohort must be run (single advert slot, no seat release, silent duplicate/surplus opt-in drop, ignored advertRepeatIntervalMs, 60s envelope-skew replay rejection, deepest-first coin selection with only a dust floor). Documented as known limits in 04-LIVE-UAT-CHECKLIST.md; issues still need to be FILED upstream against @did-btcr2/aggregation and @did-btcr2/method.
 
 ## Deferred Items
 
@@ -158,7 +164,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-24T21:25:37.747Z
-Stopped at: Completed 04-07-PLAN.md
+Last session: 2026-07-27T19:40:00.000Z
+Stopped at: Completed 04-08-PLAN.md (all 8 phase-4 plans executed; the blocking owner live-UAT gate was approved)
 Resume file: None
-Next command: /gsd-execute-phase 4 (continue Wave 3: 04-03 console list surface renders the monitoring chips + metrics)
+Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)

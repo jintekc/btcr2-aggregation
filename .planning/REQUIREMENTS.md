@@ -13,8 +13,8 @@ Requirements for the realigned two-sided product. Each maps to roadmap phases.
 
 - [x] **SVC-01**: Operator can create and configure a new cohort on demand, choosing beacon type (CAS or SMT), Bitcoin network, n-of-n threshold, and capacity/roster, without editing boot-time env vars or restarting the process
 - [x] **SVC-02**: Operator can advertise (publish) a configured cohort so it becomes visible and joinable in that service's cohort directory
-- [ ] **SVC-03**: Operator can monitor a cohort in real time (members joined, pending DID-update submissions, co-sign progress, anchor status)
-- [ ] **LIVE-01**: The live broadcast path is operable from the product itself, not only via an e2e script: a real boot can enable live co-sign + broadcast behind ADR 0010-style guard rails (`BROADCAST=1` requires `LIVE=1`), with a watch-only cohort-beacon funding stage (waiting / seen-in-mempool / funded / terminal dead-end) driven by the library's own `selectSpendableUtxo` against one consistent suggested minimum, a clamped funding wait that fails with a specific reason before any library timer, honest funding-window / blind-lapse / recovery-key / mainnet disclosure, bounded broadcast send retry, and honest participant-side awaiting-funding / stall / unconfirmed-signal-resolve copy (formalized 2026-07-24 from Phase 4 CONTEXT D-35..D-46, planning note 4)
+- [x] **SVC-03**: Operator can monitor a cohort in real time (members joined, pending DID-update submissions, co-sign progress, anchor status)
+- [x] **LIVE-01**: The live broadcast path is operable from the product itself, not only via an e2e script: a real boot can enable live co-sign + broadcast behind ADR 0010-style guard rails (`BROADCAST=1` requires `LIVE=1`), with a watch-only cohort-beacon funding stage (waiting / seen-in-mempool / funded / terminal dead-end) driven by the library's own `selectSpendableUtxo` against one consistent suggested minimum, a clamped funding wait that fails with a specific reason before any library timer, honest funding-window / blind-lapse / recovery-key / mainnet disclosure, bounded broadcast send retry, and honest participant-side awaiting-funding / stall / unconfirmed-signal-resolve copy (formalized 2026-07-24 from Phase 4 CONTEXT D-35..D-46, planning note 4)
 - [ ] **SVC-04**: Operator can run aggregation and manage a cohort's lifecycle (open -> close -> finalize) and pause, cancel, or reconfigure advertising without restarting the process
 
 ### Participant (attendee experience)
@@ -66,8 +66,8 @@ Which phases cover which requirements. Populated during roadmap creation.
 |-------------|-------|--------|
 | SVC-01 | Phase 1 | Complete |
 | SVC-02 | Phase 1 | Complete |
-| SVC-03 | Phase 4 | Pending |
-| LIVE-01 | Phase 4 | Pending |
+| SVC-03 | Phase 4 | Complete |
+| LIVE-01 | Phase 4 | Complete |
 | SVC-04 | Phase 5 | Pending |
 | PART-01 | Phase 2 | Complete |
 | PART-02 | Phase 2 | Complete |
@@ -85,4 +85,4 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 ---
 *Requirements defined: 2026-07-07*
-*Last updated: 2026-07-07 after roadmap creation (traceability populated)*
+*Last updated: 2026-07-27 after Phase 4 plan 08 (SVC-03 and LIVE-01 validated by the owner-run live UAT)*

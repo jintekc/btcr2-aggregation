@@ -131,7 +131,7 @@ Plans:
 
 **UI hint**: yes
 
-### Phase 4: Operator Cohort Monitoring [EXECUTING: 2/8 plans]
+### Phase 4: Operator Cohort Monitoring [EXECUTED: 8/8 plans]
 
 **Goal**: On the authenticated console, the operator monitors each advertised cohort's members, pending submissions, co-sign progress, and anchor status in real time, turning the read-only telemetry tab into the operator's live view of on-demand cohorts.
 **Mode:** mvp
@@ -145,7 +145,7 @@ Plans:
   4. This monitoring view is reachable only by the authenticated operator, not by anonymous participants.
   5. The live broadcast path is operable from the product itself (LIVE-01): a real boot enables live co-sign + broadcast behind guard rails (`BROADCAST=1` requires `LIVE=1`), the cohort-beacon funding stage advances honestly (waiting / seen / funded / dead-end), the funding wait fails with a specific reason before any library timer, and the participant awaiting-funding / stall / unconfirmed-signal-resolve copy is honest, verified hermetically by a mocked-chain funding leg and by an owner live-UAT walkthrough.
 
-**Plans**: 7/8 plans executed
+**Plans**: 8/8 plans executed
 Plans:
 **Wave 1**
 
@@ -174,7 +174,7 @@ Plans:
 **Wave 7** *(blocked on Wave 6; the two run in parallel, disjoint files)*
 
 - [x] 04-07-PLAN.md - Participant-side: awaiting-funding notice + stall-copy fix + unconfirmed-signal resolve guard (LIVE-01, Wave 7)
-- [ ] 04-08-PLAN.md - Proof + docs: fixture monitoring e2e + browser operator capstone + uat:live + ADR 0016 + DEPLOY going-live + scoping one-pagers + owner live-UAT checkpoint (SVC-03/LIVE-01, Wave 7)
+- [x] 04-08-PLAN.md - Proof + docs: fixture monitoring e2e + browser operator capstone + uat:live + ADR 0016 + DEPLOY going-live + scoping one-pagers + owner live-UAT checkpoint (SVC-03/LIVE-01, Wave 7) - SUMMARY: 04-08-SUMMARY.md
 
 **UI hint**: yes
 
