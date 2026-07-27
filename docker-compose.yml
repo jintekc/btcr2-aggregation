@@ -26,6 +26,22 @@ services:
       # LIVE=1 uses a real esplora connection (server-side resolution + the
       # /v1/tx/* registration proxy). Empty = offline (no chain I/O).
       LIVE: ${LIVE:-}
+      # BROADCAST=1 (requires LIVE=1) additionally builds and BROADCASTS a real
+      # aggregation beacon tx per cohort. This is the only env-exposed path that
+      # moves Bitcoin for cohort beacons: you must fund each cohort beacon address
+      # within its funding window or the cohort dead-ends. Empty = fixture co-sign.
+      BROADCAST: ${BROADCAST:-}
+      # How long (ms) co-signing waits for you to fund a cohort beacon address
+      # before the cohort fails with a funding reason. Default 720000 (12 min);
+      # PHASE_TIMEOUT_MS must EXCEED it or the boot refuses (checked under
+      # BROADCAST=1). A malformed value is ignored with a warning.
+      FUNDING_WINDOW_MS: ${FUNDING_WINDOW_MS:-}
+      # Send the beacon tx's change to your own funding wallet instead of back to
+      # the cohort beacon address (ADR 044). Empty = change returns to the beacon.
+      LIVE_CHANGE_ADDRESS: ${LIVE_CHANGE_ADDRESS:-}
+      # Optional display name for this service, shown on the operator health strip
+      # and the public directory header. Plain text; empty = no name shown.
+      SERVICE_NAME: ${SERVICE_NAME:-}
       # Point resolution + the tx proxy at your own indexer (needs LIVE=1). Empty
       # uses the registry's public host for NETWORK.
       ESPLORA_HOST: ${ESPLORA_HOST:-}
@@ -37,10 +53,12 @@ services:
       # it cohorts get a throwaway key whose secret is discarded (funds-loss mode).
       RECOVERY_KEY: ${RECOVERY_KEY:-}
       # Operator console password (HOST-01, ADR 0015). Set this to enable the
-      # login-gated operator console + gated telemetry. UNSET = fail-closed: the
-      # public participant surface still serves, but the console + mutating routes +
-      # /dashboard/events are disabled with a loud boot warning. Never commit a real
-      # value; keep it in a .env file, never baked into the image.
+      # login-gated operator console + gated monitoring. UNSET = fail-closed: the
+      # public participant surface still serves, but the operator console, the
+      # mutating cohort routes, and the gated monitoring reads (GET
+      # /v1/operator/cohorts and /v1/operator/cohorts/:id) are disabled with a loud
+      # boot warning. Never commit a real value; keep it in a .env file, never baked
+      # into the image.
       OPERATOR_PASSWORD: ${OPERATOR_PASSWORD:-}
       # Optional: operator session lifetime in ms (default 24h) and the cookie Secure
       # flag. Leave OPERATOR_COOKIE_SECURE default (on) behind a TLS proxy; set it to
