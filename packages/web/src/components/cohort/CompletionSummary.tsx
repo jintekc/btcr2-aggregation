@@ -82,9 +82,13 @@ export function CompletionSummary({ baseUrl, onBrowse }: { baseUrl: string; onBr
   // ADR 0007 first-update chicken-and-egg: a KEY DID's first aggregated update resolves only after
   // the controller's own genesis registration signal confirms (the cohort anchor covers later
   // updates, never the first). Surface an honest note whenever that leg is still missing/unconfirmed.
+  // `anchorConfirmed` reuses the confirmed-only `anchored` boolean above so the note claims
+  // "anchored" only once the beacon tx is mined, never on a broadcast/none/failed anchor (D-07,
+  // Truth 8/WR-02: the mode bit alone would contradict the broadcast-failed narration).
   const firstUpdateNote = firstUpdateResolveNote({
     idType,
     anchorEnabled,
+    anchorConfirmed: anchored,
     beaconPresent: Boolean(beacon),
     regStatus,
   });

@@ -762,15 +762,26 @@ export function roundTripOutcome(input: { beaconPresent: boolean; anchorEnabled:
  * CONFIRMED. The cohort's aggregate anchor makes 2nd+ updates resolvable, never the first. An
  * EXTERNAL (x1) DID bakes the aggregate beacon into genesis, so it needs no such leg.
  *
- * Returns a plain-language note when a KEY controller's first update is anchored on a live
- * (broadcasting) service but the aggregate beacon is not yet in the resolved document AND their own
- * registration signal is missing or unconfirmed - otherwise null. Uses the store's existing
- * `regStatus` fact (broadcast-tracked, not confirmation-tracked): `registered` means the signal was
- * broadcast but may still be unconfirmed, so the note stays honest about the confirmation wait.
+ * Returns a plain-language note when a KEY controller's first update is on a live (broadcasting)
+ * service but the aggregate beacon is not yet in the resolved document AND their own registration
+ * signal is missing or unconfirmed - otherwise null. Uses the store's existing `regStatus` fact
+ * (broadcast-tracked, not confirmation-tracked): `registered` means the signal was broadcast but
+ * may still be unconfirmed, so the note stays honest about the confirmation wait.
+ *
+ * `anchorEnabled` (the mode bit) is only the RENDER GATE; the copy never keys an "anchored" claim
+ * on it. Claiming "anchored" requires `anchorConfirmed` (`anchor.state === 'confirmed'`), matching
+ * this file's confirmed-only anchored discipline everywhere else ({@link anchorSummaryState},
+ * {@link deriveStage}; D-07 mode honesty, 03-VERIFICATION.md Truth 8 / 03-REVIEW.md WR-02): the
+ * mode bit is true even while the beacon tx is merely broadcast, unposted, or terminally failed,
+ * and auto-resolve fires on a failed anchor too ({@link shouldAutoResolve}), so an enabled-keyed
+ * "anchored" line would render a factually false claim right under the broadcast-failed narration.
+ * The registration guidance itself stays valid in every anchor state (ADR 0007: the first update
+ * is discoverable only via the controller's own genesis signal, whatever the cohort anchor did).
  */
 export function firstUpdateResolveNote(input: {
   idType: IdType;
   anchorEnabled: boolean;
+  anchorConfirmed: boolean;
   beaconPresent: boolean;
   regStatus: RegistrationStatus;
 }): string | null {
@@ -790,7 +801,12 @@ export function firstUpdateResolveNote(input: {
   if (input.regStatus === 'registered') {
     return 'Your registration signal is broadcast, but resolution will not show your update until that signal confirms on-chain. Mine or wait a block, then resolve again.';
   }
-  return 'Your update is anchored, but resolution will not show it until your own genesis registration signal confirms. Complete the "Register first update" step below, then resolve again.';
+  // Confirmed-only "anchored" claim (D-07/Truth 8): a broadcast/none/failed anchor gets the
+  // state-neutral copy so this note never contradicts the mode-honest anchor narration above it.
+  if (input.anchorConfirmed) {
+    return 'Your update is anchored, but resolution will not show it until your own genesis registration signal confirms. Complete the "Register first update" step below, then resolve again.';
+  }
+  return 'Resolution will not show your update until your own genesis registration signal confirms. Complete the "Register first update" step below, then resolve again.';
 }
 
 /**
