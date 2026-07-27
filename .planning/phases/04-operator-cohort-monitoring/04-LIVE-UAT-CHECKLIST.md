@@ -119,16 +119,19 @@ before resolve will show their update. (This leg applies to KEY identities, whic
 "generate an identity" step above produces; an EXTERNAL x1 identity bakes the beacon into genesis
 and needs no registration.)
 
-Do this in EACH participant browser window that submitted an update:
+Do this in EACH participant browser window whose update was included in the cohort (the card
+renders only for included KEY participants on a broadcasting service):
 
 - [ ] On the completion screen, find the "Register first update" card. Confirm it shows the genesis
       beacon address to fund (with copy) AND the suggested minimum in sats (at least 1330: a
       1000-sat fee plus a dust-safe change output). Fund that address from your Polar wallet with
       ONE payment at or above the displayed minimum (round up, e.g. a few thousand sats).
 - [ ] Mine 1 block in Polar so the funding confirms.
-- [ ] Click "Check funds and register". Confirm the card advances from awaiting-funds to broadcasting
-      and then to registered, showing the registration txid (with explorer link). This is the page
-      broadcasting the participant's own genesis singleton-beacon registration transaction.
+- [ ] Click "Check funds and register". Confirm the card advances through checking funds, then
+      broadcasting, then registered, showing the registration txid (with explorer link). This is
+      the page broadcasting the participant's own genesis singleton-beacon registration
+      transaction. (The awaiting-funds state appears only if you click BEFORE funding the address;
+      trying that first is a fine optional negative check, then fund, mine, and click again.)
 - [ ] Mine 1 more block in Polar so the registration transaction confirms.
 
 ## Resolve
