@@ -82,8 +82,23 @@ describe('createService advertTtlMs threading (SVC-JOIN-1)', () => {
 
   it('leaves advertTtlMs undefined (library default) when neither is given', () => {
     createService(baseOpts());
-    // The spread adds the key only when resolvable, so on the bare path it must be absent
+    // The option is set only when resolvable, so on the bare path it must be absent
     // and the transport falls back to its own 5-minute default.
+    expect(lastTransportConfig().advertTtlMs).toBeUndefined();
+  });
+
+  it('leaves advertTtlMs undefined when cohortTtlMs is NaN (malformed env number)', () => {
+    // A bare Number() over a malformed COHORT_TTL_MS env yields NaN; threading it would
+    // silently disable advert replay entirely (the expiry comparison against NaN is always
+    // false), which is strictly worse than the 5-minute library default.
+    createService(baseOpts({ cohortTtlMs: Number('not-a-number') }));
+    expect(lastTransportConfig().advertTtlMs).toBeUndefined();
+  });
+
+  it('leaves advertTtlMs undefined when the resolved value is 0 (non-positive)', () => {
+    // An explicit 0 would make every advert expire immediately, disabling replay outright;
+    // the finite-and-positive guard drops it so the library default applies instead.
+    createService(baseOpts({ advertTtlMs: 0, cohortTtlMs: THIRTY_MIN_MS }));
     expect(lastTransportConfig().advertTtlMs).toBeUndefined();
   });
 });

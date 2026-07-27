@@ -4,6 +4,7 @@ import {
   AggregationServiceRunner,
   HttpServerTransport,
   type CohortConfig,
+  type HttpServerTransportConfig,
   type PendingOptIn,
 } from '@did-btcr2/aggregation/service';
 import { resolveBtcr2SenderPk } from '@did-btcr2/method';
@@ -190,8 +191,10 @@ export interface CreateServiceOptions {
    * `cohortTtlMs` so the advert replay window equals the directory discovery window on
    * the product path; the boot-time perpetual auto-advertise loop that used to re-emit
    * adverts is gone (D-17), so the replay window is the ONLY thing keeping a still-open
-   * cohort discoverable to a late subscriber. Passed through to the transport only when
-   * resolvable, matching the {@link maxBodyBytes} spread pattern.
+   * cohort discoverable to a late subscriber. Threaded to the transport only when the
+   * resolved value is finite and positive: NaN (a malformed env number) or 0 would
+   * silently disable advert replay outright (the expiry comparison against NaN is
+   * always false), so anything non-usable falls back to the library default instead.
    */
   advertTtlMs?: number;
   /**
@@ -480,7 +483,12 @@ export function createService(opts: CreateServiceOptions): Service {
       }
     : undefined;
 
-  const transport = new HttpServerTransport({
+  // Build the transport options as a TYPED value (never a conditionally-spread literal): a
+  // spread element evades excess-property checking, so a library rename of an option (e.g.
+  // `advertTtlMs`) would silently degrade to the library default with everything still
+  // compiling. Explicitly-typed property assignments below fail `tsc` the moment the
+  // library's `HttpServerTransportConfig` drops or renames a field.
+  const transportConfig: HttpServerTransportConfig = {
     // Genesis-aware sender resolution: a KEY (k1) sender's key is decoded from its
     // DID; an EXTERNAL (x1) sender that is not yet a registered peer is
     // bootstrap-authenticated from the self-verifying `genesisDocument` carried on
@@ -498,21 +506,27 @@ export function createService(opts: CreateServiceOptions): Service {
       return pk;
     },
     heartbeatIntervalMs: opts.heartbeatIntervalMs ?? 0,
-    // Bound the opt-in body before the genesis hash check (default 64 KiB); passed
-    // through only when set so the transport default otherwise applies.
-    ...(opts.maxBodyBytes !== undefined ? { maxBodyBytes: opts.maxBodyBytes } : {}),
-    // Equalize the advert SSE replay window with the directory discovery window
-    // (SVC-JOIN-1). The library default is 5 min, but a cohort stays joinable in the
-    // public directory for the full cohortTtl (demo default 30 min) and no
-    // auto-republish loop re-emits the advert (D-17), so a late-connecting second
-    // participant would otherwise never receive the advert and hang at "connecting".
-    // Default to cohortTtlMs; honor an explicit advertTtlMs override. Passed through
-    // only when resolvable so the transport default otherwise applies.
-    ...(() => {
-      const advertTtlMs = opts.advertTtlMs ?? opts.cohortTtlMs;
-      return advertTtlMs !== undefined ? { advertTtlMs } : {};
-    })(),
-  });
+  };
+  // Bound the opt-in body before the genesis hash check (default 64 KiB); passed
+  // through only when set so the transport default otherwise applies.
+  if (opts.maxBodyBytes !== undefined) {
+    transportConfig.maxBodyBytes = opts.maxBodyBytes;
+  }
+  // Equalize the advert SSE replay window with the directory discovery window
+  // (SVC-JOIN-1). The library default is 5 min, but a cohort stays joinable in the
+  // public directory for the full cohortTtl (demo default 30 min) and no
+  // auto-republish loop re-emits the advert (D-17), so a late-connecting second
+  // participant would otherwise never receive the advert and hang at "connecting".
+  // Default to cohortTtlMs; honor an explicit advertTtlMs override. Threaded ONLY
+  // when finite and positive: a malformed env (NaN via a bare Number()) or an
+  // explicit 0 would otherwise flow into the transport and silently disable advert
+  // replay entirely (the expiry comparison against NaN is always false), which is
+  // strictly worse than the 5-minute library default this guard falls back to.
+  const advertTtlMs = opts.advertTtlMs ?? opts.cohortTtlMs;
+  if (advertTtlMs !== undefined && Number.isFinite(advertTtlMs) && advertTtlMs > 0) {
+    transportConfig.advertTtlMs = advertTtlMs;
+  }
+  const transport = new HttpServerTransport(transportConfig);
   transport.registerActor(did, keys);
 
   // Resolve the opt-in LIVE beacon-tx config. Off by default (the fixture path
