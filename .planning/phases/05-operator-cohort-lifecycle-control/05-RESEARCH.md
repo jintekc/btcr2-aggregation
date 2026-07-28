@@ -935,27 +935,33 @@ export async function probeChain(esploraBase: string): Promise<string> {
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+All four were resolved during Phase 5 planning; each adopted answer matches the recommendation and names the plan that implements it.
 
 1. **Where does the ToS acceptance artifact live, and is it public?**
    - What we know: `MemoryArtifactStore` / `FileSystemArtifactStore` with hex-keyed writes and a public unauthenticated `GET /cas/*` read already exist and are the natural home. CONTEXT explicitly leaves storage location to Claude's discretion but locks the DID-signed requirement.
    - What is unclear: whether an acceptance record should be world-readable. It contains a participant DID, a cohort id, a timestamp, and a terms hash. That is a public statement by design (it is a proof the participant agreed), but it is also a per-participant record on an otherwise anonymous surface, and `GET /cas/*` is unauthenticated.
    - Recommendation: store in the artifact store keyed by hash, serve it through the existing `GET /cas/*` read (hash-addressed, so it is unguessable without the reference), and show the reference only to the accepting participant and to the operator. Do not add it to any listing endpoint. Flag it for the owner during discussion if the planner wants a stronger posture.
+   - RESOLVED: adopted as recommended, implemented by **05-13** task 2. A typed put helper stores the verified acceptance in the existing content-addressed store keyed by its hex hash, so it is served only by the hash-addressed public read and appears on no listing endpoint; the reference is shown only to the accepting participant and to the operator (05-13 `must_haves` truth, acceptance criterion "The acceptance artifact appears on no listing endpoint"). The residual exposure is dispositioned `accept` as threat T-05-13-05, and the record's meaning is pinned to the terms hash by 05-13 task 1 so a later terms edit cannot rewrite it.
 
 2. **Does canceling need to notify already-connected participants faster than the directory poll?**
    - What we know: no protocol message can carry a cancel; participants learn via the directory poll's `postSeatCohortGone` predicate, which requires two consecutive gone reads (`POST_SEAT_GONE_CONFIRMATIONS = 2`).
    - What is unclear: the resulting latency (two poll intervals) against operator expectation.
    - Recommendation: accept it. The new public fate read (`GET /v1/cohort-fate/:id`) can be checked once the gone streak triggers, upgrading the copy from the honest fallback to the specific attribution without changing the timing. Do not shorten the streak; it exists to win a race against cohort-complete (the 03-07 CR-01 fix).
+   - RESOLVED: accepted as recommended, implemented across **05-01** and **05-10**. 05-01 files the distinct `canceled` fate at event time through the intent registry; 05-10 task 1 adds the non-oracle `GET /v1/cohort-fate/:id` read and 05-10 task 2 calls it ONCE, after the post-seat gone streak has already triggered, leaving the consecutive-reads constant and all polling timing completely unchanged. An unreachable or false read falls back to the honest line rather than inventing certainty (threat T-05-10-04). No new poll loop is added (T-05-10-03).
 
 3. **Should the per-draft discovery window be built at all, given it can only shorten?**
    - What we know: the library offers no per-cohort TTL; app-side enforcement can only cut a cohort short of the runner's `cohortTtlMs`.
    - What is unclear: whether a shorten-only control satisfies D-11's intent or reads as a broken knob.
    - Recommendation: build it with an explicit validation ceiling and honest help copy naming the service maximum. If the phase runs long, this is the cleanest thing to drop from the D-22 CORE tier without losing criterion 3, since draft editing plus create-form defaults already close it.
+   - RESOLVED: built, as recommended, in **05-06** task 2. The window is enforced app-side with the same intent-tagged `stopCohort` seam the tracer created, and a value above the runner-level `cohortTtlMs` is refused at save with an honest message naming the real service maximum, never silently truncated or silently accepted (05-06 prohibition, threats T-05-06-04 and T-05-06-05 for timer hygiene). It stays in the D-22 CORE tier (ROADMAP slip order names plans 01 through 07 and 10 as CORE), so the drop option was not taken.
 
 4. **Do test peers on a live cohort need their own registration funding?**
    - What we know: D-17 says live test peers "participate for real"; a KEY first update needs a funded singleton beacon address and a confirmed registration before resolve reflects the update (the ADR 0007 chicken-and-egg, restated in Phase 4's `firstUpdateResolveNote`).
    - What is unclear: whether the operator is expected to fund each throwaway peer.
    - Recommendation: peers co-sign the cohort (which is the rehearsal value) and their post-cohort registration is honestly skipped with a console note, rather than silently failing or demanding N extra funding steps. Confirm with the owner if this reads as incomplete rehearsal.
+   - RESOLVED: adopted as recommended, implemented by **05-09** task 1. Peers co-sign the cohort for real, and for a live cohort the service logs and surfaces an honest note that each peer's post-cohort registration is skipped because a first update needs its own funded singleton beacon address and a confirmed registration; it is never silently attempted and failed (05-09 `must_haves` truth). No per-peer funding step is demanded of the operator. The live-mode confirm states before the action that peers co-sign for real on the named network (threat T-05-09-04).
 
 ---
 
