@@ -24,7 +24,7 @@ import {
   sessionProbeHandler,
   type OperatorAuthConfig,
 } from './operator-auth.js';
-import type { DraftInput, OperatorCohorts } from './operator-cohorts.js';
+import { NOT_SIGNING_REASON, type DraftInput, type OperatorCohorts } from './operator-cohorts.js';
 import type { AnchorState } from './anchor-state.js';
 import type { CohortMonitor } from './monitor.js';
 import { mountStaticSite } from './static-site.js';
@@ -452,6 +452,32 @@ export function createHonoApp(
         }
         const outcome = operatorCohorts.cancelCohort(id);
         return outcome === 'ok' ? c.json({ ok: true }) : c.json({ error: 'unknown cohort' }, 404);
+      });
+      // Finalize a stalled signing round on the k-of-n fallback path (SVC-04, D-01). A sibling of
+      // the cancel route in every respect: registered inside the same gated block, so it inherits
+      // the requireSameOrigin CSRF check and the requireOperator session gate and an anonymous
+      // caller is rejected with 401 BEFORE this handler runs, hence before any cohort-id lookup
+      // (T-05-03-01); and it guards the `:id` shape with the same cheap 400 before any lookup.
+      //
+      // A REFUSED finalize is a 409, never a 500 (RESEARCH Pitfall 4). `finalizeCohort` returns a
+      // closed verdict union whose refusal carries the app-authored NOT_SIGNING_REASON, so the
+      // library's own `INVALID_PHASE` / `NO_SIGNING_SESSION` text can never become a response body
+      // (T-05-03-02) and the console has a reason it can render verbatim in its action-error line.
+      app.post('/v1/operator/cohorts/:id/finalize', async (c) => {
+        const id = c.req.param('id');
+        if (!/^[0-9a-zA-Z-]{1,64}$/.test(id)) {
+          return c.json({ error: 'invalid cohort id' }, 400);
+        }
+        const outcome = await operatorCohorts.finalizeCohort(id);
+        if (outcome === 'unknown') {
+          // The SAME opaque body the cancel route uses, so unknown / never-advertised /
+          // already-settled stay indistinguishable across both verbs.
+          return c.json({ error: 'unknown cohort' }, 404);
+        }
+        if (outcome === 'not-signing') {
+          return c.json({ error: NOT_SIGNING_REASON }, 409);
+        }
+        return c.json({ ok: true });
       });
       // Gated per-cohort monitoring detail read (SVC-03, D-19/D-26). Registered AFTER the
       // requireSameOrigin + requireOperator prefix guards above, so an anonymous caller is

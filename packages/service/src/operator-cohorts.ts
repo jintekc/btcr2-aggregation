@@ -79,6 +79,7 @@ import { randomUUID } from 'node:crypto';
 import {
   buildCohortConfig,
   DISPLAY_PHASES,
+  FINALIZABLE_PHASES,
   OPEN_PHASES,
   type BeaconType,
   type NetworkName,
@@ -117,6 +118,19 @@ const FALLBACK_OFF_ERROR =
  * (a machine string that reads as a malfunction rather than the operator's own decision).
  */
 const CANCELED_REASON = 'canceled by the operator';
+
+/**
+ * The exact operator-facing reason a REFUSED finalize carries (SVC-04, D-01). It is the body of
+ * the route's 409 and the `{reason}` the console interpolates into its action-error line, so it
+ * is written as a lowercase clause that reads inside that sentence.
+ *
+ * Deliberately app-authored and fixed. The library's own message for this case names the internal
+ * phase (`Cannot start fallback for cohort {id}: phase is {phase}.`), and a raw library string
+ * must never become an HTTP body: it discloses internals to a caller and reads as a malfunction
+ * rather than "not yet" (T-05-03-02, and the same discipline {@link validateDraft} applies to the
+ * create form).
+ */
+export const NOT_SIGNING_REASON = "this cohort's signing round hasn't started";
 
 /**
  * Untrusted create-form body: beacon type + cohort size n + an OPTIONAL signing threshold k.
@@ -224,6 +238,18 @@ export interface OperatorCohortsOptions {
    */
   onCancel?: (cohortId: string) => void;
   /**
+   * Fire-and-forget side effect invoked on the SUCCESS path of {@link
+   * OperatorCohorts.finalizeCohort} only, so a refused finalize never leaves a record claiming
+   * the operator forced a fallback that did not happen. `createService` wires it to
+   * `monitor.noteOperatorAction`, because `runner.triggerFallback` emits `'fallback-started'`
+   * but nothing that identifies the ACTOR: without this push seam the operator's own action
+   * would be indistinguishable from the automatic stall timer firing (T-05-03-04).
+   *
+   * A throw here is caught, logged, and swallowed, matching {@link onCancel} and every other
+   * side effect in this service: a bookkeeping failure must never disturb the protocol.
+   */
+  onFinalize?: (cohortId: string) => void;
+  /**
    * Transport advert-slot repair (RESEARCH Pattern 3). The transport holds exactly ONE advert
    * slot and the runner CLEARS it whenever the slot-owning cohort is disposed, so a settle
    * (cancel, completion, or failure) can leave still-open sibling cohorts listed in the
@@ -275,6 +301,27 @@ export interface OperatorCohorts {
    * issued. Idempotent at the edges: a second cancel of the same id reads `'unknown'`.
    */
   cancelCohort(cohortId: string): 'ok' | 'unknown';
+  /**
+   * Finalize a cohort's stalled signing round NOW (SVC-04, D-01): the operator's own
+   * "fall back now" decision, wrapping the library's `AggregationServiceRunner.triggerFallback`
+   * so the cohort anchors on the ADR-042 k-of-n script path instead of waiting out (or dying to)
+   * the automatic stall timer.
+   *
+   * Availability is a PHASE PREDICATE, never a try/catch (RESEARCH Pattern 2 / Pitfall 4).
+   * `triggerFallback` calls `session.startFallbackSigning` FIRST, which throws for a cohort with
+   * no signing session or one outside {@link FINALIZABLE_PHASES}, so this guards before the call
+   * and returns a closed verdict union that the route maps to human copy:
+   *
+   * - `'unknown'` - no advertised cohort holds that id (unknown, never advertised, or already
+   *   settled all read identically, so the route answers ONE 404 for every case).
+   * - `'not-signing'` - the cohort exists but its signing round has not started (or has already
+   *   moved past the salvageable phases). The route answers 409 with {@link NOT_SIGNING_REASON};
+   *   the library was never touched, so no library error can escape.
+   * - `'ok'` - the fallback was committed. `triggerFallback` is idempotent by design (it no-ops
+   *   for a cohort that is unknown, settled, or already committed to a path), so a repeated call
+   *   on an already-finalized cohort ALSO resolves `'ok'` and changes nothing.
+   */
+  finalizeCohort(cohortId: string): Promise<'ok' | 'unknown' | 'not-signing'>;
   /**
    * Re-advertise a TERMINAL cohort (F2). Re-runs `runner.advertiseCohort` with the
    * retained config (a SECOND operator-driven advertise call site, consistent with
@@ -645,6 +692,50 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
       //    the session so it has no OPEN phase left to match.
       repairAdvertSlot(cohortId);
       console.log(`[operator] canceled cohort ${cohortId}`);
+      return 'ok';
+    },
+
+    async finalizeCohort(cohortId: string): Promise<'ok' | 'unknown' | 'not-signing'> {
+      // 1. Same anti-oracle guard as cancel: unknown, never advertised, and already settled all
+      //    answer identically, so the route returns ONE 404 body for every case.
+      if (!advertised.has(cohortId)) {
+        return 'unknown';
+      }
+      // 2. The PRE-GUARD (RESEARCH Pattern 2 / Pitfall 4), the whole point of this method. The
+      //    library's `startFallbackSigning` runs first inside `triggerFallback` and THROWS for a
+      //    cohort outside its three signing phases, so the phase is checked here - exactly as
+      //    `validateDraft` guards before `buildCohortConfig` - and a raw library throw can never
+      //    become an HTTP body. FINALIZABLE_PHASES, never IN_FLIGHT_PHASES: the latter is wider
+      //    (it carries the four funding-wait phases for the directory display) and would let this
+      //    call through on a cohort where the library rejects it.
+      const phase = runner.session.getCohortPhase(cohortId);
+      if (!phase || !FINALIZABLE_PHASES.has(phase)) {
+        return 'not-signing';
+      }
+      // 3. Commit the fallback. Idempotent by design: `triggerFallback` returns silently for a
+      //    cohort that is unknown, settled, or already committed to a path, so a double-click
+      //    resolves as success with nothing having changed a second time.
+      try {
+        await runner.triggerFallback(cohortId);
+      } catch (err) {
+        // A late rejection means the phase moved between the guard and the call (the cohort
+        // finished signing, or failed, in that window). Report the refusal verdict rather than
+        // letting the library error escape: from the operator's point of view the action did not
+        // take, and 409 with the app-authored reason is the honest answer.
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[operator] finalize for cohort ${cohortId} was rejected by the library: ${message}`);
+        return 'not-signing';
+      }
+      // 4. Record the ACTOR. The runner emits `'fallback-started'` for both this and its own
+      //    automatic stall timer, so only this hook can tell the operator that they did it
+      //    (T-05-03-04). Success path only, and fire-and-forget like every other side effect.
+      try {
+        opts.onFinalize?.(cohortId);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[operator] finalize side effect for cohort ${cohortId} failed: ${message}`);
+      }
+      console.log(`[operator] finalized cohort ${cohortId} on the k-of-n fallback path`);
       return 'ok';
     },
 

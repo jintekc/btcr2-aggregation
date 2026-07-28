@@ -88,6 +88,18 @@ const ACTIVITY_RING_SIZE = 200;
  */
 const CANCELED_ACTIVITY_TEXT = 'Operator canceled this cohort.';
 
+/**
+ * The exact activity-ring line for an operator-triggered k-of-n fallback (SVC-04, D-01). Fixed
+ * contract copy with no interpolation, kept beside {@link CANCELED_ACTIVITY_TEXT} so every
+ * operator-action string in this service has one home. EXPORTED because `index.ts` is the caller
+ * that hands it to {@link CohortMonitor.noteOperatorAction}, and the spec pins it from there.
+ *
+ * The wording names the ACTOR on purpose: `'fallback-started'` fires identically for this and for
+ * the automatic stall timer, so a line reading only "fell back to k-of-n" would leave the operator
+ * unable to tell their own decision from the service's (T-05-03-04).
+ */
+export const OPERATOR_FINALIZED_TEXT = 'Operator triggered the k-of-n fallback.';
+
 /** Whether a folded member has only opted in (`pending`) or been seated (`seated`). */
 export type MemberStatus = 'pending' | 'seated';
 
@@ -365,6 +377,18 @@ export interface CohortDetailDTO {
    * the fixture path) and before the first watch reading lands.
    */
   funding?: FundingView;
+  /**
+   * The DELIBERATE terminal fate of this cohort, when it has one (SVC-04, D-01/D-05). Present
+   * only as `'canceled'`, and only for a cohort the operator deliberately ended: it is what lets
+   * the drill-down's stage timeline render a terminal `Canceled` marker instead of leaving the
+   * operator staring at a timeline frozen mid-arc with no explanation.
+   *
+   * Deliberately NOT a general "how did this end" field. An anchored or failed cohort is already
+   * narrated honestly by `anchor` (the timeline reserves `Anchored` for a CONFIRMED anchor,
+   * D-18), so widening this would create a second, drift-prone way to say the same thing. A
+   * cancel is the one fate no other field on this projection carries.
+   */
+  fate?: 'canceled';
 }
 
 /**
@@ -442,6 +466,24 @@ export interface CohortMonitor {
    * ended record nor a duplicate activity entry.
    */
   noteCanceled(cohortId: string): void;
+  /**
+   * Record one OPERATOR ACTION in a cohort's activity ring (SVC-04, D-01). A PUSH seam exactly
+   * like {@link noteFunding} and {@link noteCanceled}, and for the same reason: the runner either
+   * emits nothing for an operator verb (`stopCohort`) or emits an event that does not identify
+   * the ACTOR (`fallback-started` fires for both the operator's `Finalize now` and the automatic
+   * stall timer). Without this the operator's own actions would be invisible in, or
+   * indistinguishable from, the service's automatic behavior (T-05-03-04).
+   *
+   * `text` is FIXED contract copy chosen by the caller, never operator-supplied input, so a long
+   * value can never widen the rendered row. The entry is stamped with the server wall clock here
+   * (D-22) and the ring stays bounded.
+   *
+   * De-duplicating by construction: an append whose text is identical to the IMMEDIATELY PREVIOUS
+   * entry is skipped, so a double-click on a lifecycle control (or a retried route call on an
+   * idempotent verb) can never make the record claim the action happened twice. Two identical
+   * actions genuinely separated by other activity are still both recorded.
+   */
+  noteOperatorAction(cohortId: string, text: string): void;
   /**
    * The PUBLIC, non-oracle funding signal for a cohort (D-44), backing the anonymous
    * `GET /v1/funding/:cohortId` read a seated participant polls. Returns ONLY an
@@ -719,6 +761,26 @@ export function createCohortMonitor(
       }
       entries.delete(oldest);
     }
+  }
+
+  /**
+   * The shared body of {@link CohortMonitor.noteOperatorAction}, also used by
+   * {@link CohortMonitor.noteCanceled} so both operator verbs write their record through ONE
+   * path (and therefore share the consecutive-duplicate guard) instead of each re-implementing
+   * the append.
+   *
+   * The guard compares against the LAST entry only. That is deliberate: a repeated action is a
+   * double-click or a route retry, which lands back-to-back; two identical actions separated by
+   * real cohort activity are genuinely two events and are both kept.
+   */
+  function recordOperatorAction(cohortId: string, text: string): void {
+    const entry = entryFor(cohortId);
+    const previous = entry.activity[entry.activity.length - 1];
+    if (previous?.text === text) {
+      return;
+    }
+    appendActivity(entry, 'info', text);
+    remember(cohortId, entry);
   }
 
   /**
@@ -1113,6 +1175,11 @@ export function createCohortMonitor(
     // surface a funding stage that cannot exist off-chain.
     const funding = serviceMode === 'live' ? fundingViews.get(cohortId) : undefined;
 
+    // The deliberate terminal fate (SVC-04). Read from the SAME retained ended record the summary
+    // chip reads, so the drill-down and the list can never disagree about whether a cohort was
+    // canceled; every other ended chip is left off, because `anchor` already narrates those.
+    const canceled = ended.get(cohortId)?.chip === 'canceled';
+
     return {
       exists: true,
       members,
@@ -1126,6 +1193,7 @@ export function createCohortMonitor(
       // Copy the ring so a caller can never mutate the fold's internal array.
       activity: entry ? entry.activity.map((a) => ({ ...a })) : [],
       ...(funding ? { funding: { ...funding } } : {}),
+      ...(canceled ? { fate: 'canceled' as const } : {}),
     };
   }
 
@@ -1194,13 +1262,19 @@ export function createCohortMonitor(
       // `snapshotSeats` reads the authoritative seat count; once stopCohort has run,
       // `session.removeCohort` has already dropped it and only the fold's own snapshot remains.
       const { seatsJoined, capacity } = snapshotSeats(cohortId);
+      // Route the activity line through the SAME operator-action path the other lifecycle verbs
+      // use, so the append + bounded ring + consecutive-duplicate guard live in one place.
+      recordOperatorAction(cohortId, CANCELED_ACTIVITY_TEXT);
       const entry = entryFor(cohortId);
-      appendActivity(entry, 'info', CANCELED_ACTIVITY_TEXT);
       snapshotCapacity(cohortId, entry);
       remember(cohortId, entry);
       // A DISTINCT terminal fate, never `failed` (D-05): the operator meant to do it, so the
       // console reads a neutral Canceled chip and the failure counter is untouched.
       rememberEnded(cohortId, { chip: 'canceled', seatsJoined, capacity });
+    },
+
+    noteOperatorAction(cohortId: string, text: string): void {
+      recordOperatorAction(cohortId, text);
     },
 
     publicFunding(cohortId: string): { awaitingFunding: boolean } {

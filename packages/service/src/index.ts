@@ -23,7 +23,12 @@ import { createOperatorCohorts } from './operator-cohorts.js';
 import { createCohortIntents } from './cohort-intent.js';
 import { createAdvertRepublisher } from './advert-republish.js';
 import { createAnchorState } from './anchor-state.js';
-import { createCohortMonitor, type FundingView, type ServiceMode } from './monitor.js';
+import {
+  createCohortMonitor,
+  OPERATOR_FINALIZED_TEXT,
+  type FundingView,
+  type ServiceMode,
+} from './monitor.js';
 import { makeProvideTxData, type LiveTxConfig } from './tx.js';
 import {
   computeFundingDeadline,
@@ -940,6 +945,14 @@ export function createService(opts: CreateServiceOptions): Service {
         onCancel: (cohortId: string) => {
           monitor.noteCanceled(cohortId);
           releaseCohortTables(cohortId);
+        },
+        // Finalize's event-time side effect (SVC-04, D-01). The runner emits `'fallback-started'`
+        // for BOTH the operator's Finalize now and its own automatic stall timer, so this hook is
+        // the only thing that can tell the operator which one happened. Nothing else is released
+        // here: unlike a cancel, a finalized cohort is still very much alive and is about to
+        // anchor, so its funding watch and side tables must keep running.
+        onFinalize: (cohortId: string) => {
+          monitor.noteOperatorAction(cohortId, OPERATOR_FINALIZED_TEXT);
         },
         // Advert-slot repair (RESEARCH Pattern 3). The transport holds ONE advert slot and the
         // runner clears it whenever the slot-owning cohort is disposed, so without this a

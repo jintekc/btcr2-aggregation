@@ -292,25 +292,258 @@ async function runScriptPathLeg(
 }
 
 /**
- * Drive both fallback legs against the hermetic (offline/fixture) path and return the
- * list of problems (empty = pass).
+ * Leg C (OPERATOR-TRIGGERED FALLBACK, SVC-04 / D-01): the same forced signing stall as Leg B, but
+ * the fallback is driven by the operator's own `POST /v1/operator/cohorts/:id/finalize` call
+ * rather than by the runner's automatic stall timer.
+ *
+ * The phase-stall window is deliberately LONG (60s, far beyond the leg's own timeout), so if the
+ * cohort anchors on the script path it can only be because the operator's gated route drove it.
+ * That is the whole point: this leg proves the wrapped verb reaches the real library primitive and
+ * genuinely salvages a stall, which no unit spec can show (a hermetic cohort passes through the
+ * signing phases in milliseconds, so a spec can only pin the guard, with the library call stubbed
+ * out - see `packages/service/tests/lifecycle-routes.spec.ts`).
+ *
+ * The cohort is created and advertised through the REAL operator routes (not `advertiseCohort`
+ * directly, unlike Legs A and B), because `finalizeCohort` only knows cohorts that went through
+ * the operator surface. Cookie handling mirrors `e2e/operator-cohort.ts`: Node's fetch has no
+ * cookie jar, so the harness captures the `operator_session` Set-Cookie on login and echoes it.
+ * `operatorCookieSecure: false` lets it round-trip over plain http on loopback.
+ *
+ * It also asserts the two REFUSAL semantics against a live service, so the browser can trust the
+ * predicate it renders: a pre-signing cohort is answered 409 (never 500, and never with a library
+ * string), and an anonymous call is 401.
  */
-export async function runFallbackCohort(options: FallbackCohortOptions = {}): Promise<string[]> {
+async function runOperatorFinalizeLeg(
+  options: FallbackCohortOptions,
+  log: (msg: string) => void,
+  fail: (problem: string) => void,
+): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  // n = 3 so the k-of-n fallback (k = n-1 = 2) is a genuine 2-of-3: one participant drops and the
+  // remaining two sign the script path.
+  const N = 3;
+  const OPERATOR_PASSWORD = 'correct-horse-battery-staple';
+  // Long enough that the automatic stall timer CANNOT be what drives this leg.
+  const NEVER_STALLS_MS = 60_000;
+
+  const service = createService({
+    identity: createIdentity(),
+    config: buildCohortConfig(N, 'CASBeacon'),
+    // The fallback must be ENABLED (it is what `triggerFallback` commits to, and validateDraft
+    // refuses a k < n draft on a service that disabled it) - but with the stall window above it
+    // never fires on its own inside this leg.
+    autoFallbackOnStall: true,
+    phaseTimeoutMs: NEVER_STALLS_MS,
+    cohortTtlMs: 120_000,
+    operatorPassword: OPERATOR_PASSWORD,
+    operatorCookieSecure: false,
+  });
+
+  let fallbackFired = false;
+  service.runner.on('fallback-started', () => {
+    fallbackFired = true;
+    log('[legC] service emitted fallback-started (driven by the operator finalize call)');
+  });
+  const legCOutcome = new Promise<LegBOutcome>((resolve) => {
+    service.runner.on('signing-complete', (result) => {
+      resolve({ ok: true, path: result.path, sigLen: result.signature.length });
+    });
+    service.runner.on('cohort-failed', ({ reason }) => {
+      resolve({ ok: false, reason });
+    });
+  });
+  service.runner.on('error', (err) => log(`[legC][service] error: ${err.message}`));
+
+  const { baseUrl } = await service.start(options.port ?? 0);
+  log(`[legC] service listening on ${baseUrl}`);
+
+  const participants: Participant[] = [];
+  try {
+    /* ---- Login: capture and echo the operator_session cookie. ---- */
+    const loginRes = await fetch(`${baseUrl}/v1/operator/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: OPERATOR_PASSWORD }),
+    });
+    const setCookie = loginRes.headers.getSetCookie().find((c) => c.startsWith('operator_session='));
+    await loginRes.text();
+    if (loginRes.status !== 200 || !setCookie) {
+      fail(`[legC] operator login should be 200 with a session cookie, got ${loginRes.status}`);
+      return;
+    }
+    const cookie = setCookie.split(';')[0];
+
+    /* ---- Create + advertise through the real operator routes (k = n-1). ---- */
+    const createRes = await fetch(`${baseUrl}/v1/operator/cohorts`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ beaconType: 'CASBeacon', size: N, threshold: N - 1 }),
+    });
+    if (createRes.status !== 201) {
+      fail(`[legC] create draft should be 201, got ${createRes.status}`);
+      return;
+    }
+    const draft = (await createRes.json()) as { draftId: string };
+    const advertiseRes = await fetch(`${baseUrl}/v1/operator/cohorts/${draft.draftId}/advertise`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+    if (advertiseRes.status !== 200) {
+      fail(`[legC] advertise should be 200, got ${advertiseRes.status}`);
+      return;
+    }
+    const cohortId = ((await advertiseRes.json()) as { draftId: string }).draftId;
+    log(`[legC] advertised cohort ${cohortId} (n=${N}); k-of-n fallback = ${N - 1}-of-${N}`);
+
+    /* ---- Refusal semantics on a live, PRE-SIGNING cohort (RESEARCH Pitfall 4). ---- */
+    const anonymous = await fetch(`${baseUrl}/v1/operator/cohorts/${cohortId}/finalize`, { method: 'POST' });
+    await anonymous.text();
+    if (anonymous.status !== 401) {
+      fail(`[legC] an anonymous finalize should be 401, got ${anonymous.status}`);
+    }
+    const tooEarly = await fetch(`${baseUrl}/v1/operator/cohorts/${cohortId}/finalize`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+    const tooEarlyBody = (await tooEarly.json()) as { error?: string };
+    if (tooEarly.status !== 409) {
+      fail(`[legC] finalizing a pre-signing cohort should be 409, got ${tooEarly.status}`);
+    }
+    if (/INVALID_PHASE|startFallbackSigning/i.test(tooEarlyBody.error ?? '')) {
+      fail(`[legC] the 409 body leaked the library's own message: ${tooEarlyBody.error}`);
+    }
+    if (fallbackFired) {
+      fail('[legC] a REFUSED finalize must not have committed the fallback path');
+    }
+    log(`[legC][ok] refusals: anonymous 401, pre-signing 409 ("${tooEarlyBody.error}")`);
+
+    /* ---- Drive the cohort into a stalled signing round. ---- */
+    const identities = Array.from({ length: N }, () => createIdentity());
+    for (const identity of identities) {
+      participants.push(createParticipant({ identity, baseUrl }));
+    }
+    const survivorsComplete = participants.slice(1).map(
+      (participant, i) =>
+        new Promise<void>((resolve) => {
+          participant.runner.on('cohort-complete', () => {
+            log(`[legC] survivor participant ${i + 1} reached cohort-complete via the fallback`);
+            resolve();
+          });
+        }),
+    );
+
+    // Participant 0 drops the instant it reaches signing (identical to Leg B), so the optimistic
+    // n-of-n round can never collect n contributions and sits in a signing phase. `stalled`
+    // resolves at that moment, which is when the cohort first becomes finalizable.
+    let dropped = false;
+    const stalled = new Promise<void>((resolve) => {
+      participants[0].runner.on('signing-requested', () => {
+        if (dropped) {
+          return;
+        }
+        dropped = true;
+        log('[legC] participant 0 dropping on signing-requested to stall the optimistic n-of-n round');
+        participants[0].stop();
+        resolve();
+      });
+    });
+    participants.forEach((participant, i) => {
+      participant.runner.on('error', (err) => log(`[legC][participant ${i}] error: ${err.message}`));
+    });
+
+    await Promise.all(participants.map((participant) => participant.start()));
+    await withTimeout(stalled, timeoutMs, '[legC] reaching the stalled signing round');
+
+    /* ---- The operator finalizes NOW, instead of waiting out the (60s) stall timer. ---- */
+    const finalizeRes = await fetch(`${baseUrl}/v1/operator/cohorts/${cohortId}/finalize`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+    const finalizeBody = await finalizeRes.text();
+    if (finalizeRes.status !== 200) {
+      fail(`[legC] the operator finalize should be 200 once signing has started, got ${finalizeRes.status} ${finalizeBody}`);
+      return;
+    }
+    log('[legC] operator called POST /v1/operator/cohorts/:id/finalize -> 200');
+
+    const outcome = await withTimeout(legCOutcome, timeoutMs, '[legC] operator-driven fallback signing');
+    if (!outcome.ok) {
+      fail(`[legC] cohort FAILED instead of anchoring on the operator-driven fallback: ${outcome.reason}`);
+      return;
+    }
+    if (!fallbackFired) {
+      fail('[legC] signing completed but the service never emitted fallback-started');
+    }
+    if (outcome.path !== 'script-path') {
+      fail(`[legC] expected a script-path fallback result, got path='${outcome.path ?? 'absent'}'`);
+    }
+    try {
+      await withTimeout(Promise.all(survivorsComplete), 15_000, '[legC] survivor completion');
+    } catch (err) {
+      fail(`[legC] the ${N - 1} surviving participants did not all reach cohort-complete: ${(err as Error).message}`);
+    }
+
+    /* ---- The operator's own action is attributed in the gated activity ring (T-05-03-04). ---- */
+    const detailRes = await fetch(`${baseUrl}/v1/operator/cohorts/${cohortId}`, { headers: { cookie } });
+    const detail = (await detailRes.json()) as { activity: { text: string }[]; fallback: { used: boolean } };
+    const attributed = detail.activity.filter((a) => a.text === 'Operator triggered the k-of-n fallback.');
+    if (attributed.length !== 1) {
+      fail(
+        `[legC] the activity ring should carry exactly ONE operator-finalize entry, got ${attributed.length} ` +
+          '(the runner emits fallback-started for the stall timer too, so the actor must be recorded once)',
+      );
+    }
+    if (!detail.fallback.used) {
+      fail('[legC] the gated detail read should report the cohort took the k-of-n fallback path');
+    }
+
+    if (fallbackFired && outcome.path === 'script-path' && attributed.length === 1) {
+      log(
+        `[legC][ok] the OPERATOR drove the ${N - 1}-of-${N} script-path fallback through the gated route ` +
+          '(the automatic stall timer never fired: its window was 60s)',
+      );
+    }
+  } finally {
+    for (const participant of participants) {
+      participant.stop();
+    }
+    await service.stop();
+  }
+}
+
+/**
+ * Drive the fallback legs against the hermetic (offline/fixture) path and return the
+ * list of problems (empty = pass).
+ *
+ * `operatorOnly` runs ONLY Leg C (the `e2e:fallback:operator` script), mirroring how
+ * `e2e/operator-cohort.ts` dispatches its `--monitor` / `--cancel` legs; the default runs the
+ * whole suite, so the `e2e:fallback` gate covers the operator-triggered path too.
+ */
+export async function runFallbackCohort(
+  options: FallbackCohortOptions & { operatorOnly?: boolean } = {},
+): Promise<string[]> {
   const log = options.quiet ? () => {} : (msg: string) => console.log(msg);
   const problems: string[] = [];
   const fail = (problem: string): void => {
     problems.push(problem);
   };
 
+  if (options.operatorOnly) {
+    await runOperatorFinalizeLeg(options, log, fail);
+    return problems;
+  }
+
   await runKeyPathLeg(options, log, fail);
   await runScriptPathLeg(options, log, fail);
+  await runOperatorFinalizeLeg(options, log, fail);
 
   return problems;
 }
 
 async function main(): Promise<number> {
   const quiet = process.argv.includes('--quiet');
-  const problems = await runFallbackCohort({ quiet });
+  const operatorOnly = process.argv.includes('--operator');
+  const problems = await runFallbackCohort({ quiet, operatorOnly });
   if (problems.length > 0) {
     console.error('\nE2E FAILED:');
     for (const problem of problems) {
@@ -318,11 +551,24 @@ async function main(): Promise<number> {
     }
     return 1;
   }
+  if (operatorOnly) {
+    console.log(
+      '\nOPERATOR FALLBACK E2E PASSED: an operator advertised a k-of-n cohort through the gated ' +
+        'routes, a co-signer dropped mid-signing, and the operator finalized the stalled round ' +
+        'themselves via POST /v1/operator/cohorts/:id/finalize - the cohort anchored on the ADR 042 ' +
+        'script path with the automatic stall timer still 60s away, the refusals were honest (401 ' +
+        'anonymous, 409 pre-signing with no library string in the body), and the action was ' +
+        'attributed exactly once in the gated activity ring (SVC-04, D-01).',
+    );
+    return 0;
+  }
   console.log(
     '\nE2E PASSED: n-of-n MuSig2 stays the deterministic default outcome (Leg A: a 64-byte ' +
-      'aggregated key-path signature, no fallback), AND a forced signing-phase stall now recovers ' +
+      'aggregated key-path signature, no fallback), a forced signing-phase stall recovers ' +
       'via the ADR 042 k-of-n script-path fallback (Leg B: fallback-started + a script-path result) ' +
-      'instead of failing the cohort - over real HTTP, no chain, no new dependency.',
+      'instead of failing the cohort, AND the OPERATOR can drive that same fallback on demand ' +
+      'through the gated finalize route instead of waiting out the stall timer (Leg C) - over real ' +
+      'HTTP, no chain, no new dependency.',
   );
   return 0;
 }
