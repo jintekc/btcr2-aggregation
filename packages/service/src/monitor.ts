@@ -194,6 +194,13 @@ export interface CohortSummaryDTO {
   capacity: number;
   phase: string;
   reason?: string;
+  /**
+   * The server wall-clock time (ms) this cohort ended, present ONLY on a retained ended row
+   * (D-22 event-time stamping). It lets the console name WHEN a fate landed, for example the
+   * canceled row's `Canceled by the operator at {time}.`, instead of the client substituting
+   * its own first-observation time. Absent on every live row.
+   */
+  at?: number;
 }
 
 /**
@@ -285,6 +292,13 @@ interface EndedRecord {
   seatsJoined: number;
   capacity: number;
   reason?: string;
+  /**
+   * The server wall-clock time (ms) the fate was recorded, stamped inside
+   * {@link rememberEnded} so every terminal record carries one without call-site churn. It is
+   * an EVENT-time stamp like every other monitoring timestamp (D-22): the console can say when
+   * a cohort ended rather than implying it just happened.
+   */
+  at: number;
 }
 
 /**
@@ -761,9 +775,11 @@ export function createCohortMonitor(
    * (Map preserves insertion order; delete-then-set refreshes a re-recorded cohort to the
    * end). Mirrors the anchor-state `remember` idiom so the ended set stays bounded (DoS).
    */
-  function rememberEnded(cohortId: string, record: EndedRecord): void {
+  function rememberEnded(cohortId: string, record: Omit<EndedRecord, 'at'>): void {
     ended.delete(cohortId);
-    ended.set(cohortId, record);
+    // Stamp the fate at event time here, so every call site gets an honest `at` and none can
+    // forget one (D-22 wall-clock convention).
+    ended.set(cohortId, { ...record, at: Date.now() });
     while (ended.size > MAX_TERMINAL) {
       const oldest = ended.keys().next().value;
       if (oldest === undefined) {
@@ -1267,6 +1283,7 @@ export function createCohortMonitor(
           capacity: record.capacity,
           phase: 'ended',
           ...(record.reason !== undefined ? { reason: record.reason } : {}),
+          at: record.at,
         });
       }
       return rows;

@@ -29,8 +29,25 @@ import type { CohortSummaryDTO, OperatorCohortDTO } from './operator';
  * The fixed status-chip key for a list row. A DRAFT and an EXPIRED cohort are operator-list
  * states (not monitoring chips), so they extend the monitoring {@link CohortSummaryDTO.chip}
  * union here with the two inherited row states.
+ *
+ * `canceled` arrives through the monitoring union rather than being added here: the service
+ * emits it on BOTH sides (the operator DTO's `state` and the monitor's ended chip, Phase 5
+ * D-05), so a canceled cohort reads the same fate whether the operator list still carries it or
+ * only the monitor's bounded ended record survives.
  */
 export type ChipKey = CohortSummaryDTO['chip'] | 'draft' | 'expired';
+
+/**
+ * The exact ended-row line for a cohort the operator canceled (05-UI-SPEC E12 populated).
+ *
+ * `at` is the SERVER wall-clock stamp carried by the monitoring row (04 D-22), rendered as a
+ * local clock time. The console never substitutes its own observation time for a missing stamp:
+ * a row with no `at` simply renders without this line (see the list surface), because "when this
+ * browser first saw it" is not when the operator canceled it.
+ */
+export function canceledEndedLine(at: number): string {
+  return `Canceled by the operator at ${new Date(at).toLocaleTimeString()}.`;
+}
 
 /** The four list groups, in render order (04-UI-SPEC list group headings). */
 export type GroupKey = 'attention' | 'active' | 'drafts' | 'ended';
@@ -52,9 +69,10 @@ export type RenderRow = {
 };
 
 /**
- * Derive one row's status chip. A draft/expired cohort reads its inherited row state; an
- * advertised cohort reads its live monitoring chip, defaulting to `filling` when the monitor
- * has no row yet (a freshly advertised, zero-opt-in cohort is live and filling).
+ * Derive one row's status chip. A draft/expired/canceled cohort reads its inherited row state
+ * (a terminal fate always wins over whatever the fold last saw); an advertised cohort reads its
+ * live monitoring chip, defaulting to `filling` when the monitor has no row yet (a freshly
+ * advertised, zero-opt-in cohort is live and filling).
  */
 export function chipForCohort(cohort: OperatorCohortDTO, row?: CohortSummaryDTO): ChipKey {
   if (cohort.state === 'draft') {
@@ -63,6 +81,9 @@ export function chipForCohort(cohort: OperatorCohortDTO, row?: CohortSummaryDTO)
   if (cohort.state === 'expired') {
     return 'expired';
   }
+  if (cohort.state === 'canceled') {
+    return 'canceled';
+  }
   return row?.chip ?? 'filling';
 }
 
@@ -70,9 +91,10 @@ export function chipForCohort(cohort: OperatorCohortDTO, row?: CohortSummaryDTO)
  * Assign a chip to exactly ONE group (single membership, so a cohort never double-renders):
  * `needs-funding` / `fallback` / `failed` need a human, so they surface under Needs attention
  * (this also backs the drill-down cross-cohort attention badge, D-11); `filling` / `co-signing`
- * are live under Active; `draft` under Drafts; a clean `anchored` and an `expired` window are
- * settled under Ended. The tone map in the component still colors each chip identically wherever
- * it renders.
+ * are live under Active; `draft` under Drafts; a clean `anchored`, an `expired` window, and a
+ * `canceled` cohort are settled under Ended. `canceled` reaching Ended by the default fall-through
+ * is deliberate and pinned by spec: an operator's own decision is settled, never attention-worthy.
+ * The tone map in the component still colors each chip identically wherever it renders.
  */
 export function groupForChip(chip: ChipKey): GroupKey {
   if (chip === 'needs-funding' || chip === 'fallback' || chip === 'failed') {

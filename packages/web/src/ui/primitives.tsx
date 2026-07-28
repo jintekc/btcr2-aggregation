@@ -200,6 +200,103 @@ export function Field({
   );
 }
 
+/** The container treatment per confirmation tone (05-UI-SPEC ceremony ladder). */
+const CONFIRM_TONE_CLASS: Record<'bad' | 'warn' | 'neutral', string> = {
+  bad: 'border-bad/40 bg-bad/10 text-bad',
+  warn: 'border-warn/40 bg-warn/10 text-warn',
+  neutral: 'border-edge bg-surface-2 text-muted',
+};
+
+/**
+ * An inline confirmation panel: the laddered destructive-action ceremony (05-UI-SPEC, D-03).
+ *
+ * Promoted from the shipped inline `Discard draft` / `Keep draft` confirm block in
+ * {@link file://../components/operator/OperatorCohortList.tsx}, exactly as {@link Expander} was
+ * promoted from `CompletionSummary.tsx`, so every Phase 5 destructive action shares ONE
+ * implementation instead of re-inventing a confirm block per surface.
+ *
+ * Two rules this component exists to enforce:
+ *
+ * 1. **Tone is never the only carrier of meaning.** The `bad` tone and the `danger` confirm button
+ *    are a reinforcement, not the message: the `body` MUST name the irreversible outcome in words
+ *    (an operator who cannot see the tone, or who reads past color, still learns what is lost).
+ * 2. **It renders INLINE, never as a portal or a modal overlay**, so the operator keeps seeing the
+ *    cohort or setting being changed while deciding. There is no backdrop and no focus trap to
+ *    get wrong.
+ *
+ * `typeToConfirm` arms the top rung: the operator must type that exact string (a short cohort id)
+ * before the confirm button enables. The instruction renders as Body-size label text with the
+ * value in {@link Mono}, NOT through {@link Field}, whose micro-label is uppercased - an uppercased
+ * instruction would tell the operator to type a value that the case-sensitive match then rejects.
+ *
+ * While `busy` is true both buttons disable and the confirm button renders `busyLabel`, reusing
+ * the shipped in-flight button treatment (no invented spinner).
+ */
+export function ConfirmPanel({
+  tone,
+  heading,
+  body,
+  confirmLabel,
+  cancelLabel,
+  onConfirm,
+  onCancel,
+  typeToConfirm,
+  busy = false,
+  busyLabel,
+}: {
+  tone: 'bad' | 'warn' | 'neutral';
+  heading: string;
+  /** Short stacked paragraphs naming the real consequence; wraps and grows in place. */
+  body: ReactNode;
+  confirmLabel: string;
+  cancelLabel: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+  /** When set, the exact string the operator must type before the confirm button enables. */
+  typeToConfirm?: string;
+  busy?: boolean;
+  /** The in-flight confirm label (ends in the shipped ellipsis character), used while `busy`. */
+  busyLabel?: string;
+}) {
+  const [typed, setTyped] = useState('');
+  const inputId = 'confirm-type-to-confirm';
+  const armed = typeToConfirm === undefined || typed.trim() === typeToConfirm.trim();
+  return (
+    <div className={`space-y-2 rounded-lg border px-3 py-2 text-sm ${CONFIRM_TONE_CLASS[tone]}`}>
+      {/* Body size at weight 600: a confirm is an inline panel, not a page (UI-SPEC Typography). */}
+      <p className="font-semibold">{heading}</p>
+      <div className="space-y-2">{body}</div>
+      {typeToConfirm !== undefined ? (
+        <div className="space-y-1.5">
+          <label htmlFor={inputId} className="block">
+            Type <Mono>{typeToConfirm}</Mono> to confirm.
+          </label>
+          <Input
+            id={inputId}
+            value={typed}
+            onChange={setTyped}
+            disabled={busy}
+            autoComplete="off"
+            className="font-mono"
+          />
+        </div>
+      ) : null}
+      <div className="flex flex-wrap gap-2">
+        <Button
+          variant={tone === 'bad' ? 'danger' : 'ghost'}
+          disabled={busy || !armed}
+          onClick={onConfirm}
+        >
+          {busy && busyLabel ? busyLabel : confirmLabel}
+        </Button>
+        <Button variant="ghost" disabled={busy} onClick={onCancel}>
+          {cancelLabel}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 const DOT_CLASS: Record<Tone, string> = {
   neutral: 'bg-faint',
   accent: 'bg-accent',

@@ -77,12 +77,15 @@ export interface OperatorCohortDTO {
   joined: number;
   /**
    * `'draft'` un-advertised, `'advertised'` live in the directory, `'expired'` a
-   * terminal record whose advertised cohort's completion rejected (stall / TTL / stop).
-   * An expired cohort is surfaced to the operator (never silently deleted) and can be
-   * re-advertised; it is NOT a participant-directory entry (F2).
+   * terminal record whose advertised cohort's completion ended on its own (stall / TTL /
+   * stop), and `'canceled'` one the OPERATOR deliberately ended (SVC-04, Phase 5 D-05).
+   * Both terminal states are surfaced to the operator (never silently deleted) and can be
+   * re-advertised; neither is a participant-directory entry (F2). `'canceled'` is a
+   * DISTINCT fate, never folded into `'expired'`: an operator's own decision must not read
+   * as something that went wrong.
    */
-  state: 'draft' | 'advertised' | 'expired';
-  /** Short human-readable reason, present ONLY on `state: 'expired'` rows. */
+  state: 'draft' | 'advertised' | 'expired' | 'canceled';
+  /** Short human-readable reason, present on `'expired'` and `'canceled'` rows. */
   reason?: string;
 }
 
@@ -317,10 +320,18 @@ export async function fetchCohortDetail(baseUrl: string, id: string): Promise<Fe
  * The live status-chip key for one monitoring row (mirrors the service `CohortChip`, D-04).
  * A live cohort reads `filling` / `co-signing`; `needs-funding` is the live-cohort funding
  * placeholder the live-path plan 04-06 populates; an ended cohort reads its terminal fate
- * `fallback` (anchored via the k-of-n script path) / `anchored` / `failed`. The client maps
- * each key to a fixed Badge/StatusDot tone (the UI-SPEC tone map).
+ * `fallback` (anchored via the k-of-n script path) / `anchored` / `canceled` (the operator
+ * ended it deliberately, Phase 5 D-05) / `failed`. The client maps each key to a fixed
+ * Badge/StatusDot tone (the UI-SPEC tone map), where `canceled` is NEUTRAL: nothing went wrong.
  */
-export type CohortChip = 'filling' | 'co-signing' | 'needs-funding' | 'fallback' | 'anchored' | 'failed';
+export type CohortChip =
+  | 'filling'
+  | 'co-signing'
+  | 'needs-funding'
+  | 'fallback'
+  | 'anchored'
+  | 'canceled'
+  | 'failed';
 
 /**
  * One monitoring row for the operator cohort list (mirrors the service `CohortSummaryDTO`,
@@ -334,6 +345,14 @@ export interface CohortSummaryDTO {
   capacity: number;
   phase: string;
   reason?: string;
+  /**
+   * The SERVER wall-clock time (ms) this cohort ended, stamped at event time like every other
+   * monitoring timestamp (04 D-22). Present ONLY on a retained ended row, so the console can say
+   * WHEN a fate landed (`Canceled by the operator at {time}.`) instead of implying it just
+   * happened. Absent on a live row, and absent from a service built before the field existed -
+   * in which case the console renders the row without a time rather than inventing one.
+   */
+  at?: number;
 }
 
 /**

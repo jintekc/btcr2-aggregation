@@ -1,7 +1,13 @@
 import { useState } from 'react';
 import { Badge, Button, Card, CopyField, SectionTitle, StatusDot } from '../../ui/primitives';
 import { cosignCaption, cosignValue } from '../../lib/directory';
-import { groupRenderRows, type ChipKey, type GroupKey, type RenderRow } from '../../lib/operator-rows';
+import {
+  canceledEndedLine,
+  groupRenderRows,
+  type ChipKey,
+  type GroupKey,
+  type RenderRow,
+} from '../../lib/operator-rows';
 import { useOperator } from '../../stores/operator';
 import type { OperatorCohortDTO, ServiceMetricsDTO } from '../../lib/operator';
 
@@ -25,6 +31,9 @@ const CHIP: Record<ChipKey, { tone: 'neutral' | 'accent' | 'good' | 'warn' | 'ba
   anchored: { tone: 'good', label: 'Anchored', pulse: false },
   failed: { tone: 'bad', label: 'Failed', pulse: false },
   expired: { tone: 'bad', label: 'Expired', pulse: false },
+  // NEUTRAL, never bad (05-UI-SPEC tone map, D-05): the operator meant to end this cohort, so it
+  // must not read as a failure. Its label and its Ended group tell it apart from a Draft.
+  canceled: { tone: 'neutral', label: 'Canceled', pulse: false },
 };
 
 /** The four list groups, in render order (04-UI-SPEC list group headings). */
@@ -110,6 +119,7 @@ function CohortRow({
   const { id, chip, cohort, row } = entry;
   const isDraft = cohort?.state === 'draft';
   const isExpired = cohort?.state === 'expired';
+  const isCanceled = chip === 'canceled';
   const isAdvertised = cohort?.state === 'advertised';
   const isAdvertising = advertiseStatus === 'advertising' && advertisingId === id;
   // Prefer the live monitoring seats (authoritative for an advertised/ended cohort); fall back
@@ -165,7 +175,14 @@ function CohortRow({
         ) : null}
       </div>
 
-      {reason ? <p className="text-sm text-muted">{isExpired ? `Expired: ${reason}` : reason}</p> : null}
+      {/* A canceled row states WHEN the operator ended it, from the monitoring row's server
+          wall-clock stamp. With no stamp (an older service) it falls back to the served reason
+          rather than substituting this browser's own observation time. */}
+      {isCanceled && row?.at !== undefined ? (
+        <p className="text-sm text-muted">{canceledEndedLine(row.at)}</p>
+      ) : reason ? (
+        <p className="text-sm text-muted">{isExpired ? `Expired: ${reason}` : reason}</p>
+      ) : null}
 
       <CopyField label={isDraft ? 'draft id' : 'cohort id'} value={id} />
 
