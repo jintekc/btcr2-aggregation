@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chipForCohort, groupForChip, groupRenderRows } from '../src/lib/operator-rows';
+import { canceledEndedLine, chipForCohort, groupForChip, groupRenderRows } from '../src/lib/operator-rows';
 import type { CohortSummaryDTO, OperatorCohortDTO } from '../src/lib/operator';
 
 /**
@@ -104,5 +104,38 @@ describe('chipForCohort / groupForChip', () => {
     expect(groupForChip('draft')).toBe('drafts');
     expect(groupForChip('anchored')).toBe('ended');
     expect(groupForChip('expired')).toBe('ended');
+  });
+});
+
+/**
+ * SVC-04 (Phase 5 D-05): a cohort the operator canceled is a DELIBERATE end, so it reads as a
+ * neutral `Canceled` chip in the settled `Ended` group. Folding it into `failed` (attention) or
+ * into `expired` (a bad-tone window lapse) would tell the operator something went wrong when in
+ * fact they chose it.
+ */
+describe('the canceled fate (D-05)', () => {
+  it('maps an operator-canceled cohort to the canceled chip', () => {
+    expect(chipForCohort(cohort({ state: 'canceled' }))).toBe('canceled');
+    // The fate wins over any live monitoring chip the fold may still be carrying.
+    expect(chipForCohort(cohort({ state: 'canceled' }), summary({ chip: 'filling' }))).toBe('canceled');
+  });
+
+  it('places the canceled chip in the settled Ended group, never in Needs attention', () => {
+    expect(groupForChip('canceled')).toBe('ended');
+  });
+
+  it('groups a canceled cohort into Ended alongside the other settled rows', () => {
+    const grouped = groupRenderRows(
+      [cohort({ draftId: 'c-canceled', state: 'canceled', reason: 'canceled by the operator' })],
+      [summary({ cohortId: 'c-canceled', chip: 'canceled', phase: 'ended' })],
+    );
+    expect(grouped.ended.map((r) => r.id)).toEqual(['c-canceled']);
+    expect(grouped.attention).toHaveLength(0);
+  });
+
+  it('renders the exact ended-row line from a server wall-clock stamp', () => {
+    const line = canceledEndedLine(Date.parse('2026-07-28T22:31:00Z'));
+    expect(line.startsWith('Canceled by the operator at ')).toBe(true);
+    expect(line.endsWith('.')).toBe(true);
   });
 });
