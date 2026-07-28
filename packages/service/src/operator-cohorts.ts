@@ -25,8 +25,14 @@
  * open count (D-09/D-26, Pitfall 3). On completion the enrichment entry is settled: a cohort that
  * completes successfully is pruned (it legitimately leaves the open set), while a
  * cohort whose completion REJECTS (stall / TTL / stop) is moved into a bounded
- * `terminal` record set and surfaced to the operator as `state: 'expired'` with a
- * reason instead of vanishing silently (F2). Expired records are operator-only: they
+ * `terminal` record set and surfaced to the operator with a reason instead of vanishing
+ * silently (F2). A terminal record carries its FATE: `'expired'` for a cohort that died on
+ * its own (stall / TTL), `'canceled'` for one the operator deliberately ended via
+ * {@link OperatorCohorts.cancelCohort} (SVC-04, D-05). The two are never conflated, and the
+ * fate is NEVER inferred from the rejection's message text - `runner.stopCohort` and the
+ * whole-runner `stop()` reject through the same channel, so the classifier is the
+ * out-of-band {@link CohortIntentRegistry} declared before the library call
+ * (see {@link file://./cohort-intent.ts}). Terminal records are operator-only: they
  * are listed by {@link OperatorCohorts.listCohorts} but never by {@link
  * OperatorCohorts.directory}/{@link OperatorCohorts.status}, so a participant never
  * sees an expired cohort as joinable.
@@ -70,6 +76,7 @@ import {
   type NetworkName,
 } from '@btcr2-aggregation/shared';
 import type { AggregationServiceRunner, CohortConfig } from '@did-btcr2/aggregation/service';
+import type { CohortIntentRegistry } from './cohort-intent.js';
 
 /** The two aggregation beacon types an operator may draft (singleton is single-party). */
 const KNOWN_BEACON_TYPES = new Set<string>(['CASBeacon', 'SMTBeacon']);
@@ -94,6 +101,13 @@ const THRESHOLD_ERROR = 'Signing threshold must be a whole number between 1 and 
  */
 const FALLBACK_OFF_ERROR =
   'A signing threshold below the cohort size needs the stall fallback, which this service disabled (AUTO_FALLBACK=0).';
+
+/**
+ * The exact operator-facing reason filed on a CANCELED terminal record (D-05). A fixed
+ * contract string, deliberately NOT the library's raw rejection message `Cohort {id} stopped.`
+ * (a machine string that reads as a malfunction rather than the operator's own decision).
+ */
+const CANCELED_REASON = 'canceled by the operator';
 
 /**
  * Untrusted create-form body: beacon type + cohort size n + an OPTIONAL signing threshold k.
@@ -126,15 +140,18 @@ export interface OperatorCohortDTO {
   joined: number;
   /**
    * `'draft'` for an un-advertised draft, `'advertised'` once live in the directory,
-   * `'expired'` for a terminal record whose advertised cohort's completion rejected
-   * (stall / TTL / stop). An expired cohort is retained and surfaced to the operator
-   * (never silently deleted) but is NOT a participant-directory entry (F2).
+   * `'expired'` for a terminal record whose advertised cohort died on its own (a stall or
+   * the TTL lapsing), and `'canceled'` for one the OPERATOR deliberately ended (SVC-04,
+   * D-05). `'canceled'` is a distinct fate, never folded into `'expired'` and never into a
+   * failure: the operator meant to do it, so the console reads it neutrally. Both terminal
+   * states are retained and surfaced to the operator (never silently deleted) but neither is
+   * a participant-directory entry (F2).
    */
-  state: 'draft' | 'advertised' | 'expired';
+  state: 'draft' | 'advertised' | 'expired' | 'canceled';
   /**
-   * A short human-readable reason a cohort expired, present ONLY on `state: 'expired'`
-   * rows (e.g. the rejection message from the completion promise). Absent for drafts /
-   * advertised cohorts.
+   * A short human-readable reason a cohort ended, present ONLY on terminal rows
+   * (`'expired'` carries the rejection message from the completion promise; `'canceled'`
+   * carries the fixed operator-facing string). Absent for drafts / advertised cohorts.
    */
   reason?: string;
 }
@@ -180,6 +197,24 @@ export interface OperatorCohortsOptions {
   /** The service's single active Bitcoin network (D-10); never a form value. */
   activeNetwork: NetworkName;
   /**
+   * The per-service cohort intent registry (SVC-04, RESEARCH Pattern 1). REQUIRED, because
+   * {@link OperatorCohorts.cancelCohort} declares `'canceled'` into it BEFORE calling the
+   * silent `runner.stopCohort`, and {@link settleCompletion}'s reject branch reads it back to
+   * decide the terminal fate. Passing it in (rather than constructing one here) keeps ONE
+   * registry per service, shared with the app-side discovery-window timer that also ends
+   * cohorts. See {@link file://./cohort-intent.ts} for why message-text matching is forbidden.
+   */
+  intents: CohortIntentRegistry;
+  /**
+   * Fire-and-forget side effect invoked at the START of {@link OperatorCohorts.cancelCohort},
+   * BEFORE `runner.stopCohort`, so the cancel's fate is captured AT EVENT TIME while the
+   * cohort is still in the live session (D-23). `createService` wires it to
+   * `monitor.noteCanceled` plus the per-cohort side-table release (which retires the funding
+   * watch). A throw here is caught, logged, and swallowed: a monitoring or bookkeeping failure
+   * must never disturb the protocol, matching every other side effect in this service.
+   */
+  onCancel?: (cohortId: string) => void;
+  /**
    * Operator recovery key (x-only hex) threaded from the service cohort config, so a
    * drafted cohort carries the same recovery leaf the operator funds. Optional - when
    * absent {@link buildCohortConfig} derives a throwaway (fine off-chain / on test nets).
@@ -209,17 +244,31 @@ export interface OperatorCohorts {
   /** Remove an un-advertised draft. Returns false for an unknown id (route 404). */
   discardDraft(draftId: string): boolean;
   /**
-   * Re-advertise an EXPIRED cohort (F2). Re-runs `runner.advertiseCohort` with the
+   * Cancel an ADVERTISED cohort (SVC-04, D-01/D-04/D-05): the operator's deliberate end, the
+   * only honest "stop this now" primitive the library actually offers
+   * (`AggregationServiceRunner.stopCohort`). Drops the cohort's protocol state, so it leaves
+   * the public directory and the open count immediately, and files a distinct `'canceled'`
+   * terminal record rather than an `'expired'` one.
+   *
+   * Returns `'unknown'` when no advertised cohort holds that id - unknown, never advertised,
+   * or ALREADY settled all read identically, so the route answers one 404 for every case and
+   * an anonymous caller learns nothing (T-05-01-02). Returns `'ok'` once the stop has been
+   * issued. Idempotent at the edges: a second cancel of the same id reads `'unknown'`.
+   */
+  cancelCohort(cohortId: string): 'ok' | 'unknown';
+  /**
+   * Re-advertise a TERMINAL cohort (F2). Re-runs `runner.advertiseCohort` with the
    * retained config (a SECOND operator-driven advertise call site, consistent with
    * D-17), moving it out of the terminal record set and back into the live/advertised
-   * set with a fresh cohort id. Returns the advertised DTO, or `undefined` for an
-   * unknown/absent terminal id (route 404).
+   * set with a fresh cohort id. Accepts either fate: an `'expired'` cohort the operator
+   * wants back, or a `'canceled'` one the operator changed their mind about. Returns the
+   * advertised DTO, or `undefined` for an unknown/absent terminal id (route 404).
    */
   readvertiseExpired(cohortId: string): OperatorCohortDTO | undefined;
   /**
-   * Drafts (state 'draft') plus advertised cohorts (state 'advertised') plus expired
-   * terminal records (state 'expired'), for the operator list. Expired records are
-   * operator-only (never in {@link directory}).
+   * Drafts (state 'draft') plus advertised cohorts (state 'advertised') plus terminal
+   * records carrying their fate (state 'expired' or 'canceled'), for the operator list.
+   * Terminal records are operator-only (never in {@link directory}).
    */
   listCohorts(): OperatorCohortDTO[];
   /** Public: the open/joinable cohorts derived from the live set (D-14/D-15). */
@@ -277,7 +326,7 @@ function validateDraft(
 const MAX_TERMINAL = 24;
 
 export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCohorts {
-  const { runner, activeNetwork, recoveryKey } = opts;
+  const { runner, activeNetwork, recoveryKey, intents } = opts;
   // Undefined is treated as OFF (library-parity default): a plain createService without an
   // explicit autoFallbackOnStall refuses a k < size over-promise (Decision 4).
   const autoFallbackOnStall = opts.autoFallbackOnStall ?? false;
@@ -289,11 +338,15 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
   // completion so it can never make the directory outlive the live set (Pitfall 5).
   const advertised = new Map<string, CohortConfig>();
   // Terminal records (F2): keyed by the cohort id whose completion REJECTED, holds the
-  // retained config + a short reason so an expired cohort is surfaced to the operator
-  // (via `listCohorts`) and can be re-advertised, instead of silently vanishing. Bounded
-  // to MAX_TERMINAL with oldest-first eviction (Map preserves insertion order). NEVER
-  // read by `directory()`/`status()`, so an expired cohort is operator-only (T-06-03).
-  const terminal = new Map<string, { config: CohortConfig; reason: string }>();
+  // retained config, a short reason, and the FATE that produced it, so an ended cohort is
+  // surfaced to the operator (via `listCohorts`) and can be re-advertised, instead of
+  // silently vanishing. Bounded to MAX_TERMINAL with oldest-first eviction (Map preserves
+  // insertion order). NEVER read by `directory()`/`status()`, so a terminal cohort is
+  // operator-only (T-06-03).
+  const terminal = new Map<
+    string,
+    { config: CohortConfig; reason: string; fate: 'expired' | 'canceled' }
+  >();
 
   /** Coerce a completion rejection to a short, operator-facing reason string. */
   function reasonString(err: unknown): string {
@@ -301,9 +354,18 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
     return message.length > 0 ? message : 'cohort expired';
   }
 
-  /** Record an expired cohort, evicting the oldest terminal record past the cap. */
-  function rememberTerminal(cohortId: string, config: CohortConfig, reason: string): void {
-    terminal.set(cohortId, { config, reason });
+  /**
+   * Record an ended cohort, evicting the oldest terminal record past the cap. `fate` defaults
+   * to `'expired'` (a cohort that died on its own), so every pre-existing call site keeps its
+   * exact behavior; the cancel path passes `'canceled'` explicitly (D-05).
+   */
+  function rememberTerminal(
+    cohortId: string,
+    config: CohortConfig,
+    reason: string,
+    fate: 'expired' | 'canceled' = 'expired',
+  ): void {
+    terminal.set(cohortId, { config, reason, fate });
     while (terminal.size > MAX_TERMINAL) {
       const oldest = terminal.keys().next().value;
       if (oldest === undefined) {
@@ -316,23 +378,41 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
   /**
    * Settle a live cohort's completion promise (D-15, Pitfall 5). On SUCCESS the
    * enrichment entry is pruned (a completed cohort legitimately leaves the open set, no
-   * terminal record). On REJECTION (stall / TTL / stop) the retained config is moved
-   * into the bounded `terminal` set as an expired record with a reason (F2), so the
-   * cohort is surfaced to the operator rather than silently deleted. Fire-and-forget
-   * like the index.ts side-effect listeners: the trailing `.catch` swallows so a failed
-   * cohort never surfaces as an unhandled rejection.
+   * terminal record). On REJECTION the retained config is moved into the bounded
+   * `terminal` set with a reason (F2), so the cohort is surfaced to the operator rather
+   * than silently deleted.
+   *
+   * The rejection's FATE comes from the intent registry, never from the error (SVC-04,
+   * D-05, RESEARCH Pattern 1): `runner.stopCohort` (an operator cancel) and the
+   * whole-runner `stop()` (a service shutdown) both reject through this exact channel with
+   * different codes, and a stall or TTL lapse rejects here too, so only an out-of-band
+   * declaration can tell them apart. A declared `'canceled'` files the fixed
+   * {@link CANCELED_REASON} under the `'canceled'` fate; everything else keeps the
+   * pre-existing `reasonString(err)` / `'expired'` behavior byte-for-byte.
+   *
+   * Fire-and-forget like the index.ts side-effect listeners: the trailing `.catch` swallows
+   * so a failed cohort never surfaces as an unhandled rejection.
    */
   function settleCompletion(cohortId: string, completion: Promise<unknown>): void {
     void completion
       .then(
         () => {
           advertised.delete(cohortId);
+          // A cohort that completes successfully was never stopped on purpose, but clear any
+          // stale tag anyway so a recycled id can never inherit a previous cohort's intent.
+          intents.clear(cohortId);
         },
         (err) => {
           const config = advertised.get(cohortId);
           advertised.delete(cohortId);
+          const intent = intents.read(cohortId);
+          intents.clear(cohortId);
           if (config) {
-            rememberTerminal(cohortId, config, reasonString(err));
+            if (intent === 'canceled') {
+              rememberTerminal(cohortId, config, CANCELED_REASON, 'canceled');
+            } else {
+              rememberTerminal(cohortId, config, reasonString(err), 'expired');
+            }
           }
         },
       )
@@ -460,6 +540,35 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
       return existed;
     },
 
+    cancelCohort(cohortId: string): 'ok' | 'unknown' {
+      // Unknown, never advertised, and already settled all answer identically, so the route
+      // returns ONE 404 body for every case and an anonymous caller (who is already rejected
+      // by requireOperator before reaching here) could learn nothing anyway (T-05-01-02).
+      if (!advertised.has(cohortId)) {
+        return 'unknown';
+      }
+      // 1. Declare the intent FIRST. `runner.stopCohort` emits nothing at all, so this
+      //    out-of-band tag is the only honest way `settleCompletion`'s reject branch can tell
+      //    an operator cancel from a stall, a TTL lapse, or a whole-runner shutdown, all of
+      //    which reject through the same channel (RESEARCH Pattern 1, Pitfall 2).
+      intents.declare(cohortId, 'canceled');
+      // 2. Capture the fate AT EVENT TIME (D-23) while the cohort is still in the live
+      //    session, and retire its per-cohort side tables. Fire-and-forget: a monitoring or
+      //    bookkeeping failure must never disturb the protocol, so it is logged and swallowed.
+      try {
+        opts.onCancel?.(cohortId);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[operator] cancel side effect for cohort ${cohortId} failed: ${message}`);
+      }
+      // 3. Drop the protocol state. This rejects the cohort's completion promise, which drives
+      //    `settleCompletion` on the next microtask turn - the SINGLE place a cohort leaves the
+      //    `advertised` map, so the entry is deliberately NOT deleted here.
+      runner.stopCohort(cohortId);
+      console.log(`[operator] canceled cohort ${cohortId}`);
+      return 'ok';
+    },
+
     readvertiseExpired(cohortId: string): OperatorCohortDTO | undefined {
       const record = terminal.get(cohortId);
       if (!record) {
@@ -496,10 +605,12 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
         joined: entry.joined,
         state: 'advertised',
       }));
-      // Expired terminal records (F2), operator-only: surfaced here so the operator sees
-      // a cohort that expired (and can re-advertise it) instead of it silently vanishing;
-      // NEVER in `directory()`/`status()`, so a participant never sees it (T-06-03).
-      const expiredDtos: OperatorCohortDTO[] = [...terminal.entries()].map(([cohortId, record]) => ({
+      // Terminal records (F2), operator-only: surfaced here so the operator sees a cohort
+      // that ended (and can re-advertise it) instead of it silently vanishing; NEVER in
+      // `directory()`/`status()`, so a participant never sees it (T-06-03). The row's state
+      // is the RECORD'S OWN fate, so an operator cancel reads `'canceled'` and can never be
+      // mislabelled as an expiry (D-05).
+      const terminalDtos: OperatorCohortDTO[] = [...terminal.entries()].map(([cohortId, record]) => ({
         draftId: cohortId,
         beaconType: record.config.beaconType as BeaconType,
         network: activeNetwork,
@@ -507,10 +618,10 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
         threshold: record.config.fallbackThreshold ?? record.config.minParticipants,
         capacity: record.config.maxParticipants ?? record.config.minParticipants,
         joined: 0,
-        state: 'expired',
+        state: record.fate,
         reason: record.reason,
       }));
-      return [...draftDtos, ...advertisedDtos, ...expiredDtos];
+      return [...draftDtos, ...advertisedDtos, ...terminalDtos];
     },
 
     directory,

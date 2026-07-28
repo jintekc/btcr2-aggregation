@@ -81,6 +81,13 @@ const MAX_TERMINAL = 24;
  */
 const ACTIVITY_RING_SIZE = 200;
 
+/**
+ * The exact UI-SPEC activity-ring line for an operator cancel (E12/E13). Fixed contract copy
+ * with no interpolation, so a long operator-supplied value can never widen the row. Kept as a
+ * named constant beside the other exact-copy strings in this service so the spec can pin it.
+ */
+const CANCELED_ACTIVITY_TEXT = 'Operator canceled this cohort.';
+
 /** Whether a folded member has only opted in (`pending`) or been seated (`seated`). */
 export type MemberStatus = 'pending' | 'seated';
 
@@ -161,9 +168,18 @@ export interface FallbackDTO {
  * `needs-funding` is the live-cohort funding-attention placeholder populated by the
  * live-path plan 04-06 (this plan never emits it); an ENDED cohort reads its terminal fate
  * `fallback` (anchored via the k-of-n script path, D-33), `anchored` (anchored via the
- * optimistic key path), or `failed`. The client maps each key to its Badge/StatusDot tone.
+ * optimistic key path), `canceled` (the operator ended it deliberately, Phase 5 D-05), or
+ * `failed`. The client maps each key to its Badge/StatusDot tone; `canceled` is NEUTRAL, never
+ * a bad-tone failure chip, because the operator meant to do it.
  */
-export type CohortChip = 'filling' | 'co-signing' | 'needs-funding' | 'fallback' | 'anchored' | 'failed';
+export type CohortChip =
+  | 'filling'
+  | 'co-signing'
+  | 'needs-funding'
+  | 'fallback'
+  | 'anchored'
+  | 'canceled'
+  | 'failed';
 
 /**
  * One row in the operator cohort-list monitoring summary (D-06). Carries the live status
@@ -251,8 +267,12 @@ export interface FundingView {
   terminal?: 'window-closed' | 'blind-lapse';
 }
 
-/** The terminal chip of a retained ended-cohort record (a strict subset of {@link CohortChip}). */
-type EndedChip = 'anchored' | 'fallback' | 'failed';
+/**
+ * The terminal chip of a retained ended-cohort record (a strict subset of {@link CohortChip}).
+ * `canceled` is the operator-initiated end (Phase 5 D-05): a deliberate, distinct fate that is
+ * never folded into `failed` and never counted as one.
+ */
+type EndedChip = 'anchored' | 'fallback' | 'canceled' | 'failed';
 
 /**
  * A retained ended-cohort record (D-23): its terminal chip plus the seats/capacity snapshot
@@ -395,6 +415,19 @@ export interface CohortMonitor {
    * view even if this is (defensively) called, because the funding stage cannot exist off-chain.
    */
   noteFunding(cohortId: string, view: FundingView): void;
+  /**
+   * Record that the OPERATOR canceled this cohort (SVC-04, Phase 5 D-05). A PUSH seam exactly
+   * like {@link noteFunding}: `runner.stopCohort` emits nothing at all, so there is no event a
+   * fold listener could key on, and without this call a canceled cohort would simply vanish
+   * from the console (RESEARCH Pitfall 1).
+   *
+   * MUST be called while the cohort is still LIVE (before `runner.stopCohort`), because the
+   * fate is captured AT EVENT TIME (D-23): the seats/capacity snapshot is read from the live
+   * session here so a cohort the session has already garbage-collected still projects an honest
+   * `Canceled` record. Idempotent: a second call for the same cohort appends neither a duplicate
+   * ended record nor a duplicate activity entry.
+   */
+  noteCanceled(cohortId: string): void;
   /**
    * The PUBLIC, non-oracle funding signal for a cohort (D-44), backing the anonymous
    * `GET /v1/funding/:cohortId` read a seated participant polls. Returns ONLY an
@@ -1133,6 +1166,27 @@ export function createCohortMonitor(
       rememberFunding(cohortId, view);
     },
 
+    noteCanceled(cohortId: string): void {
+      // Idempotent by construction: a cohort already filed as canceled appends nothing more,
+      // so a double-click on the operator's Cancel (or a retried route call) can never produce
+      // two ended records or two log lines for one cohort id.
+      if (ended.get(cohortId)?.chip === 'canceled') {
+        return;
+      }
+      // Capture the fate AT EVENT TIME (D-23). The caller declares the intent and calls this
+      // BEFORE `runner.stopCohort`, so the cohort is still in the live session here and
+      // `snapshotSeats` reads the authoritative seat count; once stopCohort has run,
+      // `session.removeCohort` has already dropped it and only the fold's own snapshot remains.
+      const { seatsJoined, capacity } = snapshotSeats(cohortId);
+      const entry = entryFor(cohortId);
+      appendActivity(entry, 'info', CANCELED_ACTIVITY_TEXT);
+      snapshotCapacity(cohortId, entry);
+      remember(cohortId, entry);
+      // A DISTINCT terminal fate, never `failed` (D-05): the operator meant to do it, so the
+      // console reads a neutral Canceled chip and the failure counter is untouched.
+      rememberEnded(cohortId, { chip: 'canceled', seatsJoined, capacity });
+    },
+
     publicFunding(cohortId: string): { awaitingFunding: boolean } {
       // Non-oracle by construction (T-04-07-01): only a live+broadcast cohort can carry a
       // funding view, and only its still-unfunded states (waiting / awaiting-confirmation)
@@ -1140,6 +1194,15 @@ export function createCohortMonitor(
       // dead-end cohort, and an unknown cohortId all read `false`, so the anonymous read
       // leaks neither amounts, keys, nor cohort existence beyond a single waiting bit.
       if (serviceMode !== 'live') {
+        return { awaitingFunding: false };
+      }
+      // A CANCELED cohort awaits nothing (SVC-04, the review WR-01 lesson applied to the new
+      // fate). Cancel retires the funding watch in {@link file://./index.ts}
+      // (`releaseCohortTables`), so nothing will ever write this cohort's view again: without
+      // this guard the last-known `waiting` view would keep telling every anonymous caller that
+      // a cohort the operator deliberately ended still awaits its operator's funding, forever.
+      // Checked BEFORE the view lookup so it holds whether or not a view was ever recorded.
+      if (ended.get(cohortId)?.chip === 'canceled') {
         return { awaitingFunding: false };
       }
       const view = fundingViews.get(cohortId);
@@ -1225,12 +1288,18 @@ export function createCohortMonitor(
       // anchored / failed from the bounded retained records: `fallback` counts as anchored
       // (the k-of-n script path still put the beacon tx on-chain), everything else that is
       // not `failed` is an optimistic anchor.
+      //
+      // A `canceled` record counts as NEITHER (D-05). It never anchored, so counting it as
+      // anchored would be a lie; and it is a deliberate operator end, so counting it as failed
+      // would inflate a failure counter with the operator's own decision. The metrics row is a
+      // bounded live view, not a ledger of every cohort that ever existed, so a fate that fits
+      // neither column simply does not appear in one.
       let anchored = 0;
       let failed = 0;
       for (const record of ended.values()) {
         if (record.chip === 'failed') {
           failed += 1;
-        } else {
+        } else if (record.chip !== 'canceled') {
           anchored += 1;
         }
       }

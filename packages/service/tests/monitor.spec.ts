@@ -17,6 +17,7 @@ import {
   type DirectoryCohortDTO,
   type ServiceStatusDTO,
 } from '../src/operator-cohorts.js';
+import { createCohortIntents } from '../src/cohort-intent.js';
 
 /** A minimal AggregationResult for driving `signing-complete` (the fold reads only
  *  cohortId + path; signedTx is never touched by the summary fold). */
@@ -386,7 +387,7 @@ describe('createCohortMonitor detail depth (submissions, round state, honest co-
       },
     });
     transport.start();
-    const operatorCohorts = createOperatorCohorts({ activeNetwork: ACTIVE_NETWORK, runner });
+    const operatorCohorts = createOperatorCohorts({ activeNetwork: ACTIVE_NETWORK, runner, intents: createCohortIntents() });
     const monitor = createCohortMonitor(runner);
     try {
       const draft = operatorCohorts.createDraft({ beaconType: 'CASBeacon', size: 1, threshold: 1 });
@@ -447,7 +448,12 @@ describe('GET /v1/operator/cohorts/:id monitoring route', () => {
       cookieSecure: false,
       sessionTtlMs: 60_000,
     };
-    const operatorCohorts = createOperatorCohorts({ activeNetwork: ACTIVE_NETWORK, runner, autoFallbackOnStall: true });
+    const operatorCohorts = createOperatorCohorts({
+      activeNetwork: ACTIVE_NETWORK,
+      runner,
+      autoFallbackOnStall: true,
+      intents: createCohortIntents(),
+    });
     const monitor = createCohortMonitor(runner);
     const app = createHonoApp(transport, {
       operatorAuth,
@@ -809,7 +815,12 @@ describe('GET /v1/operator/cohorts serves monitoring.health (review CR-01, D-17/
       cookieSecure: false,
       sessionTtlMs: 60_000,
     };
-    const operatorCohorts = createOperatorCohorts({ activeNetwork: ACTIVE_NETWORK, runner, autoFallbackOnStall: true });
+    const operatorCohorts = createOperatorCohorts({
+      activeNetwork: ACTIVE_NETWORK,
+      runner,
+      autoFallbackOnStall: true,
+      intents: createCohortIntents(),
+    });
     const monitor = createCohortMonitor(runner, undefined, undefined, mode);
     const app = createHonoApp(transport, { operatorAuth, operatorCohorts, monitor, networkName: ACTIVE_NETWORK });
     return { app, runner, monitor };
@@ -939,7 +950,7 @@ describe('createCohortMonitor funding view (LIVE-01, D-36 through D-43)', () => 
       },
     });
     transport.start();
-    const operatorCohorts = createOperatorCohorts({ activeNetwork: ACTIVE_NETWORK, runner });
+    const operatorCohorts = createOperatorCohorts({ activeNetwork: ACTIVE_NETWORK, runner, intents: createCohortIntents() });
     const monitor = createCohortMonitor(runner, undefined, undefined, 'live');
     try {
       const draft = operatorCohorts.createDraft({ beaconType: 'CASBeacon', size: 2, threshold: 2 });
@@ -975,7 +986,7 @@ describe('createCohortMonitor funding view (LIVE-01, D-36 through D-43)', () => 
       },
     });
     transport.start();
-    const operatorCohorts = createOperatorCohorts({ activeNetwork: ACTIVE_NETWORK, runner });
+    const operatorCohorts = createOperatorCohorts({ activeNetwork: ACTIVE_NETWORK, runner, intents: createCohortIntents() });
     const monitor = createCohortMonitor(runner, undefined, undefined, 'live');
     try {
       const draft = operatorCohorts.createDraft({ beaconType: 'CASBeacon', size: 2, threshold: 2 });

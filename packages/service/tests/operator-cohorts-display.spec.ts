@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AggregationServiceRunner } from '@did-btcr2/aggregation/service';
 import { createOperatorCohorts, type DirectoryCohortDTO } from '../src/operator-cohorts.js';
+import { createCohortIntents } from '../src/cohort-intent.js';
 
 /**
  * SVC-JOIN-2 regression coverage: the public directory DISPLAY must span the whole
@@ -68,6 +69,7 @@ function advertiseOne() {
     runner: stub.runner,
     activeNetwork: ACTIVE_NETWORK,
     autoFallbackOnStall: true,
+    intents: createCohortIntents(),
   });
   const draft = oc.createDraft({ beaconType: 'CASBeacon', size: 2, threshold: 2 });
   const advertised = oc.advertiseDraft(draft.draftId);

@@ -20,6 +20,7 @@ import type { BitcoinConnection, FeeEstimator } from '@did-btcr2/bitcoin';
 import { createHonoApp } from './hono-adapter.js';
 import { createLoginThrottle, createSessionStore } from './operator-auth.js';
 import { createOperatorCohorts } from './operator-cohorts.js';
+import { createCohortIntents } from './cohort-intent.js';
 import { createAnchorState } from './anchor-state.js';
 import { createCohortMonitor, type FundingView, type ServiceMode } from './monitor.js';
 import { makeProvideTxData, type LiveTxConfig } from './tx.js';
@@ -68,6 +69,11 @@ export {
   type DraftInput,
 } from './operator-cohorts.js';
 export { createAnchorState, type AnchorState, type AnchorReadDTO } from './anchor-state.js';
+export {
+  createCohortIntents,
+  type CohortIntent,
+  type CohortIntentRegistry,
+} from './cohort-intent.js';
 export {
   createCohortMonitor,
   type CohortMonitor,
@@ -790,9 +796,16 @@ export function createService(opts: CreateServiceOptions): Service {
 
   /**
    * Release every per-cohort side-table entry for a settled cohort (review WR-02). Called from
-   * BOTH terminal listeners - `signing-complete` (success) and `cohort-failed` - because a cohort
-   * leaves the runner's live set on either, and nothing else ever removed these entries. Stopping
-   * the watch here is idempotent (the display watch retires itself at `funded`).
+   * THREE terminal paths now - `signing-complete` (success), `cohort-failed`, and the operator
+   * CANCEL action (via the `onCancel` hook threaded into `createOperatorCohorts`) - because a
+   * cohort leaves the runner's live set on all three, and nothing else ever removed these
+   * entries. Stopping the watch here is idempotent (the display watch retires itself at
+   * `funded`).
+   *
+   * For cancel this IS the funding-watch retirement (SVC-04): without it a canceled cohort's
+   * watch would keep polling esplora for a beacon address nobody will ever fund, and the
+   * anonymous `GET /v1/funding/:cohortId` read would keep claiming the cohort awaits funding
+   * (the monitor pairs this with its own canceled guard, closing the WR-01 failure mode).
    */
   function releaseCohortTables(cohortId: string): void {
     fundingWatches.get(cohortId)?.stop();
@@ -894,6 +907,13 @@ export function createService(opts: CreateServiceOptions): Service {
   // (D-07): no operator password, no cohort routes. The active network is the service's
   // single resolved network (D-10, never a form value); the recovery key rides from the
   // service cohort config so a drafted cohort shares the operator's recovery leaf.
+  // The per-service cohort intent registry (SVC-04, RESEARCH Pattern 1). Constructed
+  // unconditionally alongside the other closure-scoped state (never a module singleton), so
+  // every app-side actor that ends a cohort declares WHY before calling the silent
+  // `runner.stopCohort`, and the fate consumers read that declaration instead of guessing from
+  // an error message. See {@link file://./cohort-intent.ts}.
+  const intents = createCohortIntents();
+
   const operatorCohorts = operatorAuth
     ? createOperatorCohorts({
         // The live runner: advertiseDraft is the sole `advertiseCohort` caller (D-17)
@@ -904,6 +924,17 @@ export function createService(opts: CreateServiceOptions): Service {
         // Thread the service's stall-fallback setting so validateDraft can gate the
         // Decision-4 over-promise guard (a k < size draft needs the fallback, G-02-1).
         autoFallbackOnStall: opts.autoFallbackOnStall,
+        // The intent registry the cancel action declares into before stopping a cohort.
+        intents,
+        // Cancel's event-time side effects, run BEFORE `runner.stopCohort` while the cohort is
+        // still live: capture the canceled fate in the monitoring fold (D-23 - the runner emits
+        // NOTHING for a stop, so this push seam is the only record the operator would ever see),
+        // then release the per-cohort side tables, which is exactly the funding-watch retirement
+        // a canceled cohort needs.
+        onCancel: (cohortId: string) => {
+          monitor.noteCanceled(cohortId);
+          releaseCohortTables(cohortId);
+        },
       })
     : undefined;
 

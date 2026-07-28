@@ -4,6 +4,7 @@ import { createIdentity, resolveNetwork } from '@btcr2-aggregation/shared';
 import { describe, expect, it, vi } from 'vitest';
 import { createHonoApp } from './hono-adapter.js';
 import { createLoginThrottle, createSessionStore, type OperatorAuthConfig } from './operator-auth.js';
+import { createCohortIntents } from './cohort-intent.js';
 import {
   createOperatorCohorts,
   type DirectoryCohortDTO,
@@ -54,7 +55,12 @@ function operatorCohortApp(autoFallbackOnStall = true) {
   };
   // Default the stall fallback ON so a k < n draft is representable (the demo server boots
   // with AUTO_FALLBACK on). The fallback-off guard test passes `false` explicitly.
-  const operatorCohorts = createOperatorCohorts({ activeNetwork: ACTIVE_NETWORK, runner, autoFallbackOnStall });
+  const operatorCohorts = createOperatorCohorts({
+    activeNetwork: ACTIVE_NETWORK,
+    runner,
+    autoFallbackOnStall,
+    intents: createCohortIntents(),
+  });
   const app = createHonoApp(transport, { operatorAuth, operatorCohorts, networkName: ACTIVE_NETWORK });
   return { app, runner };
 }

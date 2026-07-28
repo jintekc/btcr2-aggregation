@@ -436,6 +436,23 @@ export function createHonoApp(
         const dto = operatorCohorts.readvertiseExpired(c.req.param('id'));
         return dto ? c.json(dto) : c.json({ error: 'unknown expired cohort' }, 404);
       });
+      // Cancel an advertised cohort (SVC-04, D-01/D-04/D-05). Registered inside the same
+      // gated block, so it inherits the requireSameOrigin CSRF check and the requireOperator
+      // session gate registered above: an anonymous caller is rejected with 401 BEFORE this
+      // handler runs, hence before ANY cohort-id lookup, so a never-existed and an existing
+      // cohort id are indistinguishable to them (T-05-01-01). Guard the `:id` shape with the
+      // same cheap 400 the anchor/detail reads use BEFORE any lookup. Unknown, never-advertised,
+      // and already-settled ids all answer the SAME 404 body with no reason, member count, or
+      // amount, so the response leaks nothing either (T-05-01-02). A raw library throw can never
+      // become the response body: `cancelCohort` returns a closed verdict union.
+      app.post('/v1/operator/cohorts/:id/cancel', (c) => {
+        const id = c.req.param('id');
+        if (!/^[0-9a-zA-Z-]{1,64}$/.test(id)) {
+          return c.json({ error: 'invalid cohort id' }, 400);
+        }
+        const outcome = operatorCohorts.cancelCohort(id);
+        return outcome === 'ok' ? c.json({ ok: true }) : c.json({ error: 'unknown cohort' }, 404);
+      });
       // Gated per-cohort monitoring detail read (SVC-03, D-19/D-26). Registered AFTER the
       // requireSameOrigin + requireOperator prefix guards above, so an anonymous caller is
       // rejected with 401 BEFORE this handler runs (no existence oracle, T-04-01-01). Guard
