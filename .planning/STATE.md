@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Completed 05-01-PLAN.md
-last_updated: "2026-07-28T22:51:38.314Z"
+stopped_at: Completed 05-02-PLAN.md
+last_updated: "2026-07-28T23:09:28.078Z"
 last_activity: 2026-07-28
 last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 44
-  completed_plans: 31
+  completed_plans: 32
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 2 of 14
+Plan: 3 of 14
 Status: Ready to execute
 Last activity: 2026-07-28 — Phase 05 execution started
 
-Progress: [███████░░░] 70%
+Progress: [███████░░░] 73%
 
 ## Performance Metrics
 
@@ -92,6 +92,7 @@ Progress: [███████░░░] 70%
 | Phase 04 P07 | 22min | 3 tasks | 8 files |
 | Phase 04 P08 | 3 days elapsed (checkpoint-dominated) | 3 tasks | 32 files |
 | Phase 05 P01 | 24 min | 2 tasks | 12 files |
+| Phase 05 P02 | 22 min | 2 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -131,6 +132,7 @@ Recent decisions affecting current work (Phase 2):
 - [Phase 04] 04-08: six library-level defects surfaced by the live UAT were deliberately NOT worked around in this consumer app (standing constraint: reference consumer, not a fork) - single advert slot, no seat release, silent duplicate/surplus opt-in drop, ignored advertRepeatIntervalMs, 60s envelope-skew replay rejection (all @did-btcr2/aggregation@0.4.0), and deepest-first selectSpendableUtxo with only a dust floor (@did-btcr2/method@0.51.0). They are documented in 04-LIVE-UAT-CHECKLIST.md under 'Known upstream limits' and queued for upstream issue filing.
 - [Phase 05]: [Phase 05] 05-01 (SVC-04 tracer): cohort fate is classified from an out-of-band per-service INTENT registry declared BEFORE runner.stopCohort (which emits nothing at all), never from the completion rejection message - stopCohort, the whole-runner stop(), and a stall all reject through the same channel. cancelCohort files a distinct 'canceled' fate at all three mirrored server sites (operator list DTO state, monitor ended chip, service metrics where it counts as NEITHER anchored nor failed), captured at event time per 04 D-23 so a session-GC'd cohort still projects. Gated POST /v1/operator/cohorts/:id/cancel: 401 before any lookup, 400 shape guard, one indistinguishable 404 for unknown/never-advertised/already-settled. Cancel retires the funding watch via releaseCohortTables PLUS a canceled guard on the anonymous publicFunding read (releaseCohortTables alone leaves the last-known 'waiting' view claiming the cohort awaits funding forever - the WR-01 failure mode). - RESEARCH Pattern 1 / Pitfalls 1 and 2, D-05. This is the seam every later Phase 5 lifecycle verb rides (05-06's per-draft discovery window declares 'window-expired' into the same registry).
 - [Phase 05]: [Phase 05] 05-01: the transport's SINGLE advert slot is repaired after every settle path (cancel, signing-complete, cohort-failed) by rebuilding the library's own createCohortAdvertMessage and re-installing it through transport.publishRepeating. The repair tracks which cohort OWNS the slot so only the owner's settle re-publishes: re-publishing over a live advert would hand already-seated participants a duplicate advert their runner rejects with INVALID_PHASE. The republisher also exposes clear(), because its own advert is id-scoped and would otherwise outlive the last open cohort. Proven by a hermetic TWO-cohort e2e:cancel leg (a single-cohort test passes while the defect is live) that seats a FRESHLY constructed participant in the sibling, and validated non-vacuous by disabling the repair and watching it fail. - RESEARCH Pattern 3 / Pitfall 3. Pre-existing latent defect that Cancel would have promoted from a rare race to a button. Known remaining gap: the runner also clears the slot at keygen-complete (a cohort FILLING), logged in deferred-items.md.
+- [Phase 05]: [Phase 05] 05-02 (SVC-04 cancel UI): ConfirmPanel lands in ui/primitives.tsx as the ONE inline (no portal, no overlay) laddered confirmation every later Phase 5 destructive action composes; its docstring pins the rule that tone is never the only carrier of meaning. Cancel availability and ceremony rung are PURE predicates in lib/lifecycle.ts (the terminalReason precedent): cancel is HIDDEN not disabled once the beacon tx broadcasts (D-04), a FAILED anchor is judged by its txid rather than its state name (a send that never reached the network stays cancelable), and dead-end funding joins funded/awaiting-confirmation on the TOP rung because money has already arrived below the usable minimum. The type-to-confirm instruction is a Body-size label, NOT a Field micro-label, whose uppercase class would have instructed the operator to type a value the case-sensitive match then rejects; its value is a plain 8-char id prefix with no ellipsis. cancelCohort routes 401 through the single shared expireSession path and NEVER paints an optimistic chip: the Canceled fate arrives from the served projection only. The monitor now stamps every ended record at event time and serves it, so the neutral Canceled Ended row names a real server wall-clock time instead of the browser inventing one.
 
 ### Pending Todos
 
@@ -168,7 +170,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-28T22:51:01.984Z
-Stopped at: Completed 05-01-PLAN.md
+Last session: 2026-07-28T23:09:28.040Z
+Stopped at: Completed 05-02-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
