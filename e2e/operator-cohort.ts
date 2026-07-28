@@ -62,8 +62,9 @@ interface OperatorCohortDTO {
   threshold: number;
   capacity: number;
   joined: number;
-  state: 'draft' | 'advertised' | 'expired';
-  /** Short reason present only on `state: 'expired'` rows (F2). */
+  /** `'canceled'` is the operator-initiated end (SVC-04, D-05), distinct from an expiry. */
+  state: 'draft' | 'advertised' | 'expired' | 'canceled';
+  /** Short reason present only on terminal (`'expired'` / `'canceled'`) rows (F2, D-05). */
   reason?: string;
 }
 
@@ -120,7 +121,7 @@ interface MonitorDetailDTO {
 /** One monitoring summary chip row (subset), from the `monitoring.rows` sibling of the list read. */
 interface MonitorSummaryRowDTO {
   cohortId: string;
-  chip: 'filling' | 'co-signing' | 'needs-funding' | 'fallback' | 'anchored' | 'failed';
+  chip: 'filling' | 'co-signing' | 'needs-funding' | 'fallback' | 'anchored' | 'canceled' | 'failed';
   seatsJoined: number;
   capacity: number;
 }
@@ -705,19 +706,198 @@ export async function runMonitorLeg(options: OperatorCohortOptions = {}): Promis
   }
 }
 
+/**
+ * The SVC-04 cancel leg: prove the operator can end an advertised cohort and that doing so
+ * does NOT take its siblings' joinability down with it.
+ *
+ * The two-cohort shape is load-bearing, not incidental. `HttpServerTransport` holds exactly
+ * ONE advert slot, replays only that slot to a NEW SSE subscriber, and clears it when the
+ * slot-owning cohort is disposed - so canceling the most recently advertised cohort (B) leaves
+ * its sibling (A) listed in the public directory yet invisible to anyone connecting afterwards.
+ * A single-cohort cancel test passes while that defect is live, so this leg advertises A, then
+ * B (B takes the slot), cancels B, and then constructs a FRESH participant filtered to A. The
+ * participant must be freshly constructed: one started before the cancel already holds A's
+ * advert and would seat regardless, which is exactly the false green this leg exists to avoid.
+ *
+ * Hermetic by construction (no live, no chain): both cohorts are size 2 and only one
+ * participant joins A, so nothing reaches signing and the assertions never race a completion.
+ */
+export async function runCancelLeg(options: OperatorCohortOptions = {}): Promise<string[]> {
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const log = options.quiet ? () => {} : (msg: string) => console.log(msg);
+  const problems: string[] = [];
+  const fail = (problem: string): void => {
+    problems.push(problem);
+  };
+
+  const service = createService({
+    identity: createIdentity(),
+    config: buildCohortConfig(THRESHOLD, 'CASBeacon'),
+    operatorPassword: OPERATOR_PASSWORD,
+    operatorCookieSecure: false,
+  });
+  service.runner.on('error', (err) => log(`[cancel] service error: ${err.message}`));
+
+  const { baseUrl } = await service.start(options.port ?? 0);
+  log(`[cancel] service listening on ${baseUrl}`);
+
+  const participants: ReturnType<typeof createParticipant>[] = [];
+  try {
+    // Login + capture the operator_session cookie (Node fetch has no cookie jar).
+    const loginRes = await fetch(`${baseUrl}/v1/operator/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: OPERATOR_PASSWORD }),
+    });
+    const setCookie = loginRes.headers.getSetCookie().find((c) => c.startsWith('operator_session='));
+    await loginRes.text();
+    if (loginRes.status !== 200 || !setCookie) {
+      fail(`[cancel] operator login should be 200 with a session cookie, got ${loginRes.status}`);
+      return problems;
+    }
+    const cookie = setCookie.split(';')[0];
+
+    /** Create a draft and advertise it; returns the LIVE cohort id. */
+    const createAndAdvertise = async (label: string): Promise<string> => {
+      const createRes = await fetch(`${baseUrl}/v1/operator/cohorts`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie },
+        body: JSON.stringify({ beaconType: 'CASBeacon', size: THRESHOLD, threshold: THRESHOLD }),
+      });
+      const draft = (await createRes.json()) as OperatorCohortDTO;
+      const advertiseRes = await fetch(`${baseUrl}/v1/operator/cohorts/${draft.draftId}/advertise`, {
+        method: 'POST',
+        headers: { cookie },
+      });
+      const advertised = (await advertiseRes.json()) as OperatorCohortDTO;
+      log(`[cancel] advertised cohort ${label} as ${advertised.draftId}`);
+      return advertised.draftId;
+    };
+
+    // A first, then B: B is the most recently advertised, so B owns the transport advert slot.
+    const cohortA = await createAndAdvertise('A');
+    const cohortB = await createAndAdvertise('B');
+
+    const before = (await (await fetch(`${baseUrl}/v1/status`)).json()) as ServiceStatusDTO;
+    if (before.openCohorts !== 2) {
+      fail(`[cancel] two advertised cohorts should report openCohorts 2, got ${before.openCohorts}`);
+    }
+
+    /* ---- Cancel B through the gated route. ---- */
+    const cancelRes = await fetch(`${baseUrl}/v1/operator/cohorts/${cohortB}/cancel`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+    if (cancelRes.status !== 200) {
+      fail(`[cancel] cancel should be 200, got ${cancelRes.status}`);
+      return problems;
+    }
+    await cancelRes.text();
+
+    // B leaves the participant directory immediately and the open count drops to exactly A.
+    const directory = await withTimeout(
+      pollUntil(
+        async () => (await (await fetch(`${baseUrl}/v1/directory`)).json()) as DirectoryCohortDTO[],
+        (rows) => !rows.some((d) => d.cohortId === cohortB),
+        10_000,
+        '[cancel] canceled cohort leaves /v1/directory',
+      ),
+      12_000,
+      '[cancel] directory poll',
+    );
+    if (!directory.some((d) => d.cohortId === cohortA)) {
+      fail(`[cancel] the sibling cohort ${cohortA} must stay in /v1/directory after ${cohortB} is canceled`);
+    }
+    const after = (await (await fetch(`${baseUrl}/v1/status`)).json()) as ServiceStatusDTO;
+    if (after.openCohorts !== 1) {
+      fail(`[cancel] after canceling one of two cohorts openCohorts should be 1, got ${after.openCohorts}`);
+    }
+    log('[assert] cancel: the canceled cohort left /v1/directory and openCohorts dropped to 1');
+
+    /* ---- The operator sees a distinct canceled fate, never an expiry or a failure. ---- */
+    const listed = (await (
+      await fetch(`${baseUrl}/v1/operator/cohorts`, { headers: { cookie } })
+    ).json()) as OperatorListWithMonitoringDTO;
+    const canceledRow = listed.cohorts.find((c) => c.draftId === cohortB);
+    if (!canceledRow) {
+      fail(`[cancel] canceled cohort ${cohortB} should still be listed to the operator`);
+    } else if (canceledRow.state !== 'canceled') {
+      fail(`[cancel] canceled cohort ${cohortB} should be state 'canceled', got '${canceledRow.state}'`);
+    } else if (canceledRow.reason !== 'canceled by the operator') {
+      fail(`[cancel] canceled cohort should carry the fixed operator reason, got '${canceledRow.reason ?? ''}'`);
+    }
+    const chipRow = (listed.monitoring?.rows ?? []).find((r) => r.cohortId === cohortB);
+    if (chipRow?.chip !== 'canceled') {
+      fail(`[cancel] the monitoring row for ${cohortB} should carry the 'canceled' chip, got '${chipRow?.chip ?? 'none'}'`);
+    }
+    if (listed.monitoring && listed.monitoring.metrics.failed !== 0) {
+      fail(`[cancel] a deliberate cancel must not count as a failure, got failed=${listed.monitoring.metrics.failed}`);
+    }
+    log("[assert] cancel: the operator list shows the canceled fate with its own chip and no failure count");
+
+    /* ---- The sibling cohort is still genuinely joinable (the advert-slot repair). ---- */
+    // FRESHLY constructed AFTER the cancel: a participant started earlier already holds A's
+    // advert and would seat even with the single-advert-slot defect live.
+    const participant = createParticipant({ identity: createIdentity(), baseUrl, cohortId: cohortA });
+    participant.runner.on('error', (err) => log(`[cancel] participant error: ${err.message}`));
+    participants.push(participant);
+    await participant.start();
+    log(`[cancel] fresh participant started, filtered to the sibling cohort ${cohortA}`);
+
+    try {
+      await withTimeout(
+        pollUntil(
+          async () => {
+            const res = await fetch(`${baseUrl}/v1/operator/cohorts/${cohortA}`, { headers: { cookie } });
+            return (await res.json()) as MonitorDetailDTO;
+          },
+          (detail) => detail.seatsJoined >= 1,
+          15_000,
+          '[cancel] the fresh participant seats in the sibling cohort',
+        ),
+        timeoutMs,
+        '[cancel] sibling seat poll',
+      );
+    } catch (err) {
+      fail(
+        `[cancel] the sibling cohort ${cohortA} never seated a freshly constructed participant after ` +
+          `${cohortB} was canceled (the transport advert slot was not repaired): ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+      return problems;
+    }
+    if (problems.length === 0) {
+      log(`[ok] cancel: ${cohortB} was canceled with its own fate and the sibling ${cohortA} still seats new participants`);
+    }
+
+    return problems;
+  } finally {
+    for (const participant of participants) {
+      participant.stop();
+    }
+    await service.stop();
+  }
+}
+
 async function main(): Promise<number> {
   const quiet = process.argv.includes('--quiet');
   // `--monitor` runs ONLY the SVC-03 fixture monitoring leg (the `e2e:monitor` script); the
   // default runs the full operator suite (auth boundary + on-demand driver + expiry) AND the
   // monitoring leg, so the extended `e2e:operator` gate covers the monitoring read model too.
   const monitorOnly = process.argv.includes('--monitor');
+  // `--cancel` runs ONLY the SVC-04 cancel leg (the `e2e:cancel` script); it also joins the
+  // default suite so the extended `e2e:operator` gate covers the lifecycle verb too.
+  const cancelOnly = process.argv.includes('--cancel');
   const problems = monitorOnly
     ? await runMonitorLeg({ quiet })
-    : [
-        ...(await runOperatorCohort({ quiet })),
-        ...(await runExpiryLeg({ quiet })),
-        ...(await runMonitorLeg({ quiet })),
-      ];
+    : cancelOnly
+      ? await runCancelLeg({ quiet })
+      : [
+          ...(await runOperatorCohort({ quiet })),
+          ...(await runExpiryLeg({ quiet })),
+          ...(await runMonitorLeg({ quiet })),
+          ...(await runCancelLeg({ quiet })),
+        ];
   if (problems.length > 0) {
     console.error('\nE2E FAILED:');
     for (const problem of problems) {
@@ -734,6 +914,16 @@ async function main(): Promise<number> {
     );
     return 0;
   }
+  if (cancelOnly) {
+    console.log(
+      '\nCANCEL E2E PASSED: an operator advertised two cohorts and canceled the most recently ' +
+        'advertised one; it left the public directory and the open count immediately, was filed to ' +
+        'the operator with its own canceled fate and neutral chip (never a failure), and the ' +
+        'still-open sibling cohort seated a FRESHLY constructed participant afterwards - proving ' +
+        'the transport single-advert-slot repair (SVC-04, D-01/D-05).',
+    );
+    return 0;
+  }
   console.log(
     '\nE2E PASSED: operator login -> create -> advertise -> real participants discovered the ' +
       'directory entry, joined, and co-signed a 64-byte aggregated Taproot signature over real ' +
@@ -742,7 +932,10 @@ async function main(): Promise<number> {
       '(an idle advertised cohort expires out of the participant directory but is surfaced to the ' +
       'operator as expired with a reason, and is then re-advertised back into the directory); PLUS ' +
       'the SVC-03 monitoring leg (the gated per-cohort detail read reflects the seated members and ' +
-      'submissions, and the list read settles the cohort into the anchored ended taxonomy, D-47).',
+      'submissions, and the list read settles the cohort into the anchored ended taxonomy, D-47); ' +
+      'PLUS the SVC-04 cancel leg (canceling the slot-owning one of two advertised cohorts files a ' +
+      'distinct canceled fate and leaves the sibling still joinable to a freshly constructed ' +
+      'participant).',
   );
   return 0;
 }

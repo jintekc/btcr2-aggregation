@@ -37,6 +37,14 @@
  * OperatorCohorts.directory}/{@link OperatorCohorts.status}, so a participant never
  * sees an expired cohort as joinable.
  *
+ * This module also owns the transport's ADVERT-SLOT repair. The transport keeps exactly ONE
+ * advert slot and the runner clears it whenever the slot-owning cohort is disposed, so any
+ * settle (cancel, completion, or failure) can leave still-open sibling cohorts listed in the
+ * public directory yet invisible to a freshly connecting participant. `repairAdvertSlot` runs
+ * on EVERY settle path and re-publishes the newest still-open cohort's advert, because this is
+ * the one module that knows both which cohorts are advertised and with what config (see
+ * {@link file://./advert-republish.ts} for the verified transport facts behind it).
+ *
  * Two decisions are load-bearing here:
  * - The Bitcoin network is the SERVICE's single active network, resolved once at boot
  *   and passed in as {@link OperatorCohortsOptions.activeNetwork}; it is NEVER read
@@ -77,6 +85,7 @@ import {
 } from '@btcr2-aggregation/shared';
 import type { AggregationServiceRunner, CohortConfig } from '@did-btcr2/aggregation/service';
 import type { CohortIntentRegistry } from './cohort-intent.js';
+import type { AdvertRepublisher } from './advert-republish.js';
 
 /** The two aggregation beacon types an operator may draft (singleton is single-party). */
 const KNOWN_BEACON_TYPES = new Set<string>(['CASBeacon', 'SMTBeacon']);
@@ -215,6 +224,16 @@ export interface OperatorCohortsOptions {
    */
   onCancel?: (cohortId: string) => void;
   /**
+   * Transport advert-slot repair (RESEARCH Pattern 3). The transport holds exactly ONE advert
+   * slot and the runner CLEARS it whenever the slot-owning cohort is disposed, so a settle
+   * (cancel, completion, or failure) can leave still-open sibling cohorts listed in the
+   * directory yet invisible to a freshly connecting participant. When supplied, this service
+   * re-installs the newest still-open cohort's advert after every settle. Optional: a caller
+   * that omits it keeps the pre-existing behavior exactly. See
+   * {@link file://./advert-republish.ts}.
+   */
+  republishAdvert?: AdvertRepublisher;
+  /**
    * Operator recovery key (x-only hex) threaded from the service cohort config, so a
    * drafted cohort carries the same recovery leaf the operator funds. Optional - when
    * absent {@link buildCohortConfig} derives a throwaway (fine off-chain / on test nets).
@@ -348,6 +367,51 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
     { config: CohortConfig; reason: string; fate: 'expired' | 'canceled' }
   >();
 
+  /**
+   * The cohort whose advert we believe currently occupies the transport's SINGLE advert slot
+   * (RESEARCH Pattern 3). The transport exposes no accessor for `#currentAdvert`, so this
+   * mirrors it app-side from the only three places an advert is ever installed: the two
+   * `runner.advertiseCohort` call sites and {@link repairAdvertSlot}'s own re-publish.
+   *
+   * It is deliberately an approximation with a SAFE failure direction. The runner also clears
+   * the slot at `keygen-complete` (a filled cohort stops advertising), which this tracker does
+   * not observe, so the mirror can be stale in exactly one way: we may believe a cohort still
+   * owns a slot that is actually empty, and therefore SKIP a repair. That is the pre-existing
+   * behavior, never worse. It can never cause the opposite error - re-publishing over a live
+   * advert - which would hand already-seated participants a duplicate advert for a cohort they
+   * have already joined.
+   */
+  let advertSlotOwner: string | undefined;
+
+  /**
+   * Repair the transport's single advert slot after a cohort settles (RESEARCH Pattern 3).
+   *
+   * Only the settle of the SLOT-OWNING cohort empties the slot, so any other cohort settling
+   * is a no-op: the current advert is still valid and re-publishing it would deliver a
+   * duplicate advert to every connected participant, including ones already seated in that
+   * cohort (whose runner would then try to re-join a cohort past its Discovered phase).
+   *
+   * When the owner did settle, walk the advertised cohorts in REVERSE insertion order and
+   * re-publish the newest one that is still joinable ({@link OPEN_PHASES}). If none is open,
+   * leave the slot genuinely empty rather than serving an advert for a cohort that has ended.
+   */
+  function repairAdvertSlot(settledCohortId: string): void {
+    const republisher = opts.republishAdvert;
+    if (!republisher || settledCohortId !== advertSlotOwner) {
+      return;
+    }
+    advertSlotOwner = undefined;
+    for (const [cohortId, config] of [...advertised.entries()].reverse()) {
+      const phase = runner.session.getCohortPhase(cohortId);
+      if (phase && OPEN_PHASES.has(phase)) {
+        republisher.republish(cohortId, config);
+        advertSlotOwner = cohortId;
+        return;
+      }
+    }
+    republisher.clear();
+  }
+
   /** Coerce a completion rejection to a short, operator-facing reason string. */
   function reasonString(err: unknown): string {
     const message = err instanceof Error ? err.message : String(err);
@@ -401,6 +465,9 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
           // A cohort that completes successfully was never stopped on purpose, but clear any
           // stale tag anyway so a recycled id can never inherit a previous cohort's intent.
           intents.clear(cohortId);
+          // Repair AFTER the delete, so the cohort that just settled can never be the one
+          // chosen to re-advertise.
+          repairAdvertSlot(cohortId);
         },
         (err) => {
           const config = advertised.get(cohortId);
@@ -414,6 +481,7 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
               rememberTerminal(cohortId, config, reasonString(err), 'expired');
             }
           }
+          repairAdvertSlot(cohortId);
         },
       )
       .catch(() => {
@@ -515,6 +583,9 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
       // the removed loop.
       const { cohortId, completion } = runner.advertiseCohort(entry.config);
       advertised.set(cohortId, entry.config);
+      // The advertise just published this cohort's advert, so it now owns the transport's
+      // single advert slot (RESEARCH Pattern 3).
+      advertSlotOwner = cohortId;
       drafts.delete(draftId);
       // Settle the completion: prune on success, retain an expired terminal record on
       // rejection so the cohort is surfaced to the operator instead of silently deleted
@@ -565,6 +636,14 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
       //    `settleCompletion` on the next microtask turn - the SINGLE place a cohort leaves the
       //    `advertised` map, so the entry is deliberately NOT deleted here.
       runner.stopCohort(cohortId);
+      // 4. Repair the transport's single advert slot, which the runner's dispose path just
+      //    cleared if this cohort owned it (RESEARCH Pattern 3 / Pitfall 3). Without this,
+      //    canceling the most recently advertised cohort would silently take every other
+      //    still-open cohort's joinability down with it: they stay in the public directory
+      //    but a freshly connecting participant never receives their advert. The cohort being
+      //    canceled can never be re-chosen here, because `stopCohort` already removed it from
+      //    the session so it has no OPEN phase left to match.
+      repairAdvertSlot(cohortId);
       console.log(`[operator] canceled cohort ${cohortId}`);
       return 'ok';
     },
@@ -579,6 +658,8 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
       // the fresh cohort id, and drop the old expired record.
       const { cohortId: newCohortId, completion } = runner.advertiseCohort(record.config);
       advertised.set(newCohortId, record.config);
+      // The re-advertise published a fresh advert, so this cohort now owns the slot.
+      advertSlotOwner = newCohortId;
       terminal.delete(cohortId);
       settleCompletion(newCohortId, completion);
       console.log(`[operator] re-advertised expired cohort ${cohortId} as ${newCohortId}`);

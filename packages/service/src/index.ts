@@ -21,6 +21,7 @@ import { createHonoApp } from './hono-adapter.js';
 import { createLoginThrottle, createSessionStore } from './operator-auth.js';
 import { createOperatorCohorts } from './operator-cohorts.js';
 import { createCohortIntents } from './cohort-intent.js';
+import { createAdvertRepublisher } from './advert-republish.js';
 import { createAnchorState } from './anchor-state.js';
 import { createCohortMonitor, type FundingView, type ServiceMode } from './monitor.js';
 import { makeProvideTxData, type LiveTxConfig } from './tx.js';
@@ -74,6 +75,11 @@ export {
   type CohortIntent,
   type CohortIntentRegistry,
 } from './cohort-intent.js';
+export {
+  createAdvertRepublisher,
+  type AdvertRepublisher,
+  type AdvertRepublisherDeps,
+} from './advert-republish.js';
 export {
   createCohortMonitor,
   type CohortMonitor,
@@ -935,6 +941,12 @@ export function createService(opts: CreateServiceOptions): Service {
           monitor.noteCanceled(cohortId);
           releaseCohortTables(cohortId);
         },
+        // Advert-slot repair (RESEARCH Pattern 3). The transport holds ONE advert slot and the
+        // runner clears it whenever the slot-owning cohort is disposed, so without this a
+        // settle silently un-advertises every still-open sibling cohort. Built from the same
+        // transport + identity the runner itself publishes with, so the re-published advert is
+        // byte-equivalent to the one `AggregationService.advertise` produced.
+        republishAdvert: createAdvertRepublisher({ transport, did, keys }),
       })
     : undefined;
 
