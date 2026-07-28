@@ -1,0 +1,432 @@
+import { AggregationServiceRunner, HttpServerTransport } from '@did-btcr2/aggregation/service';
+import { resolveBtcr2SenderPk } from '@did-btcr2/method';
+import { createIdentity, FINALIZABLE_PHASES, resolveNetwork } from '@btcr2-aggregation/shared';
+import { describe, expect, it } from 'vitest';
+import { createCohortIntents } from '../src/cohort-intent.js';
+import { createCohortMonitor } from '../src/monitor.js';
+import { createHonoApp } from '../src/hono-adapter.js';
+import { createLoginThrottle, createSessionStore, type OperatorAuthConfig } from '../src/operator-auth.js';
+import {
+  createOperatorCohorts,
+  NOT_SIGNING_REASON,
+  type OperatorCohortDTO,
+} from '../src/operator-cohorts.js';
+
+/**
+ * The single home for the ROUTE-SEMANTICS matrix of every gated cohort-lifecycle route this
+ * phase adds (SVC-04): `POST /v1/operator/cohorts/:id/cancel` (05-01) and
+ * `POST /v1/operator/cohorts/:id/finalize` (05-03). Each route is asserted across the same five
+ * outcomes - 401 anonymously (BEFORE any cohort-id lookup), 400 for a malformed id, 404 for an
+ * unknown id, 409 for a refused action, and 200 for the happy path - so a later lifecycle verb
+ * has one obvious place to join and one obvious shape to match.
+ *
+ * The load-bearing property for finalize is RESEARCH Pitfall 4: `runner.triggerFallback` calls
+ * `session.startFallbackSigning` FIRST, which THROWS when the cohort has no signing session or
+ * sits outside the library's three signing phases. So availability is a PHASE PREDICATE checked
+ * before the library call, never a try/catch around it, and a refusal is a 409 carrying an
+ * app-authored reason - never a 500, and never the library's own `INVALID_PHASE` message.
+ *
+ * How the signing phase is reached here: driving a real hermetic cohort all the way into
+ * `SigningStarted` needs n real participants and then completes in milliseconds, so a unit spec
+ * could never hold a cohort mid-signing without racing. This harness therefore keeps EVERYTHING
+ * real (a real runner, a real transport, the real gated Hono app, real drafts advertised through
+ * the real operator routes) and overrides exactly two seams: the observed cohort PHASE, and
+ * `runner.triggerFallback`, which is counted rather than executed. That is precisely what makes
+ * the guard testable - the spy proves the library call is NOT reached on a pre-signing cohort -
+ * while the genuine end-to-end library path is proven by `pnpm e2e:fallback:operator`.
+ *
+ * Every test calls `runner.stop()` so the runner's advert republish timer never leaks.
+ */
+
+const PASSWORD = 'correct-horse-battery-staple';
+const ACTIVE_NETWORK = 'signet';
+
+/** The exact UI-SPEC activity-ring line for an operator-triggered fallback. */
+const FINALIZE_ACTIVITY_TEXT = 'Operator triggered the k-of-n fallback.';
+
+/**
+ * Build an operator-enabled app wired exactly as `index.ts` wires it for the lifecycle verbs:
+ * one intent registry shared by the actions and the settlement, one monitoring fold, and both
+ * event-time hooks (`onCancel` / `onFinalize`).
+ *
+ * `setPhase` installs an observed phase for a cohort id; every other id keeps the real state
+ * machine's answer. `fallbackCalls` records the ids `finalizeCohort` handed to the library.
+ */
+function lifecycleApp() {
+  const identity = createIdentity(resolveNetwork(ACTIVE_NETWORK));
+  const transport = new HttpServerTransport({ resolveSenderPk: resolveBtcr2SenderPk, heartbeatIntervalMs: 0 });
+  transport.registerActor(identity.did, identity.keys);
+  const runner = new AggregationServiceRunner({
+    transport,
+    did: identity.did,
+    keys: identity.keys,
+    onProvideTxData: async () => {
+      throw new Error('signing not exercised in this spec');
+    },
+  });
+  transport.start();
+
+  // Seam 1: the observed phase. Only ids explicitly staged here are overridden, so the real
+  // state machine still answers for every other cohort (and for an unknown id).
+  const staged = new Map<string, string>();
+  const realGetCohortPhase = runner.session.getCohortPhase.bind(runner.session);
+  runner.session.getCohortPhase = ((cohortId: string) =>
+    staged.get(cohortId) ?? realGetCohortPhase(cohortId)) as typeof runner.session.getCohortPhase;
+
+  // Seam 2: the library call itself, counted rather than executed (the pre-guard spy).
+  const fallbackCalls: string[] = [];
+  runner.triggerFallback = async (cohortId: string): Promise<void> => {
+    fallbackCalls.push(cohortId);
+  };
+
+  const sessions = createSessionStore(60_000);
+  const operatorAuth: OperatorAuthConfig = {
+    sessions,
+    throttle: createLoginThrottle({ maxAttempts: 1000, windowMs: 5 * 60_000 }),
+    expectedPassword: PASSWORD,
+    cookieSecure: false,
+    sessionTtlMs: 60_000,
+  };
+  const intents = createCohortIntents();
+  const monitor = createCohortMonitor(runner);
+  const operatorCohorts = createOperatorCohorts({
+    activeNetwork: ACTIVE_NETWORK,
+    runner,
+    autoFallbackOnStall: true,
+    intents,
+    onCancel: (cohortId: string) => monitor.noteCanceled(cohortId),
+    onFinalize: (cohortId: string) => monitor.noteOperatorAction(cohortId, FINALIZE_ACTIVITY_TEXT),
+  });
+  const app = createHonoApp(transport, {
+    operatorAuth,
+    operatorCohorts,
+    monitor,
+    networkName: ACTIVE_NETWORK,
+  });
+  return {
+    app,
+    runner,
+    monitor,
+    operatorCohorts,
+    fallbackCalls,
+    setPhase: (cohortId: string, phase: string) => staged.set(cohortId, phase),
+  };
+}
+
+/** POST a login and return the bare `operator_session=<id>` cookie for gated requests. */
+async function login(app: ReturnType<typeof lifecycleApp>['app']): Promise<string> {
+  const res = await app.request('/v1/operator/login', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ password: PASSWORD }),
+  });
+  return res.headers.get('set-cookie')?.split(';')[0] ?? '';
+}
+
+/** Create a draft and advertise it in one step; returns the LIVE cohort id. */
+async function createAndAdvertise(
+  app: ReturnType<typeof lifecycleApp>['app'],
+  cookie: string,
+  size = 2,
+): Promise<string> {
+  const created = await app.request('/v1/operator/cohorts', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ beaconType: 'CASBeacon', size, threshold: size }),
+  });
+  const draft = (await created.json()) as OperatorCohortDTO;
+  const advertised = await app.request(`/v1/operator/cohorts/${draft.draftId}/advertise`, {
+    method: 'POST',
+    headers: { cookie },
+  });
+  return ((await advertised.json()) as OperatorCohortDTO).draftId;
+}
+
+/** Let a completion rejection drive `settleCompletion` on the next microtask turn. */
+async function settle(): Promise<void> {
+  await new Promise((r) => setTimeout(r, 20));
+}
+
+describe('FINALIZABLE_PHASES mirrors the library signing set, never the wider in-flight set', () => {
+  it('holds exactly the three signing phases the library salvages a stall from', () => {
+    expect([...FINALIZABLE_PHASES].sort()).toEqual(
+      ['AwaitingPartialSigs', 'NoncesCollected', 'SigningStarted'].sort(),
+    );
+  });
+
+  it('excludes the four funding-wait phases, which IN_FLIGHT_PHASES deliberately includes', () => {
+    // Reusing IN_FLIGHT_PHASES here would offer Finalize now on a cohort where the library call
+    // throws: 04-08 widened that set with the funding-wait phases for the directory, not for this.
+    for (const phase of ['UpdatesCollected', 'DataDistributed', 'Validated', 'FallbackRequested']) {
+      expect(FINALIZABLE_PHASES.has(phase)).toBe(false);
+    }
+  });
+});
+
+describe('finalizeCohort guards on the phase BEFORE touching the library (RESEARCH Pitfall 4)', () => {
+  it('returns "ok" and commits the fallback path for a cohort in a signing phase', async () => {
+    const { app, runner, operatorCohorts, fallbackCalls, setPhase } = lifecycleApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+    setPhase(cohortId, 'SigningStarted');
+
+    await expect(operatorCohorts.finalizeCohort(cohortId)).resolves.toBe('ok');
+    expect(fallbackCalls).toEqual([cohortId]);
+
+    runner.stop();
+  });
+
+  it('accepts every one of the three signing phases', async () => {
+    for (const phase of FINALIZABLE_PHASES) {
+      const { app, runner, operatorCohorts, fallbackCalls, setPhase } = lifecycleApp();
+      const cookie = await login(app);
+      const cohortId = await createAndAdvertise(app, cookie);
+      setPhase(cohortId, phase);
+
+      await expect(operatorCohorts.finalizeCohort(cohortId)).resolves.toBe('ok');
+      expect(fallbackCalls).toHaveLength(1);
+
+      runner.stop();
+    }
+  });
+
+  it('returns "not-signing" for a filling, pre-signing cohort and NEVER calls the library', async () => {
+    const { app, runner, operatorCohorts, fallbackCalls } = lifecycleApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+    // No phase staged: a freshly advertised cohort really is at `Advertised`.
+
+    await expect(operatorCohorts.finalizeCohort(cohortId)).resolves.toBe('not-signing');
+    // The spy is the proof: the guard runs BEFORE the call, so no library error can escape.
+    expect(fallbackCalls).toEqual([]);
+
+    runner.stop();
+  });
+
+  it('returns "not-signing" for the funding-wait phases (the wider in-flight set is not reused)', async () => {
+    for (const phase of ['UpdatesCollected', 'DataDistributed', 'Validated', 'FallbackRequested']) {
+      const { app, runner, operatorCohorts, fallbackCalls, setPhase } = lifecycleApp();
+      const cookie = await login(app);
+      const cohortId = await createAndAdvertise(app, cookie);
+      setPhase(cohortId, phase);
+
+      await expect(operatorCohorts.finalizeCohort(cohortId)).resolves.toBe('not-signing');
+      expect(fallbackCalls).toEqual([]);
+
+      runner.stop();
+    }
+  });
+
+  it('returns "unknown" for a never-advertised cohort id', async () => {
+    const { app, runner, operatorCohorts, fallbackCalls } = lifecycleApp();
+    await login(app);
+
+    await expect(operatorCohorts.finalizeCohort('never-existed')).resolves.toBe('unknown');
+    expect(fallbackCalls).toEqual([]);
+
+    runner.stop();
+  });
+
+  it('returns "unknown" for an ALREADY-SETTLED cohort id (indistinguishable from unknown)', async () => {
+    const { app, runner, operatorCohorts, fallbackCalls } = lifecycleApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+    expect(operatorCohorts.cancelCohort(cohortId)).toBe('ok');
+    await settle();
+
+    await expect(operatorCohorts.finalizeCohort(cohortId)).resolves.toBe('unknown');
+    expect(fallbackCalls).toEqual([]);
+
+    runner.stop();
+  });
+
+  it('is idempotent: a second finalize resolves "ok" and appends no duplicate activity entry', async () => {
+    const { app, runner, monitor, operatorCohorts, setPhase } = lifecycleApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+    setPhase(cohortId, 'SigningStarted');
+
+    await expect(operatorCohorts.finalizeCohort(cohortId)).resolves.toBe('ok');
+    await expect(operatorCohorts.finalizeCohort(cohortId)).resolves.toBe('ok');
+
+    // `triggerFallback` is idempotent by design (it no-ops for a cohort already committed to a
+    // path), so a double-click reads as success - but the operator's activity record must not
+    // claim the action happened twice.
+    const entries = monitor
+      .detail(cohortId)
+      .activity.filter((a) => a.text === FINALIZE_ACTIVITY_TEXT);
+    expect(entries).toHaveLength(1);
+
+    runner.stop();
+  });
+
+  it('maps a late library rejection to "not-signing" rather than letting it escape', async () => {
+    const { app, runner, operatorCohorts, setPhase } = lifecycleApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+    setPhase(cohortId, 'SigningStarted');
+    // A phase race: the cohort left the signing phase between the guard and the call.
+    runner.triggerFallback = async () => {
+      throw new Error('Cannot start fallback for cohort x: phase is Complete.');
+    };
+
+    await expect(operatorCohorts.finalizeCohort(cohortId)).resolves.toBe('not-signing');
+
+    runner.stop();
+  });
+});
+
+describe('POST /v1/operator/cohorts/:id/finalize route semantics', () => {
+  it('401s with no session cookie, BEFORE any cohort-id lookup', async () => {
+    const { app, runner, fallbackCalls } = lifecycleApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+
+    // An EXISTING id and a never-existed id must be indistinguishable to an anonymous caller.
+    const existing = await app.request(`/v1/operator/cohorts/${cohortId}/finalize`, { method: 'POST' });
+    const missing = await app.request('/v1/operator/cohorts/never-existed/finalize', { method: 'POST' });
+    expect(existing.status).toBe(401);
+    expect(missing.status).toBe(401);
+    expect(await existing.text()).toBe(await missing.text());
+    expect(fallbackCalls).toEqual([]);
+
+    runner.stop();
+  });
+
+  it('400s a malformed cohort id before any lookup', async () => {
+    const { app, runner } = lifecycleApp();
+    const cookie = await login(app);
+
+    const res = await app.request('/v1/operator/cohorts/bad_id/finalize', { method: 'POST', headers: { cookie } });
+    expect(res.status).toBe(400);
+
+    runner.stop();
+  });
+
+  it('404s an unknown cohort id with a body that reveals nothing', async () => {
+    const { app, runner } = lifecycleApp();
+    const cookie = await login(app);
+
+    const res = await app.request('/v1/operator/cohorts/never-existed/finalize', {
+      method: 'POST',
+      headers: { cookie },
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'unknown cohort' });
+
+    runner.stop();
+  });
+
+  it('409s a pre-signing cohort with the app-authored reason, never a 500 or a library string', async () => {
+    const { app, runner, fallbackCalls } = lifecycleApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+
+    const res = await app.request(`/v1/operator/cohorts/${cohortId}/finalize`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe(NOT_SIGNING_REASON);
+    // The library's own thrown text must never reach a caller (T-05-03-02).
+    expect(body.error).not.toMatch(/INVALID_PHASE|startFallbackSigning|Cohort .* not found/i);
+    expect(fallbackCalls).toEqual([]);
+
+    runner.stop();
+  });
+
+  it('200s a cohort in a signing phase and reaches the library exactly once', async () => {
+    const { app, runner, fallbackCalls, setPhase } = lifecycleApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+    setPhase(cohortId, 'NoncesCollected');
+
+    const res = await app.request(`/v1/operator/cohorts/${cohortId}/finalize`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(fallbackCalls).toEqual([cohortId]);
+
+    runner.stop();
+  });
+
+  it('records the operator action in the cohort activity ring with a server wall-clock stamp', async () => {
+    const { app, runner, monitor, setPhase } = lifecycleApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+    setPhase(cohortId, 'AwaitingPartialSigs');
+
+    await app.request(`/v1/operator/cohorts/${cohortId}/finalize`, { method: 'POST', headers: { cookie } });
+
+    const entry = monitor.detail(cohortId).activity.find((a) => a.text === FINALIZE_ACTIVITY_TEXT);
+    expect(entry).toBeDefined();
+    expect(typeof entry?.t).toBe('number');
+
+    runner.stop();
+  });
+});
+
+describe('POST /v1/operator/cohorts/:id/cancel route semantics (05-01, pinned here too)', () => {
+  it('401s with no session cookie, BEFORE any cohort-id lookup', async () => {
+    const { app, runner } = lifecycleApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+
+    const existing = await app.request(`/v1/operator/cohorts/${cohortId}/cancel`, { method: 'POST' });
+    const missing = await app.request('/v1/operator/cohorts/never-existed/cancel', { method: 'POST' });
+    expect(existing.status).toBe(401);
+    expect(missing.status).toBe(401);
+    expect(await existing.text()).toBe(await missing.text());
+
+    runner.stop();
+  });
+
+  it('400s a malformed cohort id before any lookup', async () => {
+    const { app, runner } = lifecycleApp();
+    const cookie = await login(app);
+
+    const res = await app.request('/v1/operator/cohorts/bad_id/cancel', { method: 'POST', headers: { cookie } });
+    expect(res.status).toBe(400);
+
+    runner.stop();
+  });
+
+  it('404s an unknown cohort id with a body that reveals nothing', async () => {
+    const { app, runner } = lifecycleApp();
+    const cookie = await login(app);
+
+    const res = await app.request('/v1/operator/cohorts/never-existed/cancel', {
+      method: 'POST',
+      headers: { cookie },
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'unknown cohort' });
+
+    runner.stop();
+  });
+
+  it('200s a live cohort, and a second cancel of the same id 404s (already settled)', async () => {
+    const { app, runner } = lifecycleApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+
+    const first = await app.request(`/v1/operator/cohorts/${cohortId}/cancel`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+    expect(first.status).toBe(200);
+    expect(await first.json()).toEqual({ ok: true });
+    await settle();
+
+    const second = await app.request(`/v1/operator/cohorts/${cohortId}/cancel`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+    expect(second.status).toBe(404);
+
+    runner.stop();
+  });
+});
