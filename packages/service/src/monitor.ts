@@ -53,6 +53,7 @@ import type { AggregationServiceEvents, AggregationServiceRunner } from '@did-bt
 import type { BeaconBroadcaster } from './broadcast.js';
 import type { AnchorReadDTO, AnchorState } from './anchor-state.js';
 import type { FundingStateName } from './funding-watch.js';
+import type { RuntimeSettings } from './runtime-settings.js';
 
 /**
  * Upper bound on monitored cohort entries (mirrors the anchor-state / operator-cohorts
@@ -249,6 +250,18 @@ export type ServiceMode = 'hermetic' | 'live-no-broadcast' | 'live';
 export interface ServiceHealthDTO {
   mode: ServiceMode;
   esploraReachable: boolean | 'n/a';
+  /**
+   * True while advertising is paused (SVC-04, D-07). Fed from the SAME runtime holder the
+   * advertise gate and the public `GET /v1/status` read, so the console's `Advertising paused`
+   * chip, the public status bit, and the enforced behavior are one derivation rather than three
+   * that could disagree. It rides this strip because the console already polls it, so the chip
+   * refreshes on the same tick as the mode chip without adding a second gated read.
+   *
+   * Deliberately NOT part of {@link ServiceMode}: the mode is fixed at construction and describes
+   * how this service SIGNS AND BROADCASTS. Pause describes whether it is offering new cohorts,
+   * which is a different question with a different lifetime.
+   */
+  paused: boolean;
 }
 
 /**
@@ -661,6 +674,7 @@ export function createCohortMonitor(
   broadcaster?: BeaconBroadcaster,
   anchorState?: AnchorState,
   mode?: ServiceMode,
+  settings?: RuntimeSettings,
 ): CohortMonitor {
   // The resolved broadcast mode (D-17), fixed at construction. When the caller does not supply
   // one, derive the honest binary from the wiring available here: a broadcaster present means
@@ -1215,6 +1229,11 @@ export function createCohortMonitor(
       return {
         mode: serviceMode,
         esploraReachable: serviceMode === 'hermetic' ? 'n/a' : esploraReachable,
+        // Read live from the holder, never mirrored into this module's own state: a second copy
+        // is a second thing that can go stale, and the whole point of the paused bit is that
+        // the console's chip and the advertise gate agree (D-07). No holder means nothing can
+        // pause this service, so the honest answer is false.
+        paused: settings?.paused ?? false,
       };
     },
 

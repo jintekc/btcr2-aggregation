@@ -84,6 +84,8 @@ interface ServiceStatusDTO {
   up: boolean;
   network: string;
   openCohorts: number;
+  /** Advertising drain mode (SVC-04, Phase 5 D-07): new cohorts are not being offered. */
+  paused: boolean;
 }
 
 /**

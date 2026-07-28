@@ -13,6 +13,16 @@
  * advertises nothing until the operator acts, and a cohort only ever comes into
  * existence on an explicit operator action.
  *
+ * That standing proof is also what makes the ADVERTISING PAUSE gate complete (SVC-04, D-06).
+ * Drain mode is enforced by checking `settings.paused` at those two call sites and NOWHERE else:
+ * because they are the only two paths by which a new cohort can come into existence, there is no
+ * third check to forget, and every other surface - drafts, cancel, finalize, the operator list,
+ * the public directory and status, the gated monitoring reads - keeps working untouched while
+ * paused, which is precisely the difference between drain mode and a kill switch (D-09). A
+ * paused advertise is refused LOUDLY with {@link ADVERTISING_PAUSED_REASON} rather than silently
+ * no-oping, and the same runtime value is reported on {@link ServiceStatusDTO.paused}, so the
+ * public claim and the enforced behavior are one derivation (D-07).
+ *
  * The public read surface is derived, never duplicated (D-15): {@link
  * OperatorCohorts.directory} lists the public rows straight from the live
  * `runner.session.cohorts` (filtered by phase), enriched from a small `advertised`
@@ -87,6 +97,10 @@ import {
 import type { AggregationServiceRunner, CohortConfig } from '@did-btcr2/aggregation/service';
 import type { CohortIntentRegistry } from './cohort-intent.js';
 import type { AdvertRepublisher } from './advert-republish.js';
+// TYPE-ONLY on purpose: `runtime-settings.ts` imports the two validation strings above as
+// VALUES, so keeping this side type-only means the import is erased at compile time and there
+// is no runtime import cycle between the two modules.
+import type { RuntimeSettings } from './runtime-settings.js';
 
 /** The two aggregation beacon types an operator may draft (singleton is single-party). */
 const KNOWN_BEACON_TYPES = new Set<string>(['CASBeacon', 'SMTBeacon']);
@@ -138,6 +152,19 @@ const CANCELED_REASON = 'canceled by the operator';
  * create form).
  */
 export const NOT_SIGNING_REASON = "this cohort's signing round hasn't started";
+
+/**
+ * The exact operator-facing reason a REFUSED advertise carries while this service is in
+ * advertising DRAIN MODE (SVC-04, D-06/D-09). Body of the 409 on both advertise routes, written
+ * as a lowercase clause for the same reason as {@link NOT_SIGNING_REASON}: the console
+ * interpolates it into its action-error sentence (its own disabled-button copy reads
+ * `Advertising is paused.`).
+ *
+ * The refusal is DELIBERATELY loud rather than a silent no-op or a false success. A paused
+ * advertise that answered 200 with no cohort would leave the operator watching for a cohort that
+ * will never appear, and one that answered 404 would claim their draft was gone.
+ */
+export const ADVERTISING_PAUSED_REASON = 'advertising is paused on this service';
 
 /**
  * Untrusted create-form body: beacon type + cohort size n + an OPTIONAL signing threshold k.
@@ -214,6 +241,37 @@ export interface ServiceStatusDTO {
   up: true;
   network: NetworkName;
   openCohorts: number;
+  /**
+   * True while this service is in advertising DRAIN MODE (SVC-04, D-07): it is refusing to
+   * offer NEW cohorts, while everything already advertised keeps running. Public on purpose,
+   * and the reason this bit exists at all: a paused service and an idle one both report zero
+   * open cohorts, so without it a HEADLESS client (no browser, no directory rendering) could
+   * not tell "this operator has quiesced" from "nobody has advertised yet". It is populated at
+   * the single {@link OperatorCohorts.status} construction site from the SAME runtime value the
+   * advertise gate reads, so the public claim and the enforced behavior cannot drift.
+   */
+  paused: boolean;
+}
+
+/**
+ * The refusal an advertise action returns while advertising is paused (D-06). A distinct,
+ * discriminated verdict rather than `undefined`: the route must answer 409 with a specific
+ * reason, and `undefined` already means "unknown id" (404) on both advertise paths.
+ */
+export interface AdvertisePausedResult {
+  paused: true;
+}
+
+/**
+ * The outcome of an advertise / re-advertise action: the advertised DTO, the paused refusal, or
+ * `undefined` for an unknown id. Discriminated by the `paused` key, which no
+ * {@link OperatorCohortDTO} carries.
+ */
+export type AdvertiseResult = OperatorCohortDTO | AdvertisePausedResult | undefined;
+
+/** Narrow an {@link AdvertiseResult} to the paused refusal. */
+export function isAdvertisePaused(result: AdvertiseResult): result is AdvertisePausedResult {
+  return result !== undefined && 'paused' in result;
 }
 
 /** Construction inputs for {@link createOperatorCohorts}. */
@@ -235,6 +293,18 @@ export interface OperatorCohortsOptions {
    * cohorts. See {@link file://./cohort-intent.ts} for why message-text matching is forbidden.
    */
   intents: CohortIntentRegistry;
+  /**
+   * The per-service runtime settings holder (SVC-04, D-08). Read for exactly one thing here:
+   * `settings.paused`, checked at the two `runner.advertiseCohort` call sites so a paused
+   * service refuses to offer NEW cohorts. The SAME value is reported on
+   * {@link OperatorCohorts.status}, which is what keeps the public claim and the enforced
+   * behavior a single derivation.
+   *
+   * Optional so existing callers (the display + cancel specs, which construct this surface
+   * directly) keep their exact behavior: with no holder the service is never paused.
+   * `createService` always supplies one.
+   */
+  settings?: RuntimeSettings;
   /**
    * Fire-and-forget side effect invoked at the START of {@link OperatorCohorts.cancelCohort},
    * BEFORE `runner.stopCohort`, so the cancel's fate is captured AT EVENT TIME while the
@@ -290,9 +360,11 @@ export interface OperatorCohorts {
   /**
    * Advertise a draft: the SOLE caller of `runner.advertiseCohort` (D-17). Moves the
    * draft out of the drafts map into the live/advertised set and returns the advertised
-   * DTO. Returns `undefined` for an unknown draft id (route 404).
+   * DTO. Returns `undefined` for an unknown draft id (route 404), or the
+   * {@link AdvertisePausedResult} refusal when advertising is paused (route 409, D-06) -
+   * in which case the draft is left untouched and is still a draft.
    */
-  advertiseDraft(draftId: string): OperatorCohortDTO | undefined;
+  advertiseDraft(draftId: string): AdvertiseResult;
   /** Remove an un-advertised draft. Returns false for an unknown id (route 404). */
   discardDraft(draftId: string): boolean;
   /**
@@ -335,9 +407,11 @@ export interface OperatorCohorts {
    * D-17), moving it out of the terminal record set and back into the live/advertised
    * set with a fresh cohort id. Accepts either fate: an `'expired'` cohort the operator
    * wants back, or a `'canceled'` one the operator changed their mind about. Returns the
-   * advertised DTO, or `undefined` for an unknown/absent terminal id (route 404).
+   * advertised DTO, `undefined` for an unknown/absent terminal id (route 404), or the
+   * {@link AdvertisePausedResult} refusal when advertising is paused (route 409, D-06) - in
+   * which case the terminal record is left exactly as it was and stays re-advertisable later.
    */
-  readvertiseExpired(cohortId: string): OperatorCohortDTO | undefined;
+  readvertiseExpired(cohortId: string): AdvertiseResult;
   /**
    * Drafts (state 'draft') plus advertised cohorts (state 'advertised') plus terminal
    * records carrying their fate (state 'expired' or 'canceled'), for the operator list.
@@ -625,7 +699,13 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
       return dto;
     },
 
-    advertiseDraft(draftId: string): OperatorCohortDTO | undefined {
+    advertiseDraft(draftId: string): AdvertiseResult {
+      // GATE 1 of 2 (D-06). Checked BEFORE the draft lookup so a paused service answers the
+      // same 409 for every draft id, known or not: while advertising is off, whether a
+      // particular draft exists is not a question this action needs to answer.
+      if (opts.settings?.paused) {
+        return { paused: true };
+      }
       const entry = drafts.get(draftId);
       if (!entry) {
         return undefined;
@@ -746,7 +826,15 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
       return 'ok';
     },
 
-    readvertiseExpired(cohortId: string): OperatorCohortDTO | undefined {
+    readvertiseExpired(cohortId: string): AdvertiseResult {
+      // GATE 2 of 2 (D-06), and with the gate above this is the COMPLETE set: the module
+      // docstring's standing proof that these two functions are the only callers of
+      // `runner.advertiseCohort` in the app is exactly what makes that true. There is no third
+      // path by which a new cohort can come into existence, so there is no third check to
+      // forget - and adding one anywhere else would widen pause into something it is not.
+      if (opts.settings?.paused) {
+        return { paused: true };
+      }
       const record = terminal.get(cohortId);
       if (!record) {
         return undefined;
@@ -811,7 +899,16 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
       // directory can never drift (D-09). The count is Advertised-tier ONLY: the directory
       // DISPLAY widened to in-flight rows (D-26), but the open count stays exactly the
       // joinable set so widening what is shown never inflates what is reported open (Pitfall 3).
-      return { up: true, network: activeNetwork, openCohorts: openCount() };
+      //
+      // The paused bit comes from the SAME `opts.settings` value the two advertise gates read
+      // (D-07): one derivation, so this public claim can never disagree with what the service
+      // actually does. A service with no settings holder is never paused.
+      return {
+        up: true,
+        network: activeNetwork,
+        openCohorts: openCount(),
+        paused: opts.settings?.paused ?? false,
+      };
     },
   };
 }

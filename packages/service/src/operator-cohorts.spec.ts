@@ -571,7 +571,15 @@ describe('public /v1/directory + /v1/status (no session required)', () => {
 
     const status = await app.request('/v1/status');
     expect(status.status).toBe(200);
-    expect(await status.json()).toEqual({ up: true, network: ACTIVE_NETWORK, openCohorts: 0 });
+    // `paused: false` is part of the public shape from Phase 5 on (SVC-04, D-07): a headless
+    // client parses ONE status shape, and this harness wires no settings holder, so a service
+    // that cannot be paused reports the honest false.
+    expect(await status.json()).toEqual({
+      up: true,
+      network: ACTIVE_NETWORK,
+      openCohorts: 0,
+      paused: false,
+    });
 
     runner.stop();
   });

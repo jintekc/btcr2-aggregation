@@ -24,7 +24,13 @@ import {
   sessionProbeHandler,
   type OperatorAuthConfig,
 } from './operator-auth.js';
-import { NOT_SIGNING_REASON, type DraftInput, type OperatorCohorts } from './operator-cohorts.js';
+import {
+  ADVERTISING_PAUSED_REASON,
+  isAdvertisePaused,
+  NOT_SIGNING_REASON,
+  type DraftInput,
+  type OperatorCohorts,
+} from './operator-cohorts.js';
 import type { RuntimeSettings } from './runtime-settings.js';
 import type { AnchorState } from './anchor-state.js';
 import type { CohortMonitor } from './monitor.js';
@@ -284,11 +290,20 @@ export function createHonoApp(
   // advertise, so they return an empty directory / zero open count rather than 500 -
   // the anonymous surface always gets a sane answer.
   app.get('/v1/directory', (c) => c.json(operatorCohorts ? operatorCohorts.directory() : []));
+  // The no-operator-surface fallback carries the SAME key set as the real status (including the
+  // `paused` bit, SVC-04 D-07): a headless client parses one shape regardless of how the service
+  // booted. A service with no operator surface has nothing to advertise and no way to pause, so
+  // it reports the honest `false` unless a runtime holder says otherwise.
   app.get('/v1/status', (c) =>
     c.json(
       operatorCohorts
         ? operatorCohorts.status()
-        : { up: true as const, network: networkName ?? DEFAULT_NETWORK, openCohorts: 0 },
+        : {
+            up: true as const,
+            network: networkName ?? DEFAULT_NETWORK,
+            openCohorts: 0,
+            paused: runtimeSettings?.paused ?? false,
+          },
     ),
   );
 
@@ -389,6 +404,28 @@ export function createHonoApp(
     app.post('/v1/operator/logout', logoutHandler(operatorAuth.sessions));
     app.get('/v1/operator/session', sessionProbeHandler());
 
+    // Advertising drain mode (SVC-04, D-06/D-08). Registered inside the gated block AFTER the
+    // requireSameOrigin + requireOperator prefix guards, so only an authenticated operator can
+    // change whether this service offers new cohorts and an anonymous caller is rejected with
+    // 401 before either handler runs (T-05-04-01). They mount on the runtime holder rather than
+    // the cohort surface because the flag is a service-level fact: a service with no cohorts
+    // can still be paused, and the state must outlive any individual cohort.
+    //
+    // Both are IDEMPOTENT and take no body: the operator is asking for an END STATE, not
+    // toggling one, so a double-click or a retried request lands in the same place. Each
+    // returns the resulting state so the console renders what the SERVICE reports rather than
+    // what the browser assumed.
+    if (runtimeSettings) {
+      app.post('/v1/operator/advertising/pause', (c) => {
+        runtimeSettings.pause();
+        return c.json({ paused: runtimeSettings.paused });
+      });
+      app.post('/v1/operator/advertising/resume', (c) => {
+        runtimeSettings.resume();
+        return c.json({ paused: runtimeSettings.paused });
+      });
+    }
+
     // On-demand cohort drafts (SVC-01). Registered AFTER the requireSameOrigin +
     // requireOperator prefix guards above, so every create/list/discard inherits both
     // the session gate (T-02-01) and the CSRF check on the mutating verbs (T-02-03).
@@ -447,9 +484,15 @@ export function createHonoApp(
       // (T-03-01/T-03-03). `advertiseDraft` is the SOLE `runner.advertiseCohort` caller
       // now (D-17); an unknown draft id -> 404 (already-advertised ids are gone from the
       // drafts map, so they read as unknown too).
+      // A paused service refuses with 409 + the app-authored reason (SVC-04, D-06), never a
+      // silent no-op and never a false 200: the operator must be able to tell "I am draining"
+      // from "that draft is gone".
       app.post('/v1/operator/cohorts/:id/advertise', (c) => {
-        const dto = operatorCohorts.advertiseDraft(c.req.param('id'));
-        return dto ? c.json(dto) : c.json({ error: 'unknown draft' }, 404);
+        const result = operatorCohorts.advertiseDraft(c.req.param('id'));
+        if (isAdvertisePaused(result)) {
+          return c.json({ error: ADVERTISING_PAUSED_REASON }, 409);
+        }
+        return result ? c.json(result) : c.json({ error: 'unknown draft' }, 404);
       });
       // Re-advertise an expired cohort (SVC-02, F2). Inherits the same requireSameOrigin
       // + requireOperator prefix guards, so it is a session-gated, CSRF-checked mutating
@@ -457,8 +500,13 @@ export function createHonoApp(
       // only other) operator-driven `runner.advertiseCohort` caller (D-17); an unknown or
       // non-expired cohort id -> 404.
       app.post('/v1/operator/cohorts/:id/readvertise', (c) => {
-        const dto = operatorCohorts.readvertiseExpired(c.req.param('id'));
-        return dto ? c.json(dto) : c.json({ error: 'unknown expired cohort' }, 404);
+        const result = operatorCohorts.readvertiseExpired(c.req.param('id'));
+        // The SAME paused 409 as the advertise route above: both are advertise actions, so a
+        // paused service refuses them in identical words.
+        if (isAdvertisePaused(result)) {
+          return c.json({ error: ADVERTISING_PAUSED_REASON }, 409);
+        }
+        return result ? c.json(result) : c.json({ error: 'unknown expired cohort' }, 404);
       });
       // Cancel an advertised cohort (SVC-04, D-01/D-04/D-05). Registered inside the same
       // gated block, so it inherits the requireSameOrigin CSRF check and the requireOperator

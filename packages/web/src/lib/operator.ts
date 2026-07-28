@@ -105,6 +105,13 @@ export interface ServiceStatus {
   up: boolean;
   network: string;
   openCohorts: number;
+  /**
+   * True while the service is in advertising DRAIN MODE (SVC-04, Phase 5 D-07): it is not
+   * offering NEW cohorts, while everything already advertised keeps running. It exists because
+   * a paused service and an idle one both report zero open cohorts, so the public directory
+   * must be able to say "this operator has quiesced" rather than implying the service is dead.
+   */
+  paused: boolean;
 }
 
 /**

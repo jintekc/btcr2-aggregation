@@ -69,11 +69,18 @@ export {
 } from './operator-auth.js';
 export {
   createOperatorCohorts,
+  isAdvertisePaused,
+  ADVERTISING_PAUSED_REASON,
+  NOT_SIGNING_REASON,
+  SIZE_ERROR,
+  THRESHOLD_ERROR,
   type OperatorCohorts,
   type OperatorCohortsOptions,
   type OperatorCohortDTO,
   type DirectoryCohortDTO,
   type ServiceStatusDTO,
+  type AdvertiseResult,
+  type AdvertisePausedResult,
   type DraftInput,
 } from './operator-cohorts.js';
 export { createAnchorState, type AnchorState, type AnchorReadDTO } from './anchor-state.js';
@@ -809,8 +816,11 @@ export function createService(opts: CreateServiceOptions): Service {
   // broadcasting is the `live-no-broadcast` middle mode; else the hermetic fixture path. Passed
   // so the monitor reports mode + esplora reachability honestly (04-06 wires the strip + the
   // funding watch's `noteEsploraObservation`).
+  // The runtime settings holder is threaded so `serviceHealth()` can report the `paused` bit
+  // from the SAME value the advertise gate reads (SVC-04, D-07), rather than the console
+  // maintaining a second, drift-prone copy of that fact.
   const mode: ServiceMode = broadcaster ? 'live' : live ? 'live-no-broadcast' : 'hermetic';
-  const monitor = createCohortMonitor(runner, broadcaster, anchorState, mode);
+  const monitor = createCohortMonitor(runner, broadcaster, anchorState, mode, runtimeSettings);
 
   // Stamp each cohort's advertise time so the funding wait's remaining-TTL clamp is honest (D-38).
   // Registered unconditionally (cheap, harmless off the live path); consumed only by the live
@@ -970,6 +980,10 @@ export function createService(opts: CreateServiceOptions): Service {
         autoFallbackOnStall: opts.autoFallbackOnStall,
         // The intent registry the cancel action declares into before stopping a cohort.
         intents,
+        // The runtime settings holder, read for exactly one thing here: the advertising pause
+        // gate at the two `runner.advertiseCohort` call sites, and the same value reported on
+        // the public status read (SVC-04, D-06/D-07).
+        settings: runtimeSettings,
         // Cancel's event-time side effects, run BEFORE `runner.stopCohort` while the cohort is
         // still live: capture the canceled fate in the monitoring fold (D-23 - the runner emits
         // NOTHING for a stop, so this push seam is the only record the operator would ever see),
