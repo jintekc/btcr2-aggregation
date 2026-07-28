@@ -1,7 +1,7 @@
 ---
 phase: 5
 slug: operator-cohort-lifecycle-control
-status: draft
+status: approved
 shadcn_initialized: false
 preset: none
 created: 2026-07-28
@@ -355,7 +355,7 @@ Clean operator/service/aggregator framing. NO "booth" / "attendee" / "demo" / "f
 
 **Probed surfaces:** E1 lifecycle action block (Cancel / Finalize now), E2 cancel confirmation ceremony (rungs 3 and 4), E3 finalize confirmation, E4 service-controls card (pause / resume), E5 public directory paused notice, E6 draft-edit form, E7 advanced timing fields, E8 service settings surface, E9 broadcast kill switch, E10 ended-record dismissal, E11 test peers (action plus badged members), E12 canceled fate chip, ended row, and activity entries, E13 operator-actions log, E14 participant canceled narration, E15 participation-terms step, E16 chain-endpoint override, E17 PSBT registration round trip.
 
-Applicable state considerations resolved: **52 covered, 5 backstop, 9 dismissed, 1 unresolved.**
+Applicable state considerations resolved: **59 covered, 5 backstop, 23 dismissed, 1 unresolved** (86 engine-raised pairs across the 17 surfaces, every one resolved or explicitly carried; post-verification probe run reconciled 2026-07-28). The engine's one `unclassified` element (E10, the dismissal confirm) is manually classified as a confirmation panel and resolved by the confirm rows below.
 
 ### Covered (truth strings)
 
@@ -370,11 +370,16 @@ Applicable state considerations resolved: **52 covered, 5 backstop, 9 dismissed,
 | empty | E15 terms step | covered | No terms configured means the entire step is absent from the join flow, not an empty card. |
 | empty | E16 chain endpoint | covered | An unset endpoint renders the documented default-state line, so "empty" reads as the working default. |
 | empty | E17 PSBT | covered | The browser-signing path is the default selection; the wallet path's step 2 renders its controls with no result panel until a PSBT arrives. |
+| empty | E5 paused notice | covered | With zero open rows the paused directory renders the documented no-rows variant (heading plus body, Copywriting Contract), never a bare notice above an empty list. |
+| empty | E12 ended rows | covered | The `Ended` group renders only when non-empty (inherited), so a console with no ended cohorts shows no empty `Ended` shell. |
 | loading | E1 lifecycle | covered | Until the first detail read lands, no lifecycle control renders (availability derives from observed phase), so a control never appears then vanishes. |
 | loading | E2 / E3 / E9 / E10 confirms | covered | While an action is in flight the confirm button renders its `…` in-flight label and both buttons disable, reusing the shipped in-flight button treatment; no spinner is invented. |
 | loading | E4 pause | covered | Pause and resume disable while their toggle is in flight and re-enable on the next read; the state line does not flip until the service reports it. |
 | loading | E5 paused notice | covered | Before the first status read the directory renders nothing (inherited loading behavior), so a paused notice never flashes on an unknown state. |
 | loading | E6 / E8 forms | covered | Save controls render `Saving…` and disable their fields, inherited from the shipped create-form treatment. |
+| loading | E7 advanced timing | covered | The timing fields live inside the draft form and share its save state: they disable while `Saving…` is in flight, inheriting the E6 form treatment. |
+| loading | E11 test peers | covered | The add-test-peers confirm reuses the shared in-flight treatment: both buttons disable and the confirm label holds until the action lands; the member list updates only on the next read. |
+| loading | E13 operator log | covered | The log renders inside the console's polled snapshot; until the first read lands the console-level loading posture applies, so the log never shows a false `No operator actions` claim. |
 | loading | E16 endpoint | covered | While an endpoint is being probed the field disables and the line reads the neutral in-flight label; no result claim is made until the probe returns. |
 | loading | E17 PSBT | covered | Validation runs before any broadcast is offered; until it completes the broadcast CTA stays disabled with no result panel. |
 | error | E1 / E2 / E3 / E9 / E10 / E11 actions | covered | A failed action renders the documented action-error line and leaves the surface unchanged; the optimistic state is never applied (Copywriting Contract, error state row). |
@@ -393,6 +398,7 @@ Applicable state considerations resolved: **52 covered, 5 backstop, 9 dismissed,
 | populated | E12 ended rows | covered | A canceled cohort renders the neutral `Canceled` chip in the `Ended` group with `Canceled by the operator at {time}.` |
 | populated | E13 operator log | covered | Entries render server wall-clock time plus text, tone by level, using the shipped `LogPanel`. |
 | populated | E17 PSBT | covered | A validated PSBT renders the pays/fee summary line and enables the single relabeled primary CTA. |
+| partial | E4 service controls | covered | Paused and broadcast-off are independent facts read from the same status snapshot; each control and chip renders its own state, so there is no half-applied composite state. |
 | partial | E2 cancel ceremony | covered | The rung-4 type-to-confirm renders a live match check: the confirm button stays disabled on partial or mismatched input, and no partial input triggers anything. |
 | partial | E6 draft edit | covered | Editing one field leaves the rest at their current values; an unsaved edit is discarded by `Cancel edit` without touching the draft. |
 | partial | E7 advanced timing | covered | One window set and the other empty is a valid state: the empty field falls back to this service's default and says so. |
@@ -405,6 +411,7 @@ Applicable state considerations resolved: **52 covered, 5 backstop, 9 dismissed,
 | overflow | E4 service controls | covered | The controls row is `flex-wrap` at `gap-2`, so buttons and chips wrap to a second line on narrow widths. |
 | overflow | E8 settings | covered | `Participation terms` uses a `min-h-32` `TextArea` that scrolls internally; every other field is a single-line input. |
 | overflow | E13 operator log | covered | `LogPanel` scrolls internally at a fixed height and the entry ring is bounded, so the page never grows. |
+| overflow | E12 ended rows | covered | The `Ended` group is bounded by the inherited 24-record retention cap, so the list cannot grow without limit. |
 | overflow | E17 PSBT | covered | PSBT base64 renders only through `Mono` inside a scroll-capped expander or a copy chip, never as a raw wrapped block in the card body. |
 | zero-one-many | E5 paused notice | covered | The notice reads correctly with zero rows (as the empty-state body) and with any number of rows (as a card above the list); no singular/plural rewrite is needed. |
 | zero-one-many | E11 test peers | covered | The control label and confirm heading interpolate the remaining-seat count and the control disables at zero, so zero, one, and many all read correctly. |
@@ -437,6 +444,20 @@ Applicable state considerations resolved: **52 covered, 5 backstop, 9 dismissed,
 | zero-one-many | E8 settings | The field set is fixed; it is not a collection. |
 | zero-one-many | E16 endpoint | A participant sets at most one endpoint; there is no collection to pluralize. |
 | long-text | E5 paused notice | Both variants are fixed contract copy with no interpolation. |
+| zero-one-many | E4 service controls | The card is a fixed set of controls and chips, not a collection. |
+| long-text | E4 service controls | Every string on the card is fixed contract copy; no operator-supplied text renders there (the service name renders elsewhere and is backstopped under E8). |
+| partial | E5 paused notice | The notice has exactly two variants keyed on row count; there is no partially-loaded variant because the directory renders nothing until the first status read lands. |
+| overflow | E5 paused notice | Both variants are short fixed copy in a standard card; nothing dynamic renders inside it. |
+| long-text | E6 draft edit | The field set is identical to the shipped create form: numeric inputs and a select; no unbounded operator text renders in the form. |
+| long-text | E7 advanced timing | Both fields are numeric minute inputs; their help interpolates only a small integer default. |
+| long-text | E9 kill switch | Every kill-switch string is fixed contract copy; the only interpolation is the literal `BROADCAST=1`. |
+| overflow | E11 test peers | Member rows are bounded by the cohort size n; the badge adds fixed-width text to an existing bounded row. |
+| long-text | E11 test peers | The badge and row line are fixed strings; the only interpolation is a small integer count. |
+| error | E12 canceled fate | The chip and row line are projections of an already-captured fate carried by the list read; the list's inherited unreachable banner is the error surface. |
+| partial | E12 canceled fate | A fate chip is atomic; cancel-in-flight is E2's loading state, so there is no partially-canceled rendering. |
+| partial | E13 operator log | Entries are appended whole as self-contained sentences; there is no partially-written entry state. |
+| long-text | E14 canceled narration | Both narration variants and the next-step line are fixed contract copy with no interpolation. |
+| zero-one-many | E17 PSBT | The round trip handles exactly one PSBT for one registration; there is no collection to pluralize. |
 
 ### Unresolved
 
@@ -459,11 +480,11 @@ No component registries are used this phase. All UI is built from the existing i
 
 ## Checker Sign-Off
 
-- [ ] Dimension 1 Copywriting: PASS
-- [ ] Dimension 2 Visuals: PASS
-- [ ] Dimension 3 Color: PASS
-- [ ] Dimension 4 Typography: PASS
-- [ ] Dimension 5 Spacing: PASS
-- [ ] Dimension 6 Registry Safety: PASS
+- [x] Dimension 1 Copywriting: PASS
+- [x] Dimension 2 Visuals: PASS
+- [x] Dimension 3 Color: PASS
+- [x] Dimension 4 Typography: PASS
+- [x] Dimension 5 Spacing: PASS
+- [x] Dimension 6 Registry Safety: PASS
 
-**Approval:** pending
+**Approval:** APPROVED by gsd-ui-checker, 2026-07-28 (6/6 dimensions PASS, no recommendations; UI-consideration probe reconciled post-verification: 59 covered, 5 backstop, 23 dismissed, 1 unresolved carried to the planner)
