@@ -3,6 +3,7 @@ import { Badge, Button, Card, CopyField, Expander, Mono, SectionTitle, StatusDot
 import { LogPanel } from '../LogPanel';
 import { OperatorStageTimeline } from './OperatorStageTimeline';
 import { FundingStage } from './FundingStage';
+import { LifecycleActions } from './LifecycleActions';
 import { useOperator } from '../../stores/operator';
 import { useParticipant } from '../../stores/participant';
 import type { AnchorDTO } from '../../lib/anchor';
@@ -227,6 +228,11 @@ export function CohortDetail({ baseUrl, cohortId }: { baseUrl: string; cohortId:
           <Card className="p-5">
             <OperatorStageTimeline detail={detail} />
           </Card>
+
+          {/* Lifecycle controls (SVC-04, D-01/D-03/D-04): the cohort-level operator verbs, placed
+              directly under the stage timeline so the act sits beside the state it changes. The
+              section renders nothing at all until availability is observable. */}
+          <LifecycleActions baseUrl={baseUrl} cohortId={cohortId} />
 
           {/* Members. */}
           <Card className="space-y-4 p-5">

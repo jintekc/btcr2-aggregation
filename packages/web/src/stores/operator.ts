@@ -4,6 +4,7 @@ import {
   logout as apiLogout,
   advertise as apiAdvertise,
   readvertise as apiReadvertise,
+  cancelCohort as apiCancelCohort,
   createDraft as apiCreateDraft,
   discardDraft as apiDiscardDraft,
   downloadExport as apiDownloadExport,
@@ -54,6 +55,22 @@ export const EXPORT_FAILED = 'Could not download the monitoring record. Check th
 
 /** Bad-tone copy when a draft discard did not take (review WR-06). */
 export const DISCARD_FAILED = 'Could not discard the draft. Try again.';
+
+/**
+ * Exact action-error copy for a one-shot lifecycle action that did not take (05-UI-SPEC error
+ * state). The second sentence is load-bearing: a failed destructive action must say plainly that
+ * NOTHING changed, so the operator does not go looking for damage or click again on a cohort that
+ * is still running. Em-dash-free per house style.
+ */
+export const ACTION_FAILED = "That action didn't go through. Nothing about this cohort changed.";
+
+/** The same line with the service's own reason, when it gave one. */
+export function actionFailedWith(reason?: string): string {
+  return reason ? `That action didn't go through: ${reason}. Nothing about this cohort changed.` : ACTION_FAILED;
+}
+
+/** The in-flight confirm label for a cancel (the shipped ellipsis character, no invented spinner). */
+export const CANCEL_BUSY = 'Canceling…';
 
 /**
  * Exact session-expired copy (UI-SPEC, D-16), shown when a monitoring poll returns 401
@@ -116,6 +133,11 @@ interface OperatorState {
   actionError?: string;
   /** SPA-internal drill-down view (D-03): the cohort list, or one open cohort detail. */
   view: OperatorView;
+  /**
+   * The cohort id whose cancel is in flight (SVC-04), so exactly the confirming panel renders its
+   * in-flight label and disables both buttons. Undefined whenever nothing is being canceled.
+   */
+  cancelling?: string;
   /** Last-known monitoring detail for the open drill-down; undefined until the first poll lands. */
   detail?: CohortDetailDTO;
   /**
@@ -162,6 +184,14 @@ interface OperatorState {
    * click can no longer be a silent no-op.
    */
   exportCohort: (baseUrl: string, id: string) => Promise<void>;
+  /**
+   * Cancel a live cohort (SVC-04, D-01/D-04), then return to the list. Branches on the
+   * discriminated result exactly like {@link discard}: `unauthorized` takes the ONE shared
+   * session-expiry path (D-16), and any other failure raises the action-error copy while leaving
+   * every cohort fact untouched - the console never paints an optimistic Canceled chip, so a
+   * failed cancel can never make this service look like it ended a cohort it did not (T-05-02-02).
+   */
+  cancelCohort: (baseUrl: string, id: string) => Promise<void>;
   /** Open a cohort's drill-down (D-03): set the detail view and clear any stale prior detail. */
   openCohort: (id: string) => void;
   /** Close the drill-down: return to the cohort list and clear the detail slice. */
@@ -191,6 +221,7 @@ export const useOperator = create<OperatorState>((set, get) => ({
   advertiseMessage: undefined,
   actionError: undefined,
   view: { kind: 'list' },
+  cancelling: undefined,
   detail: undefined,
   detailStale: false,
   lastUpdated: undefined,
@@ -250,6 +281,7 @@ export const useOperator = create<OperatorState>((set, get) => ({
         advertiseMessage: undefined,
         actionError: undefined,
         view: { kind: 'list' },
+        cancelling: undefined,
         detail: undefined,
         detailStale: false,
         lastUpdated: undefined,
@@ -268,6 +300,9 @@ export const useOperator = create<OperatorState>((set, get) => ({
       listStale: false,
       actionError: undefined,
       view: { kind: 'list' },
+      // Drop any in-flight action marker: the next sign-in must start with no control claiming
+      // to be mid-cancel.
+      cancelling: undefined,
       detail: undefined,
       detailStale: false,
       lastUpdated: undefined,
@@ -398,11 +433,44 @@ export const useOperator = create<OperatorState>((set, get) => ({
     }
   },
 
+  async cancelCohort(baseUrl, id) {
+    set({ actionError: undefined, cancelling: id });
+    const result = await apiCancelCohort(baseUrl, id);
+    if (result.kind === 'unauthorized') {
+      // Session expiry takes the same honest re-login path as every gated read and every other
+      // one-shot action (D-16), so a 401 never means two different things. `expireSession` clears
+      // `cancelling` itself.
+      get().expireSession();
+      return;
+    }
+    if (result.kind === 'unreachable') {
+      // Nothing about the cohort changed: leave the list, the detail, and the open drill-down
+      // exactly as they were and say so in words. The route's own 404 body is deliberately
+      // opaque (`unknown cohort`, an anti-oracle answer), so no reason is passed through: the
+      // console says only what it honestly knows.
+      set({ actionError: actionFailedWith(), cancelling: undefined });
+      return;
+    }
+    // The cancel took. Return to the list and re-read it, so the Canceled chip arrives from the
+    // SERVED projection rather than from an optimistic local edit (T-05-02-02).
+    set({ cancelling: undefined });
+    get().closeCohort();
+    await get().refreshCohorts(baseUrl);
+  },
+
   openCohort(id) {
     // Start the drill-down in its checking state: clear any prior cohort's detail so the
     // page renders its documented empty/checking lines until the first poll lands (D-03,
-    // UI-SPEC E4/E5 loading), rather than briefly showing a stale cohort's members.
-    set({ view: { kind: 'detail', cohortId: id }, detail: undefined, detailStale: false, lastUpdated: undefined });
+    // UI-SPEC E4/E5 loading), rather than briefly showing a stale cohort's members. The
+    // one-shot `actionError` is cleared too: it belongs to the surface that raised it, so a
+    // failed action on the LIST must not follow the operator into a cohort it never touched.
+    set({
+      view: { kind: 'detail', cohortId: id },
+      actionError: undefined,
+      detail: undefined,
+      detailStale: false,
+      lastUpdated: undefined,
+    });
   },
 
   closeCohort() {

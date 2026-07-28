@@ -498,6 +498,38 @@ export async function discardDraft(baseUrl: string, id: string): Promise<FetchRe
 }
 
 /**
+ * POST the cancel action for a live cohort (SVC-04, Phase 5 D-01/D-04). Gated + same-origin (the
+ * session cookie rides `credentials: 'same-origin'`; the whole `/v1/operator/*` prefix also sits
+ * behind the same-origin guard, so a cross-site page cannot drive this).
+ *
+ * Discriminated exactly like {@link discardDraft}, and for the same reason: the caller MUST be
+ * able to tell an expired session (401 -> the one honest re-login path, D-16) from a transient
+ * fault (-> the action-error line, with nothing about the cohort changed). It NEVER throws and
+ * never returns a bare boolean a caller could discard, because a destructive action that fails
+ * silently is indistinguishable from one that worked.
+ *
+ * A 404 (unknown, never-advertised, or already-settled cohort) maps to `unreachable`: from the
+ * console's point of view the action did not take, and the server deliberately answers one
+ * indistinguishable 404 for all three cases.
+ */
+export async function cancelCohort(baseUrl: string, id: string): Promise<FetchResult<true>> {
+  let res: Response;
+  try {
+    res = await fetch(endpoint(baseUrl, `/v1/operator/cohorts/${encodeURIComponent(id)}/cancel`), {
+      method: 'POST',
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+  } catch {
+    return { kind: 'unreachable' };
+  }
+  if (res.status === 401) {
+    return { kind: 'unauthorized' };
+  }
+  return res.ok ? { kind: 'ok', value: true } : { kind: 'unreachable' };
+}
+
+/**
  * POST the advertise action for a draft (SVC-02). Gated + same-origin (the session cookie rides
  * `credentials: 'same-origin'`). Returns the LIVE cohort id on success, or `null` when the server
  * did not accept it (so the store can surface the transient success message and land the operator
