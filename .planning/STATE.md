@@ -2,18 +2,18 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 5
-current_phase_name: Operator Cohort Lifecycle Control
+current_phase: 05
+current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Phase 05 UI-SPEC approved
-last_updated: "2026-07-28T22:05:46.348Z"
-last_activity: 2026-07-27
-last_activity_desc: Phase 04 complete, transitioned to Phase 5
+stopped_at: Completed 05-01-PLAN.md
+last_updated: "2026-07-28T22:51:38.314Z"
+last_activity: 2026-07-28
+last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 44
-  completed_plans: 30
+  completed_plans: 31
 ---
 
 # Project State
@@ -23,16 +23,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-22)
 
 **Core value:** A stranger can self-host a real aggregation service that advertises cohorts, and another stranger can point a participant at that service's URL, browse its cohorts, join, co-sign, and resolve - a genuinely two-sided, self-hostable product, not a demo.
-**Current focus:** Phase 04 — operator-cohort-monitoring
+**Current focus:** Phase 05 — operator-cohort-lifecycle-control
 
 ## Current Position
 
-Phase: 5 — Operator Cohort Lifecycle Control
-Plan: Not started
+Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
+Plan: 2 of 14
 Status: Ready to execute
-Last activity: 2026-07-27 — Phase 04 complete, transitioned to Phase 5
+Last activity: 2026-07-28 — Phase 05 execution started
 
-Progress: [██████████] 100%
+Progress: [███████░░░] 70%
 
 ## Performance Metrics
 
@@ -91,6 +91,7 @@ Progress: [██████████] 100%
 | Phase 04 P06 | 35min | 3 tasks | 13 files |
 | Phase 04 P07 | 22min | 3 tasks | 8 files |
 | Phase 04 P08 | 3 days elapsed (checkpoint-dominated) | 3 tasks | 32 files |
+| Phase 05 P01 | 24 min | 2 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -128,6 +129,8 @@ Recent decisions affecting current work (Phase 2):
 - [Phase 04] 04-08 (SVC-03 + LIVE-01 close-out): the proof layer is three-tier - hermetic fixture `e2e:monitor` leg on operator-cohort.ts, a local playwright-core `e2e:browser:operator` capstone (CI wiring stays Phase-6 debt, D-49), and the committed opt-in `pnpm uat:live` harness reshaped onto the env-passthrough LIVE=1 BROADCAST=1 demo-server boot with the getUtxos monkey-patch dropped (D-48). Docs: ADR 0016 records the polled monitoring read model with `Supersedes: ADR 0004` + `Amends: ADR 0015` (the retired /dashboard/events + EventSource-header rationale removed; the cookie session survives on its own merits), DEPLOY gained the honest going-live section (BROADCAST/RECOVERY_KEY/FUNDING_WINDOW_MS/LIVE_CHANGE_ADDRESS/SERVICE_NAME, the funding walkthrough, mutinynet flagship / regtest local / hermetic default), and three scoping one-pagers landed under .planning/scoping/ (D-52/D-53/D-54).
 - [Phase 04] 04-08 (live-UAT gate APPROVED after 3 gap-closure rounds): the owner drove the full two-sided loop on Polar/regtest (advertise -> two browser participants join -> single-payment cohort funding -> co-sign -> broadcast -> confirmed anchor -> per-participant KEY registration -> resolve reflected the update). Nine of our own defects fixed: advert replay window equalized with the 30-min directory window via advertTtlMs threading (finite-positive guarded, typed HttpServerTransportConfig so an upstream rename fails tsc); the four funding-wait phases (UpdatesCollected/DataDistributed/Validated/FallbackRequested) added to IN_FLIGHT_PHASES in ALL THREE mirrored places (operator-cohorts.ts, monitor.ts, web directory.ts) so a funding cohort stays listed, keeps its needs-funding chip, and counts inFlight; the live seat count moved to CohortPage (its only prior home was dead since 03-05); honest race-loser copy via the pure seatLineCopy() helper; single-payment funding copy + the oldest-coin dead-end explanation; firstUpdateResolveNote() explaining the ADR 0007 KEY first-update chicken-and-egg + the 1330-sat register minimum, claiming 'anchored' ONLY on state === 'confirmed'; and `funded` made a terminal DISPLAY state (the watch retires, the monitor never regresses) because beacon change routes back to the beacon address.
 - [Phase 04] 04-08: six library-level defects surfaced by the live UAT were deliberately NOT worked around in this consumer app (standing constraint: reference consumer, not a fork) - single advert slot, no seat release, silent duplicate/surplus opt-in drop, ignored advertRepeatIntervalMs, 60s envelope-skew replay rejection (all @did-btcr2/aggregation@0.4.0), and deepest-first selectSpendableUtxo with only a dust floor (@did-btcr2/method@0.51.0). They are documented in 04-LIVE-UAT-CHECKLIST.md under 'Known upstream limits' and queued for upstream issue filing.
+- [Phase 05]: [Phase 05] 05-01 (SVC-04 tracer): cohort fate is classified from an out-of-band per-service INTENT registry declared BEFORE runner.stopCohort (which emits nothing at all), never from the completion rejection message - stopCohort, the whole-runner stop(), and a stall all reject through the same channel. cancelCohort files a distinct 'canceled' fate at all three mirrored server sites (operator list DTO state, monitor ended chip, service metrics where it counts as NEITHER anchored nor failed), captured at event time per 04 D-23 so a session-GC'd cohort still projects. Gated POST /v1/operator/cohorts/:id/cancel: 401 before any lookup, 400 shape guard, one indistinguishable 404 for unknown/never-advertised/already-settled. Cancel retires the funding watch via releaseCohortTables PLUS a canceled guard on the anonymous publicFunding read (releaseCohortTables alone leaves the last-known 'waiting' view claiming the cohort awaits funding forever - the WR-01 failure mode). - RESEARCH Pattern 1 / Pitfalls 1 and 2, D-05. This is the seam every later Phase 5 lifecycle verb rides (05-06's per-draft discovery window declares 'window-expired' into the same registry).
+- [Phase 05]: [Phase 05] 05-01: the transport's SINGLE advert slot is repaired after every settle path (cancel, signing-complete, cohort-failed) by rebuilding the library's own createCohortAdvertMessage and re-installing it through transport.publishRepeating. The repair tracks which cohort OWNS the slot so only the owner's settle re-publishes: re-publishing over a live advert would hand already-seated participants a duplicate advert their runner rejects with INVALID_PHASE. The republisher also exposes clear(), because its own advert is id-scoped and would otherwise outlive the last open cohort. Proven by a hermetic TWO-cohort e2e:cancel leg (a single-cohort test passes while the defect is live) that seats a FRESHLY constructed participant in the sibling, and validated non-vacuous by disabling the repair and watching it fail. - RESEARCH Pattern 3 / Pitfall 3. Pre-existing latent defect that Cancel would have promoted from a rare race to a button. Known remaining gap: the runner also clears the slot at keygen-complete (a cohort FILLING), logged in deferred-items.md.
 
 ### Pending Todos
 
@@ -165,7 +168,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-28T19:03:29.544Z
-Stopped at: Phase 05 UI-SPEC approved
-Resume file: .planning/phases/05-operator-cohort-lifecycle-control/05-UI-SPEC.md
+Last session: 2026-07-28T22:51:01.984Z
+Stopped at: Completed 05-01-PLAN.md
+Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
