@@ -183,15 +183,77 @@ Plans:
 **Goal**: The operator runs aggregation and manages a cohort's lifecycle (open -> close -> finalize) and pauses, cancels, or reconfigures advertising from the console, without restarting the process - removing the last hardwired, uncontrollable behavior.
 **Mode:** mvp
 **Depends on**: Phase 4 (extends the same authenticated console) and Phase 1
-**Requirements**: SVC-04
+**Requirements**: SVC-04, SVC-05, PART-05, PART-06
 **Success Criteria** (what must be TRUE):
 
   1. The operator moves a cohort through open -> close -> finalize from the console and the directory reflects each state change.
   2. The operator pauses or cancels advertising so new cohorts stop being offered, without killing the running service (dashboard and resolve routes stay up).
   3. The operator reconfigures cohort shape (e.g. capacity, threshold, beacon type for the next cohort) without editing env vars or restarting the process.
   4. A canceled or closed cohort no longer appears as joinable in the participant directory.
+  5. Participation terms set by the operator are accepted at join and recorded as a DID-signed, server-verified, terms-hash-bound artifact, with the app-level enforcement boundary disclosed honestly (SVC-05).
+  6. A participant can point their browser's chain reads at their own esplora endpoint, with a network-mismatch guard, four distinguishable failure messages, no silent fallback, and every real-funds guard rail unweakened (PART-05).
+  7. A participant can sign the registration transaction in their own wallet through a PSBT round trip that is validated against the exact template the app created before anything is broadcast (PART-06).
 
-**Plans**: TBD
+**Slip order** (CONTEXT D-22, three tiers): CORE never slips - SVC-04 lifecycle control (plans 01 through 07 and 10). SECOND - the four absorbed parked items (plans 08 and 09). SLIP-FIRST - the three folded scoping one-pagers (plans 11, 12, and 13), which re-park cleanly to Phase 6 or the next milestone if the phase runs long.
+
+**Plans**: 14 plans
+Plans:
+**Wave 1**
+
+- [ ] 05-01-PLAN.md - TRACER: cancel a cohort end to end (intent registry, canceled fate, advert-slot repair) (SVC-04, Wave 1)
+
+**Wave 2** *(blocked on Wave 1)*
+
+- [ ] 05-02-PLAN.md - Cancel console ceremony: ConfirmPanel, Canceled chip, laddered rungs 3 and 4 (SVC-04, Wave 2)
+
+**Wave 3** *(blocked on Wave 2)*
+
+- [ ] 05-03-PLAN.md - Finalize now: FINALIZABLE_PHASES, 409 semantics, rung-2 confirm, automatic Closed stage (SVC-04, Wave 3)
+
+**Wave 4** *(blocked on Wave 3)*
+
+- [ ] 05-04-PLAN.md - Runtime settings holder + advertising pause gate + public paused bit (SVC-04, Wave 4)
+
+**Wave 5** *(blocked on Wave 4)*
+
+- [ ] 05-05-PLAN.md - Service controls card + health chips + public paused notice (SVC-04, Wave 5)
+
+**Wave 6** *(blocked on Wave 5)*
+
+- [ ] 05-06-PLAN.md - Draft editing + per-draft advanced timing windows (SVC-04, Wave 6)
+
+**Wave 7** *(blocked on Wave 6)*
+
+- [ ] 05-07-PLAN.md - Service settings surface: defaults, service name, windows, participation terms (SVC-04 + SVC-05, Wave 7)
+
+**Wave 8** *(blocked on Wave 7)*
+
+- [ ] 05-08-PLAN.md - Broadcast kill switch + ended-record dismissal + operator actions log (SVC-04, Wave 8)
+
+**Wave 9** *(blocked on Wave 8)*
+
+- [ ] 05-09-PLAN.md - Operator test peers: in-process spawn, badging, bounded teardown (SVC-04, Wave 9)
+
+**Wave 10** *(blocked on Wave 9)*
+
+- [ ] 05-10-PLAN.md - Participant canceled narration + public cohort-fate read (SVC-04, Wave 10)
+
+**Wave 11** *(blocked on Wave 10)*
+
+- [ ] 05-11-PLAN.md - Participant chain-endpoint override (PART-05, Wave 11)
+
+**Wave 12** *(blocked on Wave 11)*
+
+- [ ] 05-12-PLAN.md - PSBT registration leg (PART-06, Wave 12)
+
+**Wave 13** *(blocked on Wave 12)*
+
+- [ ] 05-13-PLAN.md - DID-signed participation-terms acceptance at join (SVC-05, Wave 13)
+
+**Wave 14** *(blocked on Wave 13)*
+
+- [ ] 05-14-PLAN.md - Phase proof and docs: hermetic gate, ADR 0017, DEPLOY, upstream limits, owner verification (SVC-04/SVC-05/PART-05/PART-06, Wave 14)
+
 **UI hint**: yes
 
 ### Phase 6: Two-Stranger End-to-End + Real-Aggregator Framing
@@ -219,5 +281,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 2. Participant Discovery + Browse-and-Pick Join | 9/9 | Complete    | 2026-07-16 |
 | 3. Participant Submit, Co-Sign, Track, and Resolve | 9/9 | Complete    | 2026-07-22 |
 | 4. Operator Cohort Monitoring | 8/8 | Complete    | 2026-07-27 |
-| 5. Operator Cohort Lifecycle Control | 0/TBD | Not started | - |
+| 5. Operator Cohort Lifecycle Control | 0/14 | Planned     | - |
 | 6. Two-Stranger End-to-End + Real-Aggregator Framing | 0/TBD | Not started | - |
