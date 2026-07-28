@@ -4,6 +4,7 @@ import { LogPanel } from '../LogPanel';
 import { OperatorStageTimeline } from './OperatorStageTimeline';
 import { FundingStage } from './FundingStage';
 import { LifecycleActions } from './LifecycleActions';
+import { seatReclaimNoteVisible } from '../../lib/lifecycle';
 import { useOperator } from '../../stores/operator';
 import { useParticipant } from '../../stores/participant';
 import type { AnchorDTO } from '../../lib/anchor';
@@ -15,6 +16,19 @@ const POLL_INTERVAL_MS = 4000;
 
 /** The unreachable banner copy (UI-SPEC D-25), shown when a poll cannot reach the service. */
 const UNREACHABLE_BANNER = "Can't reach this service. Showing the last known state and retrying quietly.";
+
+/**
+ * The honest seat-reclaim workaround, shown under Members while a cohort is still filling (D-18).
+ *
+ * There is no per-seat release control here because `@did-btcr2/aggregation@0.4.0` provides no
+ * seat-release primitive at all: once a participant opts in, their seat is held until the whole
+ * cohort ends. Rather than invent a control this app cannot honor, the console states the real
+ * workaround in words. Per-seat reclaim is RE-PARKED pending an upstream API (one of the six
+ * library limits the 04-08 live UAT documented); if that API lands, this note is what a genuine
+ * `Release seat` control replaces.
+ */
+const SEAT_RECLAIM_NOTE =
+  "A single seat can't be released. If someone joined and went quiet, cancel this cohort and advertise a new one, or wait for its discovery window to expire.";
 
 /** Shorten a cohort id for the page heading; the full id is available via a CopyField. */
 function shortId(id: string): string {
@@ -262,6 +276,10 @@ export function CohortDetail({ baseUrl, cohortId }: { baseUrl: string; cohortId:
                 ) : null}
               </div>
             )}
+            {/* The honest seat-reclaim limit (D-18), only while there is still a seat to reclaim. */}
+            {seatReclaimNoteVisible(detail) ? (
+              <p className="text-sm text-muted">{SEAT_RECLAIM_NOTE}</p>
+            ) : null}
           </Card>
 
           {/* Submissions (D-30). */}

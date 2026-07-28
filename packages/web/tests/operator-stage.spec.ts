@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { IN_FLIGHT_PHASES, OPEN_PHASES } from '@btcr2-aggregation/shared';
-import { deriveOperatorStage, stageOrder } from '../src/components/operator/OperatorStageTimeline';
+import {
+  CANCELED_STAGE_LABEL,
+  deriveOperatorStage,
+  stageOrder,
+  STAGE_CAPTION,
+  STAGE_LABEL,
+  terminalCanceled,
+} from '../src/components/operator/OperatorStageTimeline';
 import type { CohortDetailDTO } from '../src/lib/operator';
 
 /**
@@ -18,11 +25,16 @@ import type { CohortDetailDTO } from '../src/lib/operator';
  * NEW spec under `packages/web/tests/` (tests-outside-src convention).
  */
 
+/**
+ * The base fixture is a PARTIALLY filled cohort (1 of 2 seats). That matters: the timeline now
+ * also narrates the automatic nth-seat close, so a fixture with every seat filled would make every
+ * phase-only assertion below read `closed` and stop testing what it claims to test.
+ */
 function detail(over: Partial<CohortDetailDTO> = {}): CohortDetailDTO {
   return {
     exists: true,
     members: [],
-    seatsJoined: 2,
+    seatsJoined: 1,
     capacity: 2,
     phase: 'Advertised',
     submissions: [],
@@ -88,5 +100,60 @@ describe('deriveOperatorStage (WR-05: the timeline reads the shared in-flight se
         withFunding,
       ),
     ).toBe('anchor');
+  });
+});
+
+describe('the automatic Closed stage (SVC-04, D-01): narrated, never a button', () => {
+  const order = stageOrder(false);
+
+  it('sits between Filling and Submissions in the stage order', () => {
+    expect(order.indexOf('closed')).toBe(order.indexOf('filling') + 1);
+    expect(order.indexOf('closed')).toBeLessThan(order.indexOf('submissions'));
+  });
+
+  it('is reached the moment the nth seat fills, with no server flag and no phase change', () => {
+    // The specific case: still Advertised, but every seat is taken. Closing is the seat count
+    // reaching capacity, which is why it needs no primitive of its own.
+    expect(deriveOperatorStage(detail({ phase: 'Advertised', seatsJoined: 2, capacity: 2 }), order)).toBe('closed');
+  });
+
+  it('is NOT reached while a seat is still open', () => {
+    expect(deriveOperatorStage(detail({ phase: 'Advertised', seatsJoined: 1, capacity: 2 }), order)).toBe('filling');
+  });
+
+  it('never holds a filled cohort back: a later phase still ratchets past it', () => {
+    expect(deriveOperatorStage(detail({ phase: 'CollectingUpdates', seatsJoined: 2, capacity: 2 }), order)).toBe(
+      'submissions',
+    );
+    expect(deriveOperatorStage(detail({ phase: 'SigningStarted', seatsJoined: 2, capacity: 2 }), order)).toBe(
+      'co-signing',
+    );
+  });
+
+  it('carries the exact UI-SPEC label and caption, and is the only captioned stage', () => {
+    expect(STAGE_LABEL.closed).toBe('Closed');
+    expect(STAGE_CAPTION.closed).toBe('Every seat filled, so this cohort locked and stopped accepting joins.');
+    expect(Object.keys(STAGE_CAPTION)).toEqual(['closed']);
+  });
+});
+
+describe('the terminal Canceled marker (SVC-04, D-01/D-05)', () => {
+  it('is read straight off the served fate, never inferred from a phase or an error', () => {
+    expect(terminalCanceled(detail({ fate: 'canceled' }))).toBe(true);
+    expect(terminalCanceled(detail())).toBe(false);
+    // A settled cohort with no fate is an expiry or a completion, not a cancel.
+    expect(terminalCanceled(detail({ phase: 'unknown' }))).toBe(false);
+  });
+
+  it('does not repaint the stage the cohort actually reached', () => {
+    // The marker is APPENDED, so a cohort canceled while filling still derives `filling`: the
+    // timeline must never imply a canceled cohort got as far as anchoring.
+    const order = stageOrder(false);
+    expect(deriveOperatorStage(detail({ phase: 'Advertised', fate: 'canceled' }), order)).toBe('filling');
+  });
+
+  it('has a fixed label distinct from every lifecycle stage', () => {
+    expect(CANCELED_STAGE_LABEL).toBe('Canceled');
+    expect(Object.values(STAGE_LABEL)).not.toContain(CANCELED_STAGE_LABEL);
   });
 });

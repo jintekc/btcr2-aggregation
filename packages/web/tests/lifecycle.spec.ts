@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { cancelAvailability, cancelRung, cohortShortId, typeToConfirmMatches } from '../src/lib/lifecycle';
+import { FINALIZABLE_PHASES } from '@btcr2-aggregation/shared';
+import {
+  cancelAvailability,
+  cancelRung,
+  closedAtNthSeat,
+  cohortShortId,
+  finalizeAvailability,
+  seatReclaimNoteVisible,
+  typeToConfirmMatches,
+} from '../src/lib/lifecycle';
 import type { CohortDetailDTO, FundingView } from '../src/lib/operator';
 
 /**
@@ -114,6 +123,78 @@ describe('cancelRung: the ceremony costs more when real money is already at the 
 
   it('is rung 3 for a hermetic cohort with no funding view at all', () => {
     expect(cancelRung(detail())).toBe(3);
+  });
+});
+
+describe('finalizeAvailability: offered exactly when the library primitive works (D-01)', () => {
+  it('is unavailable before the first detail read lands, and for an unknown cohort', () => {
+    expect(finalizeAvailability(undefined)).toBe('unavailable');
+    expect(finalizeAvailability(detail({ exists: false, phase: 'unknown' }))).toBe('unavailable');
+  });
+
+  it('is available in every one of the library three signing phases', () => {
+    for (const phase of FINALIZABLE_PHASES) {
+      expect(finalizeAvailability(detail({ phase }))).toBe('available');
+    }
+    // The named case, so a future refactor cannot quietly empty the set and still pass.
+    expect(finalizeAvailability(detail({ phase: 'NoncesCollected' }))).toBe('available');
+  });
+
+  it('is not-signing in the four FUNDING-WAIT phases, proving the wider in-flight set is not reused', () => {
+    // These four are in IN_FLIGHT_PHASES (04-08 widened it so a funding cohort stays listed in the
+    // public directory), but the library's startFallbackSigning THROWS in them. Reusing that set
+    // here would offer a button that can only fail.
+    for (const phase of ['UpdatesCollected', 'DataDistributed', 'Validated', 'FallbackRequested']) {
+      expect(finalizeAvailability(detail({ phase }))).toBe('not-signing');
+    }
+  });
+
+  it('is not-signing while a cohort is still filling or collecting updates', () => {
+    expect(finalizeAvailability(detail({ phase: 'Advertised' }))).toBe('not-signing');
+    expect(finalizeAvailability(detail({ phase: 'CollectingUpdates' }))).toBe('not-signing');
+  });
+
+  it('is committed once the served projection reports the fallback was used', () => {
+    expect(finalizeAvailability(detail({ phase: 'FallbackRequested', fallback: { used: true, k: 2, n: 3 } }))).toBe(
+      'committed',
+    );
+    // Committed is checked FIRST: a cohort that already fell back has left the finalizable phases,
+    // so without that ordering it would tell the operator to wait for a round that already ran.
+    expect(finalizeAvailability(detail({ phase: 'unknown', fallback: { used: true } }))).toBe('committed');
+  });
+});
+
+describe('closedAtNthSeat: the automatic close is a fact on the wire, not a button (D-01)', () => {
+  it('is true once every seat is filled', () => {
+    expect(closedAtNthSeat(detail({ seatsJoined: 2, capacity: 2 }))).toBe(true);
+  });
+
+  it('is false while seats remain', () => {
+    expect(closedAtNthSeat(detail({ seatsJoined: 1, capacity: 2 }))).toBe(false);
+  });
+
+  it('is false before the first read, for an unknown cohort, and for a zero-capacity projection', () => {
+    // The zero case matters: the pre-first-read projection is 0 of 0, which must not read as
+    // "every seat filled".
+    expect(closedAtNthSeat(undefined)).toBe(false);
+    expect(closedAtNthSeat(detail({ exists: false, seatsJoined: 0, capacity: 0 }))).toBe(false);
+    expect(closedAtNthSeat(detail({ seatsJoined: 0, capacity: 0 }))).toBe(false);
+  });
+});
+
+describe('seatReclaimNoteVisible: the honest workaround shows only while a seat could be reclaimed (D-18)', () => {
+  it('shows while a cohort is advertised with seats still open', () => {
+    expect(seatReclaimNoteVisible(detail({ phase: 'Advertised', seatsJoined: 1, capacity: 2 }))).toBe(true);
+  });
+
+  it('hides once the nth seat fills, because there is no abandoned seat left to reclaim', () => {
+    expect(seatReclaimNoteVisible(detail({ phase: 'Advertised', seatsJoined: 2, capacity: 2 }))).toBe(false);
+  });
+
+  it('hides mid-signing and for a settled or unknown cohort', () => {
+    expect(seatReclaimNoteVisible(detail({ phase: 'SigningStarted', seatsJoined: 1, capacity: 2 }))).toBe(false);
+    expect(seatReclaimNoteVisible(detail({ phase: 'unknown' }))).toBe(false);
+    expect(seatReclaimNoteVisible(undefined)).toBe(false);
   });
 });
 

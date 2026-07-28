@@ -12,7 +12,7 @@
  * unit spec can exercise the whole decision surface with plain object literals.
  */
 
-import { IN_FLIGHT_PHASES, OPEN_PHASES } from '@btcr2-aggregation/shared';
+import { FINALIZABLE_PHASES, IN_FLIGHT_PHASES, OPEN_PHASES } from '@btcr2-aggregation/shared';
 import type { CohortDetailDTO } from './operator';
 
 /**
@@ -78,6 +78,87 @@ export function cancelRung(detail: CohortDetailDTO): 3 | 4 {
     return 4;
   }
   return 3;
+}
+
+/**
+ * Whether the operator may finalize this cohort's signing round right now (D-01).
+ *
+ * - `unavailable`: render NO finalize control. No detail read has landed yet, or the service does
+ *   not know this cohort.
+ * - `not-signing`: the cohort exists but its signing round has not started. The control renders
+ *   DISABLED with the reason beside it, rather than hidden: unlike cancel-after-broadcast, this
+ *   really will become possible, so a disabled control with an explanation is the honest shape.
+ * - `available`: the cohort is in one of the library's three signing phases, the only window in
+ *   which the underlying fallback primitive works.
+ * - `committed`: the cohort already took the k-of-n fallback path. The control is replaced by the
+ *   line saying so, because there is nothing left to trigger.
+ */
+export type FinalizeAvailability = 'unavailable' | 'not-signing' | 'available' | 'committed';
+
+/**
+ * Decide whether `Finalize now` is offered for the cohort this detail describes (D-01).
+ *
+ * The phase test reads {@link FINALIZABLE_PHASES}, the SAME set the server's finalize guard reads,
+ * and deliberately NOT `IN_FLIGHT_PHASES`. The two sets differ by the four funding-wait phases
+ * 04-08 added to the wider set for the public directory display: a cohort sitting in one of them
+ * is genuinely in flight, but the library's `startFallbackSigning` throws there, so offering the
+ * control would be offering a button that can only fail (RESEARCH Pattern 2 / Pitfall 4).
+ *
+ * The committed check runs FIRST, because a cohort that has already fallen back sits in
+ * `FallbackRequested` (outside the finalizable set) and would otherwise read as a plain
+ * `not-signing`, telling the operator to wait for a round that already finished.
+ */
+export function finalizeAvailability(detail: CohortDetailDTO | undefined): FinalizeAvailability {
+  if (!detail || !detail.exists) {
+    return 'unavailable';
+  }
+  if (detail.fallback.used) {
+    return 'committed';
+  }
+  if (FINALIZABLE_PHASES.has(detail.phase)) {
+    return 'available';
+  }
+  return 'not-signing';
+}
+
+/**
+ * Whether this cohort has CLOSED: every seat is filled, so it locked and stopped accepting joins
+ * (D-01).
+ *
+ * Closing is an AUTOMATIC lifecycle event, not an operator verb. The cohort model pins
+ * `min === max === n`, so the nth seat both fills the cohort and starts keygen; there is no
+ * primitive that stops accepting joins while leaving the cohort able to proceed, and a partially
+ * filled n-of-n cohort that stopped accepting joins could never anchor. The console therefore
+ * NARRATES this as a stage on the timeline and never renders a Close button.
+ *
+ * Derived from the served seat counts rather than a server flag, because the fact is already on
+ * the wire: `capacity > 0` guards the pre-first-read window, where both numbers are zero and
+ * "0 of 0 seats filled" would otherwise read as closed.
+ */
+export function closedAtNthSeat(detail: CohortDetailDTO | undefined): boolean {
+  if (!detail || !detail.exists) {
+    return false;
+  }
+  return detail.capacity > 0 && detail.seatsJoined >= detail.capacity;
+}
+
+/**
+ * Whether the honest seat-reclaim workaround line belongs on screen (D-18).
+ *
+ * It is shown ONLY while a cohort is genuinely still filling: joinable by phase and not yet at its
+ * nth seat. Past that point there is no abandoned seat to reclaim, so the note would be noise.
+ *
+ * The note exists because `@did-btcr2/aggregation@0.4.0` offers no seat-release API at all: a
+ * participant who opts in and then goes quiet holds their seat until the whole cohort ends. Rather
+ * than invent a per-seat control this app cannot honor, the console states the real workaround in
+ * words (cancel and re-advertise, or wait out the discovery window). Per-seat reclaim is re-parked
+ * pending an upstream primitive.
+ */
+export function seatReclaimNoteVisible(detail: CohortDetailDTO | undefined): boolean {
+  if (!detail || !detail.exists) {
+    return false;
+  }
+  return OPEN_PHASES.has(detail.phase) && !closedAtNthSeat(detail);
 }
 
 /**

@@ -285,6 +285,12 @@ export interface CohortDetailDTO {
   activity: ActivityEntryDTO[];
   /** The operator funding view; present ONLY for a live+broadcast cohort with a funding reading (D-36). */
   funding?: FundingView;
+  /**
+   * The cohort's DELIBERATE terminal fate (SVC-04, D-01/D-05), present only as `'canceled'`. It
+   * drives the stage timeline's terminal Canceled marker; every other ending is already narrated
+   * by `anchor`, so this is deliberately not a general "how did it end" field.
+   */
+  fate?: 'canceled';
 }
 
 /**
@@ -525,6 +531,59 @@ export async function cancelCohort(baseUrl: string, id: string): Promise<FetchRe
   }
   if (res.status === 401) {
     return { kind: 'unauthorized' };
+  }
+  return res.ok ? { kind: 'ok', value: true } : { kind: 'unreachable' };
+}
+
+/**
+ * The result of a finalize call (SVC-04, D-01). It extends the shared {@link FetchResult}
+ * vocabulary with ONE extra member, `refused`, because this action has a refusal that is neither
+ * a session problem nor a fault: the server answers 409 when the cohort's signing round has not
+ * started, and it sends a human reason with it.
+ *
+ * Preserving that reason follows the {@link CreateDraftResult} precedent (the create form renders
+ * the server's own validation copy verbatim) and matters more here than it does for cancel, whose
+ * 404 body is deliberately opaque: a refused finalize is usually a RACE (the console's polled
+ * phase went stale between the render and the click), and the operator deserves to be told which
+ * of the two honest reasons applies rather than a bare "that didn't work".
+ */
+export type FinalizeResult = FetchResult<true> | { kind: 'refused'; reason: string };
+
+/**
+ * POST the finalize action for a cohort whose signing round has stalled (SVC-04, D-01). Gated +
+ * same-origin, discriminated like {@link cancelCohort}, and it NEVER throws.
+ *
+ * A 409 becomes `refused` carrying the server's reason. A 404 (unknown, never-advertised, or
+ * already-settled) stays `unreachable`, matching cancel: from the console's point of view the
+ * action did not take, and the server's 404 body is deliberately opaque.
+ */
+export async function finalizeCohort(baseUrl: string, id: string): Promise<FinalizeResult> {
+  let res: Response;
+  try {
+    res = await fetch(endpoint(baseUrl, `/v1/operator/cohorts/${encodeURIComponent(id)}/finalize`), {
+      method: 'POST',
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+  } catch {
+    return { kind: 'unreachable' };
+  }
+  if (res.status === 401) {
+    return { kind: 'unauthorized' };
+  }
+  if (res.status === 409) {
+    // The refusal reason is app-authored server-side (never a library string), so it is safe to
+    // render; a body that somehow carries none still refuses, just without a reason.
+    let reason = '';
+    try {
+      const body = (await res.json()) as { error?: string };
+      if (typeof body.error === 'string') {
+        reason = body.error;
+      }
+    } catch {
+      // Non-JSON body: refuse with no reason rather than inventing one.
+    }
+    return { kind: 'refused', reason };
   }
   return res.ok ? { kind: 'ok', value: true } : { kind: 'unreachable' };
 }

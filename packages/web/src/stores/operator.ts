@@ -8,6 +8,7 @@ import {
   createDraft as apiCreateDraft,
   discardDraft as apiDiscardDraft,
   downloadExport as apiDownloadExport,
+  finalizeCohort as apiFinalizeCohort,
   fetchOperatorCohorts,
   fetchCohortDetail,
   sessionProbe,
@@ -71,6 +72,9 @@ export function actionFailedWith(reason?: string): string {
 
 /** The in-flight confirm label for a cancel (the shipped ellipsis character, no invented spinner). */
 export const CANCEL_BUSY = 'Canceling…';
+
+/** The in-flight confirm label for a finalize, matching the {@link CANCEL_BUSY} treatment. */
+export const FINALIZE_BUSY = 'Finalizing…';
 
 /**
  * Exact session-expired copy (UI-SPEC, D-16), shown when a monitoring poll returns 401
@@ -138,6 +142,11 @@ interface OperatorState {
    * in-flight label and disables both buttons. Undefined whenever nothing is being canceled.
    */
   cancelling?: string;
+  /**
+   * The cohort id whose finalize is in flight (SVC-04), so exactly the confirming panel renders
+   * its in-flight label and disables both buttons. Undefined whenever nothing is being finalized.
+   */
+  finalizing?: string;
   /** Last-known monitoring detail for the open drill-down; undefined until the first poll lands. */
   detail?: CohortDetailDTO;
   /**
@@ -192,6 +201,17 @@ interface OperatorState {
    * failed cancel can never make this service look like it ended a cohort it did not (T-05-02-02).
    */
   cancelCohort: (baseUrl: string, id: string) => Promise<void>;
+  /**
+   * Finalize a cohort's stalled signing round on the k-of-n fallback path (SVC-04, D-01).
+   * Branches like {@link cancelCohort}, with one extra branch: a `refused` 409 raises the
+   * action-error copy WITH the server's reason, because the usual cause is a phase race the
+   * operator could not have seen (the polled detail went stale between render and click).
+   *
+   * Unlike a cancel, the drill-down STAYS OPEN on success: the cohort is still alive and about to
+   * anchor, and the operator wants to watch it. The committed state arrives from the next detail
+   * read, never from an optimistic local edit.
+   */
+  finalizeCohort: (baseUrl: string, id: string) => Promise<void>;
   /** Open a cohort's drill-down (D-03): set the detail view and clear any stale prior detail. */
   openCohort: (id: string) => void;
   /** Close the drill-down: return to the cohort list and clear the detail slice. */
@@ -222,6 +242,7 @@ export const useOperator = create<OperatorState>((set, get) => ({
   actionError: undefined,
   view: { kind: 'list' },
   cancelling: undefined,
+  finalizing: undefined,
   detail: undefined,
   detailStale: false,
   lastUpdated: undefined,
@@ -282,6 +303,7 @@ export const useOperator = create<OperatorState>((set, get) => ({
         actionError: undefined,
         view: { kind: 'list' },
         cancelling: undefined,
+        finalizing: undefined,
         detail: undefined,
         detailStale: false,
         lastUpdated: undefined,
@@ -303,6 +325,7 @@ export const useOperator = create<OperatorState>((set, get) => ({
       // Drop any in-flight action marker: the next sign-in must start with no control claiming
       // to be mid-cancel.
       cancelling: undefined,
+      finalizing: undefined,
       detail: undefined,
       detailStale: false,
       lastUpdated: undefined,
@@ -456,6 +479,32 @@ export const useOperator = create<OperatorState>((set, get) => ({
     set({ cancelling: undefined });
     get().closeCohort();
     await get().refreshCohorts(baseUrl);
+  },
+
+  async finalizeCohort(baseUrl, id) {
+    set({ actionError: undefined, finalizing: id });
+    const result = await apiFinalizeCohort(baseUrl, id);
+    if (result.kind === 'unauthorized') {
+      // The ONE shared session-expiry path, same as every gated read and one-shot action (D-16).
+      // `expireSession` clears `finalizing` itself.
+      get().expireSession();
+      return;
+    }
+    if (result.kind === 'refused') {
+      // The server refused with a reason it authored (never a library string), so it is rendered
+      // verbatim inside the action-error line. Nothing about the cohort changed.
+      set({ actionError: actionFailedWith(result.reason || undefined), finalizing: undefined });
+      return;
+    }
+    if (result.kind === 'unreachable') {
+      set({ actionError: actionFailedWith(), finalizing: undefined });
+      return;
+    }
+    // The finalize took. The cohort is STILL LIVE (it is now anchoring on the fallback path), so
+    // the drill-down stays open and simply re-reads: the committed state arrives from the served
+    // projection rather than from an optimistic local edit.
+    set({ finalizing: undefined });
+    await get().pollDetail(baseUrl);
   },
 
   openCohort(id) {
