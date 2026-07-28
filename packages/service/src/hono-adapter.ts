@@ -25,6 +25,7 @@ import {
   type OperatorAuthConfig,
 } from './operator-auth.js';
 import { NOT_SIGNING_REASON, type DraftInput, type OperatorCohorts } from './operator-cohorts.js';
+import type { RuntimeSettings } from './runtime-settings.js';
 import type { AnchorState } from './anchor-state.js';
 import type { CohortMonitor } from './monitor.js';
 import { mountStaticSite } from './static-site.js';
@@ -128,9 +129,23 @@ export interface HonoAppOptions {
    * health strip and the public directory header can label the service. Additive and optional:
    * when unset the config DTO is byte-identical (no `serviceName` key), so the frozen public
    * network fields never change. It is display text only, never markup or a URL (the browser
-   * renders it as auto-escaped React text content, T-04-03-01); there is no edit surface.
+   * renders it as auto-escaped React text content, T-04-03-01).
+   *
+   * Superseded by {@link runtimeSettings} when one is threaded in (Phase 5 D-16 makes the name
+   * runtime-editable): this static option remains the fallback for callers that wire no holder
+   * (the headless path and the older specs), so its behavior is unchanged for them.
    */
   serviceName?: string;
+  /**
+   * Per-service runtime settings holder (SVC-04, D-08/D-12/D-16). When present it is the
+   * PER-REQUEST source of truth for the service display name on `GET /v1/config`, so an
+   * operator's runtime rename is reflected on the very next request instead of being frozen
+   * into this app's construction closure. It also backs the gated
+   * `POST /v1/operator/advertising/pause` + `/resume` routes and the `paused` bit on the
+   * no-operator-surface `GET /v1/status` fallback. Optional: a caller that omits it keeps the
+   * pre-existing behavior exactly (a never-paused service whose name is the static option above).
+   */
+  runtimeSettings?: RuntimeSettings;
   /**
    * Bitcoin REST (esplora) connection. When supplied together with {@link store},
    * a read-only `GET /resolve/:did` route resolves a did:btcr2 identifier
@@ -208,6 +223,7 @@ export function createHonoApp(
     store,
     networkName,
     serviceName,
+    runtimeSettings,
     bitcoin,
     ipfs,
     operatorAuth,
@@ -250,7 +266,15 @@ export function createHonoApp(
   // The optional service name rides ADDITIVELY on the config DTO: included only when the
   // operator set SERVICE_NAME, so the browser reads it at load, and the frozen network fields
   // (network/label/isMainnet) stay byte-identical when it is unset (D-51/D-26; config.spec pin).
-  app.get('/v1/config', (c) => c.json(serviceName ? { ...networkDto, serviceName } : networkDto));
+  //
+  // Read PER REQUEST from the runtime holder when one is wired (Phase 5 D-16): the name is now
+  // runtime-editable, and a value captured into this construction closure would serve the boot
+  // name forever while the console claimed the rename had applied. Without a holder this falls
+  // back to the static boot option, so the pre-Phase-5 behavior is unchanged.
+  app.get('/v1/config', (c) => {
+    const name = runtimeSettings ? runtimeSettings.serviceName.value : serviceName;
+    return c.json(name ? { ...networkDto, serviceName: name } : networkDto);
+  });
 
   // Public cohort directory + service status (SVC-02, D-09/D-14/D-15). Always mounted
   // (like /v1/config, OUTSIDE the operator-auth block): the anonymous participant

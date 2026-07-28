@@ -13,6 +13,7 @@ import {
   assertNetworkAllowed,
   hasBakedAggregateBeacon,
   resolveNetwork,
+  type BeaconType,
   type Identity,
   type NetworkConfig,
 } from '@btcr2-aggregation/shared';
@@ -20,6 +21,7 @@ import type { BitcoinConnection, FeeEstimator } from '@did-btcr2/bitcoin';
 import { createHonoApp } from './hono-adapter.js';
 import { createLoginThrottle, createSessionStore } from './operator-auth.js';
 import { createOperatorCohorts } from './operator-cohorts.js';
+import { createRuntimeSettings, type RuntimeSettings } from './runtime-settings.js';
 import { createCohortIntents } from './cohort-intent.js';
 import { createAdvertRepublisher } from './advert-republish.js';
 import { createAnchorState } from './anchor-state.js';
@@ -75,6 +77,14 @@ export {
   type DraftInput,
 } from './operator-cohorts.js';
 export { createAnchorState, type AnchorState, type AnchorReadDTO } from './anchor-state.js';
+export {
+  createRuntimeSettings,
+  numericKnob,
+  type RuntimeSettings,
+  type RuntimeSettingsSeed,
+  type SettingField,
+  type SettingsPatch,
+} from './runtime-settings.js';
 export {
   createCohortIntents,
   type CohortIntent,
@@ -422,6 +432,13 @@ export interface Service {
    * `beacon-anchored` / `beacon-broadcast-failed` for each cohort's on-chain tx.
    */
   readonly broadcaster?: BeaconBroadcaster;
+  /**
+   * This service's runtime settings holder (SVC-04, D-08/D-12): the in-memory, env-seeded
+   * configuration the operator console edits. Exposed so a harness can observe or drive a
+   * runtime change (pause, rename) without going through an HTTP route, exactly as
+   * {@link runner} and {@link transport} are exposed for the protocol.
+   */
+  readonly settings: RuntimeSettings;
   /** Start listening. Pass port 0 (default) for an ephemeral port. */
   start(port?: number, host?: string): Promise<StartedService>;
   /** Stop the runner, transport, and HTTP server. */
@@ -509,6 +526,22 @@ export function createService(opts: CreateServiceOptions): Service {
   // aggregate off the pre-derived baked address (ADR 0012). Keyed by cohort id
   // because each advertise round is a fresh cohort. Only used with `rosterPks`.
   const seatedRosterKeys = new Map<string, Set<string>>();
+
+  // Per-service RUNTIME SETTINGS (SVC-04, D-08/D-12/D-16), constructed alongside the closures
+  // above and for the same reason: never a module singleton, so two services in one process
+  // cannot share configuration (one service's pause must never drain another's advertising).
+  // Seeded ENTIRELY from this call's options - which `demo-server.ts` resolved from the
+  // environment - so there is no second env-resolution path and no new env var here. It backs
+  // the advertising pause gate, the `paused` bit on the public status read, and the per-request
+  // service name on `GET /v1/config`; later plans populate the remaining fields' consumers.
+  const runtimeSettings = createRuntimeSettings({
+    serviceName: opts.serviceName,
+    defaultBeaconType: opts.config.beaconType as BeaconType,
+    defaultSize: opts.config.minParticipants,
+    defaultThreshold: opts.config.fallbackThreshold,
+    defaultDiscoveryWindowMs: opts.cohortTtlMs,
+    defaultFundingWindowMs: opts.fundingWindowMs,
+  });
 
   // Operator authentication (HOST-01, ADR 0015), constructed per-createService like the
   // closures above (never a module singleton, so two services in one test process never
@@ -973,7 +1006,11 @@ export function createService(opts: CreateServiceOptions): Service {
     networkName: resolveNetwork(opts.config.network).name,
     // Optional service display name (D-51), surfaced additively on GET /v1/config for the
     // health strip + public directory header. Undefined leaves the config DTO byte-identical.
+    // Threaded still, as the fallback for the (test-only) shape where no holder is wired.
     serviceName: opts.serviceName,
+    // The runtime settings holder (SVC-04): the per-request source of the served service name
+    // (D-16) and the state behind the gated pause/resume routes.
+    runtimeSettings,
     // The read-only resolve route is independent of the live/broadcast path: a
     // Bitcoin connection alone (to run the beacon-signal indexer) plus the artifact
     // store is enough to serve `GET /resolve/:did`. Passed whenever a connection is
@@ -998,6 +1035,7 @@ export function createService(opts: CreateServiceOptions): Service {
     runner,
     transport,
     broadcaster,
+    settings: runtimeSettings,
     start(port = 0, host = '127.0.0.1'): Promise<StartedService> {
       transport.start();
       return new Promise<StartedService>((resolve, reject) => {

@@ -2,6 +2,7 @@ import { HttpServerTransport } from '@did-btcr2/aggregation/service';
 import { resolveBtcr2SenderPk } from '@did-btcr2/method';
 import { describe, expect, it } from 'vitest';
 import { createHonoApp } from './hono-adapter.js';
+import { createRuntimeSettings } from './runtime-settings.js';
 
 // Hermetic coverage of the runtime network route `GET /v1/config`: the browser fetches
 // this on load to derive its addresses/DIDs from the coordinator's chain instead of a
@@ -17,6 +18,13 @@ function bareApp(networkName?: string) {
 function namedApp(serviceName: string) {
   const transport = new HttpServerTransport({ resolveSenderPk: resolveBtcr2SenderPk, heartbeatIntervalMs: 0 });
   return createHonoApp(transport, { serviceName });
+}
+
+/** A bare app wired with a runtime settings holder, exactly as `createService` wires one. */
+function holderApp(serviceName?: string) {
+  const transport = new HttpServerTransport({ resolveSenderPk: resolveBtcr2SenderPk, heartbeatIntervalMs: 0 });
+  const runtimeSettings = createRuntimeSettings({ serviceName });
+  return { app: createHonoApp(transport, { runtimeSettings }), runtimeSettings };
 }
 
 describe('GET /v1/config route', () => {
@@ -79,5 +87,35 @@ describe('GET /v1/config route', () => {
       isMainnet: false,
       serviceName: 'Acme Aggregation',
     });
+  });
+
+  it('serves the service name from the runtime holder PER REQUEST, network fields frozen (D-16)', async () => {
+    // Phase 5 makes the name runtime-editable, so the route must read the holder on every
+    // request. A value captured into the app's construction closure would serve the boot name
+    // forever while the console claimed the rename applied. The frozen network fields stay
+    // byte-identical across the change: only the additive key moves.
+    const { app, runtimeSettings } = holderApp('Acme Aggregation');
+    const before = (await (await app.request('/v1/config')).json()) as Record<string, unknown>;
+    expect(before).toEqual({
+      network: 'mutinynet',
+      label: 'Mutinynet (signet)',
+      isMainnet: false,
+      serviceName: 'Acme Aggregation',
+    });
+
+    expect(runtimeSettings.applySettings({ serviceName: 'Acme (maintenance)' })).toBeUndefined();
+    const after = (await (await app.request('/v1/config')).json()) as Record<string, unknown>;
+    expect(after).toEqual({
+      network: 'mutinynet',
+      label: 'Mutinynet (signet)',
+      isMainnet: false,
+      serviceName: 'Acme (maintenance)',
+    });
+
+    // Cleared at runtime, the key disappears entirely rather than serving an empty string, so
+    // the DTO an unnamed service serves is byte-identical to the pin above.
+    expect(runtimeSettings.applySettings({ serviceName: '' })).toBeUndefined();
+    const cleared = (await (await app.request('/v1/config')).json()) as Record<string, unknown>;
+    expect(Object.keys(cleared).sort()).toEqual(['isMainnet', 'label', 'network']);
   });
 });

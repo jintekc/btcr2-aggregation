@@ -94,15 +94,22 @@ const KNOWN_BEACON_TYPES = new Set<string>(['CASBeacon', 'SMTBeacon']);
 /**
  * The exact UI-SPEC validation string for the single cohort-size floor; the browser
  * mirrors this copy so the operator sees the same message client-side and server-side.
+ *
+ * EXPORTED so the settings surface's own size validation
+ * ({@link file://./runtime-settings.ts}) uses this exact string rather than a second copy:
+ * the create form and the settings form validate the same number, so they must refuse it in
+ * the same words.
  */
-const SIZE_ERROR = 'Cohort size must be at least 1 signer.';
+export const SIZE_ERROR = 'Cohort size must be at least 1 signer.';
 
 /**
  * The exact validation string for the signing-threshold guard (Decision 3); the browser
  * mirrors this byte-identical copy so the operator sees the same message client- and
  * server-side. k must be a whole number in `[1, size]` (n-of-n when k == n).
+ *
+ * EXPORTED for the same reason as {@link SIZE_ERROR}: one definition, two forms.
  */
-const THRESHOLD_ERROR = 'Signing threshold must be a whole number between 1 and the cohort size.';
+export const THRESHOLD_ERROR = 'Signing threshold must be a whole number between 1 and the cohort size.';
 
 /**
  * The exact 400 for a k < n over-promise on a service that booted with the stall fallback

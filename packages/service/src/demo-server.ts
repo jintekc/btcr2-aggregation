@@ -4,6 +4,11 @@ import { BitcoinConnection } from '@did-btcr2/bitcoin';
 import { buildCohortConfig, createIdentity, DEFAULT_NETWORK, resolveNetwork } from '@btcr2-aggregation/shared';
 import { createIpfsNode, createService, MemoryArtifactStore, type IpfsNode, type Service } from './index.js';
 import { createOfflineBitcoinConnection } from './offline-chain.js';
+// The NaN-guarded knob parser (review WR-04) moved to `runtime-settings.ts` when the runtime
+// settings holder started seeding its own numeric fields from the environment: one guard, two
+// callers, so it can never be fixed in one place and left broken in the other. Behavior here is
+// byte-identical to the local copy it replaces.
+import { numericKnob } from './runtime-settings.js';
 
 /**
  * Default location of the built web SPA, resolved relative to this module so it
@@ -243,50 +248,6 @@ export interface DemoServer {
   baseUrl: string;
   /** Stop the service and the HTTP server (and the IPFS node, if one is running). */
   stop(): Promise<void>;
-}
-
-/**
- * Parse a numeric boot knob (an env string or the programmatic option) into a finite number at or
- * above `minimum`, warning loudly and falling back to `fallback` on anything malformed. An
- * absent/empty value is NOT malformed: it simply takes the fallback, silently.
- *
- * Review WR-04. A bare `Number(process.env.X)` yields `NaN` for any non-numeric value
- * (`FUNDING_WINDOW_MS=12m`, a stray quote, a typo), and NaN then poisons every downstream
- * comparison SILENTLY, because every comparison against NaN is false. The concrete trace for
- * `FUNDING_WINDOW_MS`:
- *
- * 1. `useBroadcast && phaseTimeoutMs <= fundingWindowMs` is false, so the D-38 fail-fast boot
- *    invariant is skipped and the service boots anyway.
- * 2. `computeFundingDeadline` yields `deadlineMs = NaN` and discloses no truncation.
- * 3. `while (Date.now() - start < NaN)` is false on the FIRST evaluation, so the wait never polls
- *    once and falls straight through to the blind-lapse throw - telling the operator the service
- *    "could not observe the chain", when it never tried. Every cohort then dies instantly with a
- *    verdict sending the operator to a block explorer to chase a chain problem that does not
- *    exist, which is exactly the lie the D-39 honesty rule exists to prevent.
- *
- * `OPERATOR_SESSION_TTL_MS` has the identical hazard with a worse outcome: `Date.now() > NaN` is
- * always false, so sessions NEVER expire, and `Math.floor(NaN / 1000)` emits an invalid
- * `Max-Age=NaN` cookie attribute.
- *
- * The pattern was already established for `advertTtlMs` ({@link file://./index.ts}, with a
- * dedicated NaN spec) and was simply not applied to the newer knobs.
- */
-function numericKnob(
-  name: string,
-  raw: string | number | undefined,
-  fallback: number | undefined,
-  warn: (msg: string) => void,
-  minimum = 1,
-): number | undefined {
-  if (raw === undefined || raw === '') {
-    return fallback;
-  }
-  const n = typeof raw === 'number' ? raw : Number(raw);
-  if (!Number.isFinite(n) || n < minimum) {
-    warn(`ignoring malformed ${name}="${String(raw)}"; using ${fallback ?? 'the built-in default'}`);
-    return fallback;
-  }
-  return n;
 }
 
 /**
