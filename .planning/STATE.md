@@ -5,8 +5,8 @@ milestone_name: milestone
 current_phase: 5
 current_phase_name: Operator Cohort Lifecycle Control
 status: planning
-stopped_at: Phase 5 context gathered
-last_updated: "2026-07-28T18:39:07.580Z"
+stopped_at: Phase 05 UI-SPEC approved
+last_updated: "2026-07-28T19:03:29.557Z"
 last_activity: 2026-07-27
 last_activity_desc: Phase 04 complete, transitioned to Phase 5
 progress:
@@ -165,7 +165,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-28T18:39:07.569Z
-Stopped at: Phase 5 context gathered
-Resume file: .planning/phases/05-operator-cohort-lifecycle-control/05-CONTEXT.md
+Last session: 2026-07-28T19:03:29.544Z
+Stopped at: Phase 05 UI-SPEC approved
+Resume file: .planning/phases/05-operator-cohort-lifecycle-control/05-UI-SPEC.md
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
