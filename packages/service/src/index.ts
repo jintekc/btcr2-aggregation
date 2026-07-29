@@ -27,7 +27,9 @@ import { createCohortIntents } from './cohort-intent.js';
 import { createAdvertRepublisher } from './advert-republish.js';
 import { createAnchorState } from './anchor-state.js';
 import {
+  canceledCohortText,
   createCohortMonitor,
+  finalizedCohortText,
   OPERATOR_FINALIZED_TEXT,
   type FundingView,
   type ServiceMode,
@@ -1159,6 +1161,16 @@ export function createService(opts: CreateServiceOptions): Service {
         // a canceled cohort needs.
         onCancel: (cohortId: string) => {
           monitor.noteCanceled(cohortId);
+          // ...and the SERVICE-level record of what the operator did (SVC-04, D-15/UI-SPEC E13).
+          // The per-cohort line above lives in a ring the operator can only reach by opening that
+          // cohort, and a canceled cohort is one they are likely to dismiss; this entry survives
+          // both. Fire-and-forget like every other monitoring side effect: a logging failure must
+          // never disturb the protocol.
+          try {
+            monitor.noteOperatorAction(canceledCohortText(cohortId));
+          } catch (err) {
+            console.error(`[service] failed to record the cancel action: ${String(err)}`);
+          }
           releaseCohortTables(cohortId);
         },
         // Finalize's event-time side effect (SVC-04, D-01). The runner emits `'fallback-started'`
@@ -1168,6 +1180,11 @@ export function createService(opts: CreateServiceOptions): Service {
         // anchor, so its funding watch and side tables must keep running.
         onFinalize: (cohortId: string) => {
           monitor.noteOperatorAction(cohortId, OPERATOR_FINALIZED_TEXT);
+          try {
+            monitor.noteOperatorAction(finalizedCohortText(cohortId));
+          } catch (err) {
+            console.error(`[service] failed to record the finalize action: ${String(err)}`);
+          }
         },
         // Advert-slot repair (RESEARCH Pattern 3). The transport holds ONE advert slot and the
         // runner clears it whenever the slot-owning cohort is disposed, so without this a

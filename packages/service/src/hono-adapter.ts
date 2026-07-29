@@ -31,9 +31,15 @@ import {
   type DraftInput,
   type OperatorCohorts,
 } from './operator-cohorts.js';
-import type { RuntimeSettings, SettingsPatch } from './runtime-settings.js';
+import type { RuntimeSettings, SettingsPatch, SettingsSnapshot } from './runtime-settings.js';
 import type { AnchorState } from './anchor-state.js';
-import { BROADCAST_DISABLED_TEXT, type CohortMonitor } from './monitor.js';
+import {
+  BROADCAST_DISABLED_TEXT,
+  changedSettingText,
+  PAUSED_ADVERTISING_TEXT,
+  RESUMED_ADVERTISING_TEXT,
+  type CohortMonitor,
+} from './monitor.js';
 import { mountStaticSite } from './static-site.js';
 import { mountArtifactRoutes, type ArtifactStore } from './store.js';
 import { resolveBtcr2, UnconfirmedSignalError } from './resolve.js';
@@ -113,6 +119,52 @@ function openTransportSse(c: Context<Env>, transport: HttpServerTransport): Resp
   };
   transport.handleSse(reqLike, stream);
   return RESPONSE_ALREADY_SENT;
+}
+
+/**
+ * Human names for the runtime-adjustable settings, as they appear inside the operator-actions
+ * entry `Changed {setting}.` (UI-SPEC E13). They are deliberately plain-language rather than the
+ * wire keys: the log is read by the operator, not by a machine, and `Changed defaultThreshold.`
+ * is a field name where `Changed the default signing threshold.` is a sentence.
+ */
+const SETTING_LABELS: Record<keyof SettingsSnapshot, string> = {
+  serviceName: 'the service name',
+  defaultBeaconType: 'the default beacon type',
+  defaultSize: 'the default cohort size',
+  defaultThreshold: 'the default signing threshold',
+  defaultDiscoveryWindowMs: 'the default discovery window',
+  defaultFundingWindowMs: 'the default funding window',
+  termsText: 'the participation terms',
+};
+
+/**
+ * Record one operator action per setting whose value ACTUALLY moved across a save (D-15). It
+ * compares two served snapshots rather than reading the request body, so a save that re-submits
+ * the values the service already holds records nothing, and a field the service normalized (a
+ * trimmed name, cleared terms) is judged on what the service ended up holding.
+ *
+ * The VALUES are never logged: an operator-supplied name or terms document would widen the row
+ * without bound, and the field name is what the operator needs to recall what they did anyway
+ * (UI-SPEC E13 long-text). Fire-and-forget, like every other monitoring side effect on this
+ * service: a logging failure must never turn a successful save into a 500.
+ */
+function recordSettingsChanges(
+  before: SettingsSnapshot,
+  after: SettingsSnapshot,
+  monitor?: CohortMonitor,
+): void {
+  if (!monitor) {
+    return;
+  }
+  try {
+    for (const key of Object.keys(SETTING_LABELS) as (keyof SettingsSnapshot)[]) {
+      if (!Object.is(before[key].value, after[key].value)) {
+        monitor.noteOperatorAction(changedSettingText(SETTING_LABELS[key]));
+      }
+    }
+  } catch (err) {
+    console.error(`[adapter] failed to record a settings change: ${String(err)}`);
+  }
 }
 
 /** Optional features layered onto the protocol transport by {@link createHonoApp}. */
@@ -430,12 +482,25 @@ export function createHonoApp(
     // returns the resulting state so the console renders what the SERVICE reports rather than
     // what the browser assumed.
     if (runtimeSettings) {
+      //
+      // Each records ONE service-level operator action (D-15/UI-SPEC E13) on the transition only,
+      // read before the call: a repeat genuinely changed nothing, so there is nothing to record.
+      // These live here rather than in `index.ts` because the pause seam IS the route: the holder
+      // is mutated directly, with no lifecycle hook in between.
       app.post('/v1/operator/advertising/pause', (c) => {
+        const alreadyPaused = runtimeSettings.paused;
         runtimeSettings.pause();
+        if (!alreadyPaused) {
+          monitor?.noteOperatorAction(PAUSED_ADVERTISING_TEXT);
+        }
         return c.json({ paused: runtimeSettings.paused });
       });
       app.post('/v1/operator/advertising/resume', (c) => {
+        const wasPaused = runtimeSettings.paused;
         runtimeSettings.resume();
+        if (wasPaused) {
+          monitor?.noteOperatorAction(RESUMED_ADVERTISING_TEXT);
+        }
         return c.json({ paused: runtimeSettings.paused });
       });
 
@@ -486,16 +551,41 @@ export function createHonoApp(
           // the console keeps rendering the previous served snapshot. The message is app-authored
           // UI-SPEC copy (shared byte-identically with the create form's validation), never a raw
           // library string.
+          // Snapshot BEFORE, so the operator-actions entries below name the fields that actually
+          // moved rather than the fields the browser happened to send. A save that re-submits the
+          // values the service already holds changed nothing and therefore records nothing.
+          const before = runtimeSettings.snapshot();
           const problem = runtimeSettings.applySettings(body as SettingsPatch);
           if (problem) {
             return c.json({ error: problem }, 400);
           }
+          recordSettingsChanges(before, runtimeSettings.snapshot(), monitor);
           // Answer with the NEW snapshot so the console re-renders from what the SERVICE reports
           // rather than from the patch the browser sent: a field the service normalized (an
           // emptied name, trimmed terms) must show as the service holds it, not as it was typed.
           return c.json(runtimeSettings.snapshot());
         },
       );
+    }
+
+    // Ended-record dismissal (SVC-04, D-15). Registered inside the gated block after both prefix
+    // guards, so an anonymous caller is rejected with 401 BEFORE any lookup and a never-existed id
+    // is indistinguishable from a real one to them (T-05-08-04). The `:id` shape guard runs before
+    // the lookup, exactly as on cancel / finalize / detail.
+    //
+    // It mounts on the MONITOR rather than the cohort surface because an ended record is
+    // monitoring state: a cohort that anchored has already been pruned from the operator list
+    // (`settleCompletion` mints no terminal record for a success), so its ended row is the only
+    // thing left to dismiss. `dismissEnded` touches nothing but that bounded telemetry, and false
+    // covers both an unknown id and a cohort still live, which map to the same opaque 404.
+    if (monitor) {
+      app.delete('/v1/operator/ended/:id', (c) => {
+        const id = c.req.param('id');
+        if (!/^[0-9a-zA-Z-]{1,64}$/.test(id)) {
+          return c.json({ error: 'invalid cohort id' }, 400);
+        }
+        return monitor.dismissEnded(id) ? c.json({ ok: true }) : c.json({ error: 'unknown ended cohort' }, 404);
+      });
     }
 
     // On-demand cohort drafts (SVC-01). Registered AFTER the requireSameOrigin +
@@ -554,7 +644,16 @@ export function createHonoApp(
         c.json({
           cohorts: operatorCohorts.listCohorts(),
           monitoring: monitor
-            ? { rows: monitor.summary(), metrics: monitor.serviceMetrics(), health: monitor.serviceHealth() }
+            ? {
+                rows: monitor.summary(),
+                metrics: monitor.serviceMetrics(),
+                health: monitor.serviceHealth(),
+                // The service-level operator actions log (SVC-04, D-14/D-15) rides this SAME
+                // gated read rather than a new stream: ADR 0016 retired the telemetry SSE channel
+                // in favor of the polled snapshot, and the console already polls this, so the log
+                // refreshes on the same tick as the rows, the metrics and the health chips.
+                operatorActions: monitor.operatorActions(),
+              }
             : undefined,
           defaults: runtimeSettings
             ? {

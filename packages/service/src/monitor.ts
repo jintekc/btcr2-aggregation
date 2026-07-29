@@ -95,6 +95,35 @@ const OPERATOR_ACTIONS_RING_SIZE = 100;
 export const BROADCAST_DISABLED_TEXT = 'Disabled broadcast for new cohorts.';
 
 /**
+ * How many leading characters of a cohort id an operator-actions entry carries (UI-SPEC E13
+ * `{shortId}`). A plain prefix with NO ellipsis, matching the cancel ceremony's type-to-confirm
+ * value, so the log and the confirmation name a cohort in identical characters and the entry's
+ * width is fixed however long the real id is (E13 long-text).
+ */
+const SHORT_ID_CHARS = 8;
+
+/** The short cohort id every service-level operator-actions entry interpolates. */
+export function shortCohortId(cohortId: string): string {
+  return cohortId.slice(0, SHORT_ID_CHARS);
+}
+
+/**
+ * The exact service-level operator-actions entries (UI-SPEC E13). Each is FIXED contract copy
+ * interpolated only with a short cohort id or an integer, and each is a self-contained sentence
+ * that reads correctly on its own, because the log is a flat list with no grouping to lean on
+ * (UI-SPEC E13 zero-one-many). They live here, beside the per-cohort activity strings, so every
+ * operator-action string in this service has one home.
+ */
+export const PAUSED_ADVERTISING_TEXT = 'Paused advertising.';
+export const RESUMED_ADVERTISING_TEXT = 'Resumed advertising.';
+export const canceledCohortText = (cohortId: string): string => `Canceled cohort ${shortCohortId(cohortId)}.`;
+export const finalizedCohortText = (cohortId: string): string =>
+  `Triggered the k-of-n fallback on cohort ${shortCohortId(cohortId)}.`;
+export const dismissedRecordText = (cohortId: string): string =>
+  `Dismissed the record for cohort ${shortCohortId(cohortId)}.`;
+export const changedSettingText = (setting: string): string => `Changed ${setting}.`;
+
+/**
  * The exact UI-SPEC activity-ring line for an operator cancel (E12/E13). Fixed contract copy
  * with no interpolation, so a long operator-supplied value can never widen the row. Kept as a
  * named constant beside the other exact-copy strings in this service so the spec can pin it.
@@ -550,6 +579,21 @@ export interface CohortMonitor {
    * this makes no durable audit claim.
    */
   operatorActions(): ActivityEntryDTO[];
+  /**
+   * Remove exactly ONE ended cohort's retained record ahead of the bounded eviction (SVC-04,
+   * D-15). Returns false for an id with no ended record (unknown, evicted, or never ended) and
+   * for a cohort that is still LIVE, so a dismissal can never win a race against a cohort that
+   * is still running.
+   *
+   * It touches TELEMETRY ONLY: no runner call, no directory effect, no chain effect (T-05-08-04).
+   * The cohort already ended, so there is nothing left to end; this clears the console's own
+   * record of it plus that record's retained activity and funding view, and nothing else. There is
+   * no undo, and the confirmation copy says so in those words.
+   *
+   * The dismissal appends its OWN service-level operator action, inside this method rather than at
+   * its call sites, so clearing a record is always itself recorded and no caller can forget.
+   */
+  dismissEnded(cohortId: string): boolean;
   /**
    * The PUBLIC, non-oracle funding signal for a cohort (D-44), backing the anonymous
    * `GET /v1/funding/:cohortId` read a seated participant polls. Returns ONLY an
@@ -1394,6 +1438,31 @@ export function createCohortMonitor(
       // Copy the ring AND each entry, so a caller can never mutate the fold's internal state
       // through the DTO it was handed (the same discipline `detail` applies to the activity ring).
       return operatorActions.map((a) => ({ ...a }));
+    },
+
+    dismissEnded(cohortId: string): boolean {
+      // The ended record is the ONLY thing dismissable. An id with none is not-found, whether it
+      // never existed, was evicted by the bounded retention, or is a live cohort that has not
+      // ended - all three read identically, so this route is no more of an existence oracle than
+      // any other gated read.
+      if (!ended.has(cohortId)) {
+        return false;
+      }
+      // Belt and braces on the one way a record and a live cohort can coexist (a fate captured at
+      // event time while the session still holds the cohort): a dismissal must never clear the
+      // record of a cohort that is still filling or co-signing, because that cohort is still going
+      // to change and the operator would be watching a row that stopped updating.
+      const phase = runner.session.getCohortPhase(cohortId);
+      if (phase && (OPEN_PHASES.has(phase) || IN_FLIGHT_PHASES.has(phase))) {
+        return false;
+      }
+      // Telemetry only. Note what is NOT here: no `runner.stopCohort`, no intent declaration, no
+      // directory touch, no chain call. The cohort ended already; this forgets it.
+      ended.delete(cohortId);
+      entries.delete(cohortId);
+      fundingViews.delete(cohortId);
+      recordServiceAction(dismissedRecordText(cohortId));
+      return true;
     },
 
     publicFunding(cohortId: string): { awaitingFunding: boolean } {

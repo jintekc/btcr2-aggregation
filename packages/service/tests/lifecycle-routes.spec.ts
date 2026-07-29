@@ -3,7 +3,7 @@ import { resolveBtcr2SenderPk } from '@did-btcr2/method';
 import { createIdentity, FINALIZABLE_PHASES, resolveNetwork } from '@btcr2-aggregation/shared';
 import { describe, expect, it } from 'vitest';
 import { createCohortIntents } from '../src/cohort-intent.js';
-import { createCohortMonitor } from '../src/monitor.js';
+import { canceledCohortText, createCohortMonitor, finalizedCohortText } from '../src/monitor.js';
 import { createHonoApp } from '../src/hono-adapter.js';
 import { createLoginThrottle, createSessionStore, type OperatorAuthConfig } from '../src/operator-auth.js';
 import {
@@ -99,8 +99,16 @@ function lifecycleApp() {
     autoFallbackOnStall: true,
     intents,
     settings,
-    onCancel: (cohortId: string) => monitor.noteCanceled(cohortId),
-    onFinalize: (cohortId: string) => monitor.noteOperatorAction(cohortId, FINALIZE_ACTIVITY_TEXT),
+    // Both hooks mirror `index.ts`: the per-cohort activity line PLUS the service-level
+    // operator-actions entry, which is the one that survives the cohort's record being dismissed.
+    onCancel: (cohortId: string) => {
+      monitor.noteCanceled(cohortId);
+      monitor.noteOperatorAction(canceledCohortText(cohortId));
+    },
+    onFinalize: (cohortId: string) => {
+      monitor.noteOperatorAction(cohortId, FINALIZE_ACTIVITY_TEXT);
+      monitor.noteOperatorAction(finalizedCohortText(cohortId));
+    },
   });
   const app = createHonoApp(transport, {
     operatorAuth,
