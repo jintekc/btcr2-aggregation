@@ -11,6 +11,7 @@ import {
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { Address, OutScript, Script, Transaction, p2tr } from '@scure/btc-signer';
 import * as musig2 from '@scure/btc-signer/musig2';
+import { base64pad } from 'multiformats/bases/base64';
 import type { CohortConfig, SigningTxData } from '@did-btcr2/aggregation/service';
 import { DEFAULT_NETWORK, resolveNetwork, type NetworkConfig, type NetworkName } from './networks.js';
 
@@ -631,23 +632,8 @@ export const MIN_REGISTRATION_FUNDING_SATS = REGISTRATION_FEE_SATS + P2TR_DUST_S
  */
 export const MAX_REGISTRATION_FEE_SATS = 20_000n;
 
-/**
- * Build and sign the controller's first-update singleton-beacon registration
- * transaction: a Taproot key-path spend of a funded UTXO at their genesis P2TR
- * beacon address, with a single `OP_RETURN <32-byte updateHash>` output announcing
- * the update, and change back to the same address.
- *
- * The OP_RETURN is the LAST output because the resolver's beacon-signal indexer
- * reads only a transaction's final `vout`; putting change last would hide the
- * signal. Signing is a BIP341 key-path spend with the controller's own key (tweaked
- * with an empty merkle root by `@scure/btc-signer`); the raw untweaked secret is
- * passed and the library does the tweak. Nothing here leaves the browser: the caller
- * broadcasts `rawHex` via the same-origin `/v1/tx/broadcast` proxy.
- *
- * @throws if the UTXO cannot cover the fee plus a dust-safe change output, or the
- * fee is non-positive or above {@link MAX_REGISTRATION_FEE_SATS} (mainnet burn guard).
- */
-export function buildSingletonRegistrationTx(opts: {
+/** The inputs both the template builder and the signing builder take. */
+export interface RegistrationTxOptions {
   keys: SchnorrKeyPair;
   utxo: RegistrationUtxo;
   /** 32-byte canonical update hash (see {@link updateHashBytes}). */
@@ -655,7 +641,25 @@ export function buildSingletonRegistrationTx(opts: {
   network?: NetworkConfig;
   /** Fee in sats; defaults to {@link REGISTRATION_FEE_SATS}. */
   fee?: bigint;
-}): RegistrationTx {
+}
+
+/**
+ * Build the controller's first-update singleton-beacon registration transaction UNSIGNED: a
+ * Taproot key-path spend of a funded UTXO at their genesis P2TR beacon address, with a single
+ * `OP_RETURN <32-byte updateHash>` output announcing the update, and change back to the same
+ * address. Everything {@link buildSingletonRegistrationTx} does up to (but not including) signing.
+ *
+ * The OP_RETURN is the LAST output because the resolver's beacon-signal indexer reads only a
+ * transaction's final `vout`; putting change last would hide the signal.
+ *
+ * This exists as its own export because a `@scure/btc-signer` `Transaction` IS a PSBT, so the same
+ * object is both the thing the browser signs locally and the thing an external wallet is handed
+ * (PART-06, D-21). No PSBT library is needed and none is used.
+ *
+ * @throws if the UTXO cannot cover the fee plus a dust-safe change output, or the
+ * fee is non-positive or above {@link MAX_REGISTRATION_FEE_SATS} (mainnet burn guard).
+ */
+export function buildRegistrationTemplate(opts: RegistrationTxOptions): Transaction {
   const network = opts.network ?? resolveNetwork(NETWORK);
   const fee = opts.fee ?? REGISTRATION_FEE_SATS;
   if (fee <= 0n) {
@@ -692,6 +696,73 @@ export function buildSingletonRegistrationTx(opts: {
   // Change FIRST, OP_RETURN LAST (the indexer reads the final vout).
   tx.addOutput({ script: pay.script, amount: change });
   tx.addOutput({ script: Script.encode(['RETURN', opts.updateHash]), amount: 0n });
+  return tx;
+}
+
+/**
+ * Serialize PSBT bytes as standard (RFC 4648, padded) base64 - the interchange form every wallet
+ * reads. Goes through `multiformats`, already a dependency here, rather than hand-rolling an
+ * encoder or reaching for a Node-only `Buffer` (this module runs in the browser too).
+ */
+export function psbtBytesToBase64(bytes: Uint8Array): string {
+  return base64pad.baseEncode(bytes);
+}
+
+/**
+ * Decode a pasted or uploaded PSBT back to bytes, or `null` when the text is not base64 at all.
+ *
+ * Returns `null` instead of throwing because the caller's job is to turn a bad paste into a
+ * message, not to handle an exception; and it strips ALL whitespace first, because a PSBT that
+ * travelled through a wallet, a chat window or a text file arrives wrapped and indented.
+ */
+export function psbtBase64ToBytes(text: string): Uint8Array | null {
+  const compact = text.replace(/\s+/g, '');
+  if (compact.length === 0) {
+    return null;
+  }
+  try {
+    return base64pad.baseDecode(compact);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Hand the registration transaction out unsigned, for a participant who keeps their key in their
+ * own wallet rather than pasting it into a web page (PART-06, D-21).
+ *
+ * `templateHex` is the witness-free unsigned transaction bytes, and it is the comparison anchor
+ * the browser validator uses on the way back in. It is NOT the raw transaction hex, and the
+ * difference is load-bearing: signing changes the witness, so an externally-signed transaction has
+ * an IDENTICAL transaction id but DIFFERENT raw hex. Comparing raw hex would reject every
+ * legitimately signed PSBT (05-RESEARCH Pitfall 9; asserted in `tests/psbt.spec.ts`).
+ */
+export function exportRegistrationPsbt(opts: RegistrationTxOptions): {
+  base64: string;
+  templateHex: string;
+} {
+  const tx = buildRegistrationTemplate(opts);
+  return { base64: psbtBytesToBase64(tx.toPSBT(0)), templateHex: bytesToHex(tx.unsignedTx) };
+}
+
+/**
+ * Build AND sign the controller's first-update singleton-beacon registration transaction.
+ *
+ * Composed from {@link buildRegistrationTemplate} so there is exactly one place the guards, the
+ * key derivation and the output ordering are written down. Signing is a BIP341 key-path spend with
+ * the controller's own key (tweaked with an empty merkle root by `@scure/btc-signer`); the raw
+ * untweaked secret is passed and the library does the tweak. Nothing here leaves the browser: the
+ * caller broadcasts `rawHex` via the same-origin `/v1/tx/broadcast` proxy.
+ *
+ * `fee` and `change` are read back off the built transaction rather than recomputed, so the
+ * reported numbers are the ones the transaction actually pays.
+ *
+ * @throws whatever {@link buildRegistrationTemplate} throws (unchanged messages).
+ */
+export function buildSingletonRegistrationTx(opts: RegistrationTxOptions): RegistrationTx {
+  const tx = buildRegistrationTemplate(opts);
+  const fee = tx.fee;
+  const change = tx.getOutput(0).amount ?? 0n;
   // Sign with the raw untweaked secret; @scure applies the BIP341 tweak internally.
   tx.sign(opts.keys.raw.secret!);
   tx.finalize();
