@@ -161,6 +161,11 @@ export interface SettingsSnapshot {
  * SUPPLIED optional string whose value is empty or whitespace-only CLEARS that field (so the
  * console's "leave it empty" affordance really does clear the name / the terms, and the DTOs
  * that carry them stay additive rather than gaining an empty key).
+ *
+ * `paused` and `broadcastDisabled` are deliberately NOT members. They are service STATE with
+ * their own gated routes, not values a save applies as a set - and for the kill switch in
+ * particular, a settings field would be a second way to reach the flag, in the one direction
+ * ADR 0010 forbids (D-14). `applySettings` therefore cannot touch either, whatever a body carries.
  */
 export interface SettingsPatch {
   serviceName?: string;
@@ -193,11 +198,17 @@ export interface RuntimeSettings {
    * The one-way broadcast kill switch (D-14). False on every boot: ADR 0010's layered
    * environment opt-in stays the only path to money movement, and this flag can only ever move
    * from false to true, never back, so a restart is the only way to re-enable broadcasting.
-   * Declared here now so later consumers extend a stable contract; plan 05-08 wires the
-   * one-way mutation, its engage timestamp, and the per-cohort broadcast decision that keeps
-   * in-flight cohorts finishing under the mode they started with.
    */
   readonly broadcastDisabled: boolean;
+  /**
+   * The server wall-clock time (ms) the kill switch ENGAGED, or undefined while it is off
+   * (D-14). It is the pivot of the whole feature: the per-cohort broadcast decision compares a
+   * cohort's advertise stamp against this moment, which is what makes "cohorts already in flight
+   * finish under the mode they started with" a fact rather than a hope. Stamped on the FIRST
+   * {@link disableBroadcast} call and never moved afterwards, so a second click cannot slide the
+   * pivot forward and retroactively re-enable a cohort advertised in between.
+   */
+  readonly broadcastDisabledAtMs: number | undefined;
   /** Display name served additively on `GET /v1/config` (D-16). */
   readonly serviceName: SettingField<string | undefined>;
   /** Beacon type a new draft starts from. */
@@ -216,6 +227,21 @@ export interface RuntimeSettings {
   pause(): void;
   /** Leave drain mode. Idempotent: resuming a running service changes nothing. */
   resume(): void;
+  /**
+   * Engage the one-way broadcast kill switch (D-14): NEW cohorts stop publishing anything to
+   * Bitcoin. Idempotent, and it stamps {@link broadcastDisabledAtMs} on the first call only.
+   *
+   * There is deliberately NO counterpart, and that omission is the feature. Re-enabling money
+   * movement is a BOOT-ENVIRONMENT act under ADR 0010's layered opt-in, so this holder offers no
+   * setter, no reset, and no `applySettings` field that could clear the flag: the worst an
+   * attacker holding an operator session can do here is stand this service DOWN, never up. The
+   * escape hatch is a restart with the broadcast environment set, and the console copy says so in
+   * exactly those words rather than implying a control that does not exist.
+   *
+   * `kill-switch.spec.ts` SEARCHES this holder's own surface for that absence rather than
+   * documenting it, so a future `enableBroadcast` fails the suite the moment it is written.
+   */
+  disableBroadcast(): void;
   /**
    * Apply a settings save as a SET. Validates every SUPPLIED field first and applies NONE if
    * any of them is invalid, returning the first user-facing message; returns `undefined` on
@@ -274,8 +300,12 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
   const warn = seed.warn ?? ((message: string) => console.warn(`[settings] ${message}`));
 
   let paused = false;
-  // Declared here for the contract; plan 05-08 owns the one-way mutation (D-14).
-  const broadcastDisabled = false;
+  // The one-way kill switch and its engage moment (D-14). Both are `let` rather than fields of a
+  // mutable record on purpose: nothing in this closure but `disableBroadcast` below writes them,
+  // and they are never routed through `applySettings`, so there is exactly one line in this file
+  // that can change the money-movement mode and it only ever moves in the safe direction.
+  let broadcastDisabled = false;
+  let broadcastDisabledAtMs: number | undefined;
 
   // Seed the beacon type defensively: an out-of-range programmatic value falls back rather than
   // becoming the default every new draft inherits.
@@ -354,6 +384,9 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
     get broadcastDisabled(): boolean {
       return broadcastDisabled;
     },
+    get broadcastDisabledAtMs(): number | undefined {
+      return broadcastDisabledAtMs;
+    },
     get serviceName(): SettingField<string | undefined> {
       return project(serviceName);
     },
@@ -384,6 +417,18 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
 
     resume(): void {
       paused = false;
+    },
+
+    disableBroadcast(): void {
+      // Idempotent, and the engage stamp is taken ONCE. A second call must not move the pivot:
+      // the per-cohort decision compares each cohort's advertise stamp against it, so a later
+      // stamp would silently re-enable broadcasting for every cohort advertised in between - the
+      // exact opposite of what the operator asked for.
+      if (broadcastDisabled) {
+        return;
+      }
+      broadcastDisabled = true;
+      broadcastDisabledAtMs = Date.now();
     },
 
     applySettings(patch: SettingsPatch): string | undefined {

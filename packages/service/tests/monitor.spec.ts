@@ -734,7 +734,7 @@ describe('createCohortMonitor serviceHealth (mode + esplora reachability, D-17/D
   it('reports hermetic mode with esploraReachable n/a when no broadcaster is wired', () => {
     const runner = bareRunner();
     const monitor = createCohortMonitor(runner);
-    expect(monitor.serviceHealth()).toEqual({ mode: 'hermetic', esploraReachable: 'n/a', paused: false });
+    expect(monitor.serviceHealth()).toEqual({ mode: 'hermetic', esploraReachable: 'n/a', paused: false, broadcastDisabled: false });
   });
 
   it('derives live mode from a broadcaster when no explicit mode is passed', () => {
@@ -749,7 +749,7 @@ describe('createCohortMonitor serviceHealth (mode + esplora reachability, D-17/D
     const runner = bareRunner();
     // The middle mode: a live esplora path built but no broadcaster (index.ts passes it).
     const monitor = createCohortMonitor(runner, undefined, undefined, 'live-no-broadcast');
-    expect(monitor.serviceHealth()).toEqual({ mode: 'live-no-broadcast', esploraReachable: true, paused: false });
+    expect(monitor.serviceHealth()).toEqual({ mode: 'live-no-broadcast', esploraReachable: true, paused: false, broadcastDisabled: false });
   });
 
   it('flips esploraReachable on noteEsploraObservation(false) without altering cohort state (stale-honest, D-43)', () => {
@@ -770,7 +770,7 @@ describe('createCohortMonitor serviceHealth (mode + esplora reachability, D-17/D
 
     // A mid-flight esplora outage flips the strip bit only.
     monitor.noteEsploraObservation(false);
-    expect(monitor.serviceHealth()).toEqual({ mode: 'live', esploraReachable: false, paused: false });
+    expect(monitor.serviceHealth()).toEqual({ mode: 'live', esploraReachable: false, paused: false, broadcastDisabled: false });
 
     // The cohort's last-known detail is FROZEN, not mutated or invented (stale-honest).
     const after = monitor.detail('c1');
@@ -844,7 +844,7 @@ describe('GET /v1/operator/cohorts serves monitoring.health (review CR-01, D-17/
       const res = await app.request('/v1/operator/cohorts', { headers: { cookie } });
       expect(res.status).toBe(200);
       const body = (await res.json()) as { monitoring?: { health?: { mode: string; esploraReachable: unknown } } };
-      expect(body.monitoring?.health).toEqual({ mode: 'live', esploraReachable: true, paused: false });
+      expect(body.monitoring?.health).toEqual({ mode: 'live', esploraReachable: true, paused: false, broadcastDisabled: false });
     } finally {
       runner.stop();
     }
@@ -859,7 +859,7 @@ describe('GET /v1/operator/cohorts serves monitoring.health (review CR-01, D-17/
         cohorts: unknown[];
         monitoring?: { rows: unknown[]; metrics: unknown; health?: unknown };
       };
-      expect(body.monitoring?.health).toEqual({ mode: 'hermetic', esploraReachable: 'n/a', paused: false });
+      expect(body.monitoring?.health).toEqual({ mode: 'hermetic', esploraReachable: 'n/a', paused: false, broadcastDisabled: false });
       // `health` is ADDITIVE: the pre-existing keys are still served unchanged.
       expect(Array.isArray(body.cohorts)).toBe(true);
       expect(Array.isArray(body.monitoring?.rows)).toBe(true);

@@ -33,7 +33,7 @@ import {
 } from './operator-cohorts.js';
 import type { RuntimeSettings, SettingsPatch } from './runtime-settings.js';
 import type { AnchorState } from './anchor-state.js';
-import type { CohortMonitor } from './monitor.js';
+import { BROADCAST_DISABLED_TEXT, type CohortMonitor } from './monitor.js';
 import { mountStaticSite } from './static-site.js';
 import { mountArtifactRoutes, type ArtifactStore } from './store.js';
 import { resolveBtcr2, UnconfirmedSignalError } from './resolve.js';
@@ -437,6 +437,28 @@ export function createHonoApp(
       app.post('/v1/operator/advertising/resume', (c) => {
         runtimeSettings.resume();
         return c.json({ paused: runtimeSettings.paused });
+      });
+
+      // The ONE-WAY broadcast kill switch (SVC-04, D-14). Registered inside the same gated block
+      // after both prefix guards, so an anonymous caller is rejected with 401 before the handler
+      // runs and only an authenticated operator can change this service's money-movement mode
+      // (T-05-08-01).
+      //
+      // There is deliberately NO enable counterpart, here or anywhere: ADR 0010's layered
+      // environment opt-in remains the sole path to broadcasting, so the worst an attacker holding
+      // a session can do is stand this service DOWN (T-05-08-02). Idempotent and body-less like
+      // the two advertising toggles, and it answers with the RESULTING state so the console
+      // renders what the service reports rather than what the browser assumed.
+      app.post('/v1/operator/broadcast/disable', (c) => {
+        // Read BEFORE the call so the log entry fires only on the transition. The ring's
+        // consecutive-duplicate guard would also catch a double-click, but this is the precise
+        // answer: a repeat genuinely changed nothing, so there is nothing to record.
+        const alreadyDisabled = runtimeSettings.broadcastDisabled;
+        runtimeSettings.disableBroadcast();
+        if (!alreadyDisabled) {
+          monitor?.noteOperatorAction(BROADCAST_DISABLED_TEXT);
+        }
+        return c.json({ broadcastDisabled: runtimeSettings.broadcastDisabled });
       });
 
       // The service settings surface (SVC-04 criterion 3 / SVC-05, D-10/D-12/D-13/D-16/D-19).

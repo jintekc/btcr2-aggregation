@@ -5,6 +5,7 @@ import {
   HttpServerTransport,
   type CohortConfig,
   type HttpServerTransportConfig,
+  type OnProvideTxData,
   type PendingOptIn,
 } from '@did-btcr2/aggregation/service';
 import { resolveBtcr2SenderPk } from '@did-btcr2/method';
@@ -542,6 +543,44 @@ function addressExplorerUrl(netConfig: NetworkConfig, address: string): string |
 }
 
 /**
+ * Whether ONE cohort still uses this service's live, money-moving wiring (SVC-04, D-14).
+ *
+ * This is the whole kill switch, expressed as a pure function so both consumers can share it and
+ * so its edge cases are assertable without a chain: `createService` calls it at the beacon-tx
+ * DATA handoff (`onProvideTxData`, choosing the real builder or the fixture) and again at the
+ * BROADCAST handoff (`signing-complete`). Two call sites, one rule, so a cohort can never be built
+ * live and then silently not published, or the reverse.
+ *
+ * The comparison is against each cohort's ADVERTISE stamp, not against the service's boot mode.
+ * That is what makes "cohorts already in flight finish under the mode they started with" a fact:
+ * a cohort advertised before the operator engaged the switch keeps the wiring it was advertised
+ * under, all the way to its anchor, while every cohort advertised afterwards is created on the
+ * fixture path and publishes nothing. The service's own `mode` is NEVER re-derived - the monitor
+ * caches it at construction and the health strip must keep reporting how this service actually
+ * booted (RESEARCH Pattern 6).
+ *
+ * It fails CLOSED: with the switch engaged and no advertise stamp for this cohort, the answer is
+ * false. An id this service cannot show to predate the switch is one it cannot justify spending
+ * Bitcoin for, and for a money-moving decision the safe default is the one that moves no money.
+ */
+export function cohortKeepsLiveWiring(input: {
+  /** Whether the one-way switch has engaged this session. */
+  broadcastDisabled: boolean;
+  /** The server wall-clock ms the switch engaged; undefined while it is off. */
+  engagedAtMs?: number;
+  /** The server wall-clock ms this cohort was advertised; undefined for an unstamped id. */
+  advertisedAtMs?: number;
+}): boolean {
+  if (!input.broadcastDisabled) {
+    return true;
+  }
+  if (input.engagedAtMs === undefined || input.advertisedAtMs === undefined) {
+    return false;
+  }
+  return input.advertisedAtMs < input.engagedAtMs;
+}
+
+/**
  * Create an aggregation service: an {@link HttpServerTransport} mounted under Hono
  * on a real port, driven by an {@link AggregationServiceRunner} configured with the
  * fixture beacon-tx callback. Senders are authenticated by resolving their DID to a
@@ -730,6 +769,39 @@ export function createService(opts: CreateServiceOptions): Service {
     };
   }
 
+  /**
+   * This cohort's live-wiring decision, taken fresh at each handoff (SVC-04, D-14). It reads the
+   * holder and the advertise stamp LIVE rather than closing over a boot-time value, because the
+   * operator can engage the switch at any moment between a cohort's advertise and its signing.
+   */
+  function cohortUsesLivePath(cohortId: string): boolean {
+    return cohortKeepsLiveWiring({
+      broadcastDisabled: runtimeSettings.broadcastDisabled,
+      engagedAtMs: runtimeSettings.broadcastDisabledAtMs,
+      advertisedAtMs: advertisedAt.get(cohortId),
+    });
+  }
+
+  // The two beacon-tx DATA builders (D-14). A service with no live config has only the fixture
+  // one, so the wrapper below is not installed at all and that path is byte-identical to before.
+  // A live service keeps BOTH, so a cohort advertised after the kill switch engaged is genuinely
+  // "created on the fixture path": it never waits for funding, never reads a UTXO, and never
+  // produces a tx that could be published.
+  const provideTxDataLive = makeProvideTxData(() => runner, live);
+  const provideTxDataFixture = live ? makeProvideTxData(() => runner, undefined) : provideTxDataLive;
+  const onProvideTxData: OnProvideTxData = live
+    ? async (info) => {
+        if (cohortUsesLivePath(info.cohortId)) {
+          return provideTxDataLive(info);
+        }
+        console.log(
+          `[service] cohort ${info.cohortId}: broadcast is disabled for this session and this cohort ` +
+            'was advertised after the switch engaged; building the fixture beacon tx and publishing nothing',
+        );
+        return provideTxDataFixture(info);
+      }
+    : provideTxDataLive;
+
   // `onProvideTxData` reads `runner` lazily (only when signing starts, long after
   // construction), so closing over the const binding here is safe.
   const runner: AggregationServiceRunner = new AggregationServiceRunner({
@@ -737,7 +809,7 @@ export function createService(opts: CreateServiceOptions): Service {
     did,
     keys,
     config: opts.config,
-    onProvideTxData: makeProvideTxData(() => runner, live),
+    onProvideTxData,
     // Forward the fee estimator (else the runner defaults to a static 5 sat/vB);
     // the live beacon-tx builder reads it via the onProvideTxData info.
     feeEstimator: opts.feeEstimator,
@@ -850,6 +922,20 @@ export function createService(opts: CreateServiceOptions): Service {
       broadcaster,
       pollIntervalMs: opts.confirmPollIntervalMs,
       confirmTimeoutMs: opts.confirmTimeoutMs,
+      // The runtime kill switch, decided per cohort at the beacon-tx handoff (D-14). The SAME
+      // predicate the tx-data branch above uses, so a cohort standing down is consistent on both
+      // legs. The reason is logged here rather than inside `attachBeaconBroadcast` because it is
+      // this service's decision, not the broadcaster's: the broadcaster simply honors the gate.
+      shouldBroadcast: (cohortId: string) => {
+        if (cohortUsesLivePath(cohortId)) {
+          return true;
+        }
+        console.log(
+          `[service] cohort ${cohortId}: broadcast is disabled for this session; not publishing its ` +
+            'beacon transaction (restart with the broadcast environment set to re-enable)',
+        );
+        return false;
+      },
     });
   }
 

@@ -83,6 +83,18 @@ const MAX_TERMINAL = 24;
 const ACTIVITY_RING_SIZE = 200;
 
 /**
+ * Upper bound on the SERVICE-level operator-actions ring (SVC-04, D-14/D-15). Bounded oldest-first
+ * like every other in-memory ring in this service, so a long-lived console session cannot grow it
+ * (T-05-08-06). Smaller than {@link ACTIVITY_RING_SIZE} because it holds only deliberate operator
+ * verbs (pause, cancel, finalize, disable broadcast, dismiss, settings changes), not protocol
+ * chatter: a hundred of those is far more than one session's worth.
+ */
+const OPERATOR_ACTIONS_RING_SIZE = 100;
+
+/** The exact service-level operator-actions entry for the broadcast kill switch (UI-SPEC E13). */
+export const BROADCAST_DISABLED_TEXT = 'Disabled broadcast for new cohorts.';
+
+/**
  * The exact UI-SPEC activity-ring line for an operator cancel (E12/E13). Fixed contract copy
  * with no interpolation, so a long operator-supplied value can never widen the row. Kept as a
  * named constant beside the other exact-copy strings in this service so the spec can pin it.
@@ -262,6 +274,18 @@ export interface ServiceHealthDTO {
    * which is a different question with a different lifetime.
    */
   paused: boolean;
+  /**
+   * True once the one-way broadcast kill switch has engaged for this session (SVC-04, D-14). Fed
+   * from the SAME runtime holder the per-cohort beacon-tx decision reads, so the console chip and
+   * the enforced behavior are one derivation.
+   *
+   * It rides BESIDE {@link mode}, never instead of it, and {@link mode} is deliberately NOT
+   * re-derived when it flips: this service really did boot the way `mode` says, and its esplora
+   * reads really are still live (resolve, anchor observation, the funding watch). Rewriting the
+   * mode here would make the health strip lie about how the service booted, which is the one
+   * thing this strip exists not to do (RESEARCH Pattern 6, T-05-08-03).
+   */
+  broadcastDisabled: boolean;
 }
 
 /**
@@ -498,6 +522,35 @@ export interface CohortMonitor {
    */
   noteOperatorAction(cohortId: string, text: string): void;
   /**
+   * Record one SERVICE-level operator action (SVC-04, D-14/D-15), in the ring the console's
+   * `Operator actions` log renders. Distinguished from the per-cohort form above by ARITY: an
+   * action that is not about one cohort (pausing advertising, disabling broadcast, changing a
+   * setting) has no cohort ring to live in, and an operator asking "what did I do this session"
+   * should not have to open every cohort to find out.
+   *
+   * `text` is FIXED contract copy chosen by the caller and interpolated only with a short cohort
+   * id or an integer, never operator-supplied input, so a long value can never widen the rendered
+   * row (UI-SPEC E13 long-text). The entry is stamped with the server wall clock here (D-22) and
+   * the ring stays bounded at {@link OPERATOR_ACTIONS_RING_SIZE}, oldest-first.
+   *
+   * Every service-level entry is `info` toned. That is deliberate rather than unconsidered: these
+   * are the operator's OWN deliberate acts, so colouring them warn or bad would have this log
+   * shout at the operator about decisions they just made. The DTO still carries `level`, so a
+   * future entry that genuinely warrants another tone needs no shape change.
+   *
+   * De-duplicating by construction, exactly like the per-cohort form: an append whose text is
+   * identical to the immediately previous entry is skipped, so a double-click on an idempotent
+   * control cannot make the log claim the action happened twice.
+   */
+  noteOperatorAction(text: string): void;
+  /**
+   * The SERVICE-level operator actions ring, oldest-first (SVC-04, D-14/D-15). A pure projection
+   * over a bounded in-memory ring, served on the gated monitoring read the console already polls
+   * (ADR 0016: no new SSE channel). Session-scoped and in-memory, and the console copy says so, so
+   * this makes no durable audit claim.
+   */
+  operatorActions(): ActivityEntryDTO[];
+  /**
    * The PUBLIC, non-oracle funding signal for a cohort (D-44), backing the anonymous
    * `GET /v1/funding/:cohortId` read a seated participant polls. Returns ONLY an
    * `awaitingFunding` boolean, and ONLY `true` for a live+broadcast cohort whose funding
@@ -714,6 +767,17 @@ export function createCohortMonitor(
    * (T-04-01-02 / T-04-02-03).
    */
   const fundingViews = new Map<string, FundingView>();
+  /**
+   * The SERVICE-level operator actions ring (SVC-04, D-14/D-15), bounded oldest-first at
+   * {@link OPERATOR_ACTIONS_RING_SIZE} and stamped with the server wall clock at append (D-22).
+   * It sits BESIDE the per-cohort rings rather than inside one, because the actions that made it
+   * necessary - pausing advertising, disabling broadcast, changing a setting, dismissing a record
+   * - are not about any single cohort, and two of them are about a cohort that no longer has a
+   * ring at all.
+   */
+  const operatorActions: ActivityEntryDTO[] = [];
+  /** Monotonic id for the service ring, so a poll never re-keys an existing log line. */
+  let operatorActionSeq = 0;
 
   /** Get-or-create a cohort entry WITHOUT touching insertion order (that is `remember`'s job). */
   function entryFor(cohortId: string): MonitorEntry {
@@ -795,6 +859,25 @@ export function createCohortMonitor(
     }
     appendActivity(entry, 'info', text);
     remember(cohortId, entry);
+  }
+
+  /**
+   * Append one entry to the SERVICE-level operator actions ring, evicting the OLDEST past
+   * {@link OPERATOR_ACTIONS_RING_SIZE}. It mirrors {@link recordOperatorAction} exactly, including
+   * the consecutive-duplicate guard, so an idempotent verb clicked twice records once - and for
+   * the same reason: a repeated action is a double-click or a route retry, which lands
+   * back-to-back, while two identical actions separated by other activity are genuinely two.
+   */
+  function recordServiceAction(text: string): void {
+    const previous = operatorActions[operatorActions.length - 1];
+    if (previous?.text === text) {
+      return;
+    }
+    operatorActions.push({ id: operatorActionSeq, t: Date.now(), level: 'info', text });
+    operatorActionSeq += 1;
+    while (operatorActions.length > OPERATOR_ACTIONS_RING_SIZE) {
+      operatorActions.shift();
+    }
   }
 
   /**
@@ -1234,6 +1317,10 @@ export function createCohortMonitor(
         // the console's chip and the advertise gate agree (D-07). No holder means nothing can
         // pause this service, so the honest answer is false.
         paused: settings?.paused ?? false,
+        // The kill-switch bit, read live from the same holder for the same reason (D-14). Note
+        // that `mode` above is untouched: the disabled state is an ADDITIONAL fact, never a
+        // rewrite of how this service booted.
+        broadcastDisabled: settings?.broadcastDisabled ?? false,
       };
     },
 
@@ -1292,8 +1379,21 @@ export function createCohortMonitor(
       rememberEnded(cohortId, { chip: 'canceled', seatsJoined, capacity });
     },
 
-    noteOperatorAction(cohortId: string, text: string): void {
-      recordOperatorAction(cohortId, text);
+    // Two arities, one name (see the interface): the two-argument form records against a cohort's
+    // own ring, the one-argument form against the service-level ring. The implementation signature
+    // below satisfies both declared overloads.
+    noteOperatorAction(cohortIdOrText: string, text?: string): void {
+      if (text === undefined) {
+        recordServiceAction(cohortIdOrText);
+        return;
+      }
+      recordOperatorAction(cohortIdOrText, text);
+    },
+
+    operatorActions(): ActivityEntryDTO[] {
+      // Copy the ring AND each entry, so a caller can never mutate the fold's internal state
+      // through the DTO it was handed (the same discipline `detail` applies to the activity ring).
+      return operatorActions.map((a) => ({ ...a }));
     },
 
     publicFunding(cohortId: string): { awaitingFunding: boolean } {

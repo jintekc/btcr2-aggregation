@@ -289,6 +289,19 @@ export interface AttachBeaconBroadcastOptions {
   sendRetryAttempts?: number;
   /** Base backoff between send attempts, in ms (D-41). Default {@link DEFAULT_SEND_RETRY_BACKOFF_MS}. */
   sendRetryBackoffMs?: number;
+  /**
+   * Per-cohort gate on the beacon-tx handoff (SVC-04, Phase 5 D-14). Consulted at
+   * `signing-complete`, BEFORE the signed tx is serialized, so the runtime broadcast kill switch
+   * can stand down money movement for NEW cohorts while cohorts already in flight finish under
+   * the mode they started with. Returning false SKIPS this cohort silently: no send, and no
+   * broadcaster frame at all, so the monitor's ended record keeps the honest co-sign fate instead
+   * of being flipped to `failed` by a broadcast that was never meant to happen.
+   *
+   * The decision itself (and the reason logged for it) belongs to the caller: {@link file://./index.ts}
+   * compares each cohort's advertise stamp against the moment the switch engaged. Absent, every
+   * cohort broadcasts, which is the pre-D-14 behavior byte-for-byte.
+   */
+  shouldBroadcast?: (cohortId: string) => boolean;
   /** Failure logger. Default `console.error`. Successes surface as broadcaster events. */
   log?: (msg: string) => void;
 }
@@ -319,6 +332,14 @@ export function attachBeaconBroadcast(
 
   const handleSigningComplete = async (result: AggregationResult): Promise<void> => {
     const { cohortId } = result;
+
+    // The runtime kill-switch gate (D-14), FIRST: a cohort that is not to be broadcast must not
+    // even be serialized. A cohort standing down took the fixture beacon-tx path, whose dummy
+    // prevout makes `extract()` throw, so reaching the serialization below would emit a spurious
+    // `beacon-broadcast-failed` and misreport a perfectly healthy cohort as failed.
+    if (opts.shouldBroadcast && !opts.shouldBroadcast(cohortId)) {
+      return;
+    }
 
     let rawHex: string;
     try {
