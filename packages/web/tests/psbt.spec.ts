@@ -14,6 +14,7 @@ import {
   type Identity,
 } from '@btcr2-aggregation/shared';
 import { validateSignedPsbt } from '../src/lib/psbt';
+import { psbtVerdictMessage } from '../src/components/cohort/WalletSignPanel';
 
 /**
  * The returned-PSBT validator (PART-06, D-21, UI-SPEC E17).
@@ -159,6 +160,8 @@ describe('validateSignedPsbt', () => {
     expect(Transaction.fromRaw(hexToBytes(verdict.rawHex), { allowUnknownOutputs: true }).id).toBe(
       local.txid,
     );
+    // The verdict names the transaction id too, taken after finalize (asking earlier throws).
+    expect(verdict.txid).toBe(local.txid);
   });
 
   it('returns the fee-out-of-band verdict when the transaction pays more than expected', () => {
@@ -173,7 +176,8 @@ describe('validateSignedPsbt', () => {
     });
     expect(
       validateSignedPsbt(walletSign(fat.base64), fat.templateHex, REGISTRATION_FEE_SATS, NETWORK),
-    ).toEqual({ ok: false, reason: 'fee-out-of-band' });
+      // The verdict names the fee it rejected, because the participant is asked to go check it.
+    ).toEqual({ ok: false, reason: 'fee-out-of-band', feeSats: REGISTRATION_FEE_SATS * 5n });
 
     // A fee AT the expected value is in band, not out of it.
     const exact = ourTemplate();
@@ -221,5 +225,35 @@ describe('validateSignedPsbt', () => {
     expect(bytesToHex(returned.unsignedTx)).toBe(templateHex);
     // And the returned PSBT re-serializes to base64 the app can read back (upload/paste parity).
     expect(psbtBase64ToBytes(psbtBytesToBase64(signed))).toEqual(signed);
+  });
+});
+
+describe('psbtVerdictMessage', () => {
+  it('gives each of the five verdicts its OWN sentence, and none before anything comes back', () => {
+    const { base64, templateHex } = ourTemplate();
+    const ok = validateSignedPsbt(walletSign(base64), templateHex, REGISTRATION_FEE_SATS, NETWORK);
+    const messages = [
+      psbtVerdictMessage(ok),
+      psbtVerdictMessage({ ok: false, reason: 'unsigned' }),
+      psbtVerdictMessage({ ok: false, reason: 'mismatched' }),
+      psbtVerdictMessage({ ok: false, reason: 'unparseable' }),
+      psbtVerdictMessage({ ok: false, reason: 'fee-out-of-band', feeSats: 9000n }),
+    ];
+    // Five outcomes, five distinct strings: a collapsed pair would tell a participant the wrong
+    // thing about a transaction they are about to broadcast.
+    expect(new Set(messages).size).toBe(5);
+    for (const m of messages) {
+      expect(m).toBeTruthy();
+      // The UI-SPEC copy contract: no long dash in any authored string.
+      expect(m).not.toMatch(/—/);
+    }
+    // Nothing returned yet is not an error state.
+    expect(psbtVerdictMessage(null)).toBeNull();
+    // The fee sentence names the fee it rejected AND the fee it expected.
+    expect(messages[4]).toContain('9000 sats');
+    expect(messages[4]).toContain(`${REGISTRATION_FEE_SATS.toString()} sats`);
+    // The success sentence names what the transaction pays and what it costs.
+    expect(messages[0]).toContain((BigInt(UTXO.value) - REGISTRATION_FEE_SATS).toString());
+    expect(messages[0]).toContain(`${REGISTRATION_FEE_SATS.toString()} sat fee`);
   });
 });

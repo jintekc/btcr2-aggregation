@@ -381,7 +381,7 @@ export function Mono({ children, className = '' }: { children: ReactNode; classN
  * for non-secure (plain http) origins where `navigator.clipboard` is undefined.
  * Returns whether the copy succeeded.
  */
-async function copyToClipboard(value: string): Promise<boolean> {
+export async function copyToClipboard(value: string): Promise<boolean> {
   try {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(value);

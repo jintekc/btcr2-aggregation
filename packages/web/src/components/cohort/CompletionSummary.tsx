@@ -16,6 +16,7 @@ import {
   type ResolvedService,
 } from '../../lib/resolve';
 import { Badge, Button, Card, CopyField, Expander, Mono, SectionTitle } from '../../ui/primitives';
+import { BROADCAST_LABEL, WalletSignPanel } from './WalletSignPanel';
 
 /**
  * The post-completion region of the one cohort page (PART-04, D-10/D-17/D-28/D-29/D-30). It
@@ -289,6 +290,10 @@ function RegistrationStage({ baseUrl }: { baseUrl: string }) {
   const regTxid = useParticipant((s) => s.regTxid);
   const regError = useParticipant((s) => s.regError);
   const register = useParticipant((s) => s.register);
+  // The external-signer choice (PART-06, D-21). Read here because this section owns the ONE
+  // primary button, which the wallet path relabels and gates rather than adding a second one.
+  const signingMethod = useParticipant((s) => s.signingMethod);
+  const psbtVerdict = useParticipant((s) => s.psbtVerdict);
   const NET = resolveNetwork(useParticipant((s) => s.network));
   const [ackMainnet, setAckMainnet] = useState(false);
 
@@ -300,6 +305,10 @@ function RegistrationStage({ baseUrl }: { baseUrl: string }) {
   const busy = regStatus === 'checking' || regStatus === 'broadcasting';
   const blocked = NET.isMainnet && !ackMainnet;
   const explorerUrl = regTxid ? NET.explorerTxUrl(regTxid) : '';
+  // On the wallet path the action stays DISABLED until a returned PSBT has been validated against
+  // the exact template this page exported: an unchecked transaction can never reach the broadcast.
+  const wallet = signingMethod === 'wallet';
+  const awaitingValidPsbt = wallet && !psbtVerdict?.ok;
 
   return (
     <Card className="space-y-4 p-5">
@@ -341,13 +350,22 @@ function RegistrationStage({ baseUrl }: { baseUrl: string }) {
         </div>
       ) : null}
 
+      {/* The signing-method chooser and, on the wallet path, the two-step round trip. */}
+      <WalletSignPanel baseUrl={baseUrl} />
+
       <div className="flex flex-wrap items-center gap-2">
         <Button
           onClick={() => register(baseUrl, { acknowledgeMainnet: ackMainnet })}
-          disabled={busy || blocked}
+          disabled={busy || blocked || awaitingValidPsbt}
           variant={NET.isMainnet ? 'danger' : 'primary'}
         >
-          {busy ? REG_LABEL[regStatus] : regStatus === 'registered' ? 'Register again' : 'Check funds and register'}
+          {busy
+            ? REG_LABEL[regStatus]
+            : wallet
+              ? BROADCAST_LABEL
+              : regStatus === 'registered'
+                ? 'Register again'
+                : 'Check funds and register'}
         </Button>
         {regStatus === 'registered' && regTxid && explorerUrl ? (
           <a

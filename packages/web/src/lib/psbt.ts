@@ -21,8 +21,16 @@ export type PsbtVerdict =
       toAddress: string | undefined;
       /** The network-serialized signed transaction, ready for the shipped broadcast call. */
       rawHex: string;
+      /**
+       * The transaction id. Readable only here, because it is taken AFTER `finalize()`; asking
+       * for it any earlier throws (see the second trap below).
+       */
+      txid: string;
     }
-  | { ok: false; reason: 'unparseable' | 'mismatched' | 'unsigned' | 'fee-out-of-band' };
+  | { ok: false; reason: 'unparseable' | 'mismatched' | 'unsigned' }
+  // Carries the fee it rejected, because the sentence for this one names the actual number: a
+  // participant cannot check a fee in their wallet without being told which fee we objected to.
+  | { ok: false; reason: 'fee-out-of-band'; feeSats: bigint };
 
 /**
  * Judge a returned PSBT against the exact template this page created.
@@ -91,7 +99,7 @@ export function validateSignedPsbt(
     // (4) The template match already pins the fee; this branch survives so a looser future
     // comparison, or a template built with a different fee, still gets its own honest sentence.
     if (tx.fee > expectedFeeSats) {
-      return { ok: false, reason: 'fee-out-of-band' };
+      return { ok: false, reason: 'fee-out-of-band', feeSats: tx.fee };
     }
     // (5) Everything above passed, so this transaction is the one this page built.
     tx.finalize();
@@ -101,6 +109,7 @@ export function validateSignedPsbt(
       paysSats: tx.getOutput(0).amount ?? 0n,
       toAddress: tx.getOutputAddress(0, network.scureNetwork),
       rawHex: bytesToHex(tx.extract()),
+      txid: tx.id,
     };
   } catch {
     // A PSBT that parsed but cannot be read or finalized is still just a PSBT this app will not

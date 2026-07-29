@@ -10,6 +10,7 @@ import {
   createExternalIdentity,
   createIdentity,
   DEFAULT_NETWORK,
+  exportRegistrationPsbt,
   genesisP2trBeaconAddress,
   hasBakedAggregateBeacon,
   identitySecretHex,
@@ -17,6 +18,9 @@ import {
   importIdentity,
   isExternalIdentity,
   MIN_REGISTRATION_FUNDING_SATS,
+  psbtBase64ToBytes,
+  psbtBytesToBase64,
+  REGISTRATION_FEE_SATS,
   resolveNetwork,
   updateHashBytes,
   updateHashHex,
@@ -49,6 +53,7 @@ import {
   type Utxo,
 } from '../lib/tx-client';
 import { checkEndpoint, confirmTxAt, type EndpointVerdict } from '../lib/esplora';
+import { validateSignedPsbt, type PsbtVerdict } from '../lib/psbt';
 import type { LogEntry, LogLevel, StepKey, StepStatus } from '../lib/types';
 
 /** Connection lifecycle of the in-browser participant. */
@@ -62,6 +67,20 @@ export type RegistrationStatus =
   | 'broadcasting'
   | 'registered'
   | 'failed';
+
+/**
+ * Where the registration transaction gets signed (PART-06, D-21).
+ *
+ * `browser` is the shipped path and stays the default, so a participant who never opens the
+ * chooser sees exactly the flow that shipped. `wallet` hands the transaction out as an unsigned
+ * PSBT and takes a signed one back, so the participant's key never enters this page.
+ *
+ * This covers the REGISTRATION transaction only. The cohort's n-of-n MuSig2 co-signing round
+ * still signs in this browser: `@did-btcr2/aggregation@0.4.0` hard-wires its own key-pair signer
+ * and materializes the raw scalar synchronously, so no external signer can be reached through it.
+ * That limit is stated in the UI rather than left for a participant to discover.
+ */
+export type SigningMethod = 'browser' | 'wallet';
 
 /** Lifecycle of a server-driven DID resolution. */
 export type ResolutionStatus = 'idle' | 'resolving' | 'resolved' | 'failed';
@@ -305,6 +324,33 @@ interface ParticipantState {
   regTxid: string | null;
   regError: string | null;
 
+  /**
+   * The external-signer round trip for the registration transaction (PART-06, D-21).
+   *
+   * EVERY field below is EPHEMERAL by construction. Nothing here is written to local storage,
+   * session storage or IndexedDB, and all of it is cleared on every teardown path (it lives in
+   * {@link INITIAL_OUTCOME}), which is what makes the panel's "nothing from this step is saved"
+   * warning a fact about the code rather than a promise about intent (T-05-12-02). A pasted PSBT
+   * is untrusted third-party input and a participant's own transaction; neither belongs in
+   * durable browser storage.
+   */
+  signingMethod: SigningMethod;
+  /** The unsigned PSBT handed out, standard base64. Null until the wallet path exports one. */
+  psbtBase64: string | null;
+  /**
+   * The witness-free unsigned transaction bytes of that export, hex. The ONLY thing a returned
+   * PSBT is compared against, and the reason a tampered PSBT cannot reach broadcast.
+   */
+  psbtTemplateHex: string | null;
+  /** The base64 the participant pasted or uploaded back. Empty until something comes back. */
+  psbtReturned: string;
+  /** The verdict on {@link psbtReturned}; null while nothing has been returned. */
+  psbtVerdict: PsbtVerdict | null;
+  /** True while the unsigned PSBT is being built (it needs a funding read first). */
+  psbtExporting: boolean;
+  /** Why the export could not be built (no funds yet, or the chain read failed). */
+  psbtExportError: string | null;
+
   resolveStatus: ResolutionStatus;
   resolution: ResolveResponse | null;
   resolveError: string | null;
@@ -416,6 +462,27 @@ interface ParticipantState {
    * gate beneath the UI, driven by the runtime `isMainnet` flag.
    */
   register(baseUrl: string, opts?: { acknowledgeMainnet?: boolean }): Promise<void>;
+  /**
+   * Choose where the registration transaction gets signed (PART-06). Switching ALWAYS drops any
+   * exported or returned PSBT: those are facts about one round trip, and a stale verdict beside a
+   * newly chosen path is exactly the kind of leftover that gets acted on by mistake.
+   */
+  setSigningMethod(method: SigningMethod): void;
+  /**
+   * Build the unsigned registration PSBT for the participant to sign elsewhere. Reads the funding
+   * UTXO through the participant's own chain source when they set one (PART-05), using the SAME
+   * selection rule {@link register} uses, so the transaction handed out spends the coin the
+   * registration would have spent.
+   */
+  exportPsbt(baseUrl: string): Promise<void>;
+  /**
+   * Take a signed PSBT back, as pasted base64 or as the raw bytes of an uploaded `.psbt` file,
+   * and judge it against the exact template this page exported. Never throws and never
+   * broadcasts: it only produces the verdict the panel renders and the broadcast gate reads.
+   */
+  submitSignedPsbt(input: string | Uint8Array): void;
+  /** Drop the whole round trip (both directions) without touching anything else. */
+  clearPsbt(): void;
   /** Resolve this DID via the coordinator (`GET /resolve/:did`) and keep the document. */
   resolve(baseUrl: string): Promise<void>;
   /**
@@ -1163,6 +1230,17 @@ const INITIAL_OUTCOME = {
   regStatus: 'idle' as RegistrationStatus,
   regTxid: null,
   regError: null,
+  // The external-signer round trip (PART-06). It lives HERE, in the per-round slice, precisely
+  // so every teardown path the store already has clears it: a pasted PSBT and the transaction it
+  // carries are facts about ONE registration attempt, and nothing about them may outlive it.
+  // The default is the shipped browser path, so a reset also restores the shipped flow.
+  signingMethod: 'browser' as SigningMethod,
+  psbtBase64: null,
+  psbtTemplateHex: null,
+  psbtReturned: '',
+  psbtVerdict: null as PsbtVerdict | null,
+  psbtExporting: false,
+  psbtExportError: null,
   resolveStatus: 'idle' as ResolutionStatus,
   resolution: null,
   resolveError: null,
@@ -1174,6 +1252,21 @@ const INITIAL_OUTCOME = {
 /** Clear the module-level captured artifacts (paired with an INITIAL_OUTCOME reset). */
 function clearCaptured(): void {
   captured = null;
+}
+
+/**
+ * Pick the UTXO the registration transaction spends: the largest one that can cover the fee plus
+ * a dust-safe change output. Exported and shared by BOTH the register path and the unsigned-PSBT
+ * export, because the transaction handed to a wallet has to spend the coin the registration would
+ * have spent; two copies of this rule is exactly how the two would drift apart.
+ *
+ * Deliberately largest-first rather than the library's deepest-first selection (a Phase 4
+ * upstream finding): a participant's beacon address is funded by hand, so the biggest coin is the
+ * one they meant to use.
+ */
+export function selectFundingUtxo(utxos: Utxo[]): Utxo | undefined {
+  const min = Number(MIN_REGISTRATION_FUNDING_SATS);
+  return utxos.filter((u) => u.value >= min).sort((a, b) => b.value - a.value)[0];
 }
 
 let logSeq = 0;
@@ -2133,10 +2226,8 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         return;
       }
 
+      const fundable = selectFundingUtxo(utxos);
       const min = Number(MIN_REGISTRATION_FUNDING_SATS);
-      const fundable = utxos
-        .filter((u) => u.value >= min)
-        .sort((a, b) => b.value - a.value)[0];
       if (!fundable) {
         set({ regStatus: 'awaiting-funds' });
         append('warn', `no spendable funds at ${beaconRegAddress}; fund it (>= ${min} sats) then retry`);
@@ -2144,25 +2235,47 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       }
 
       set({ regStatus: 'broadcasting' });
-      append('info', `funded (${fundable.value} sats); building + signing registration tx`);
       let rawHex: string;
       let txid: string;
-      try {
-        const tx = buildSingletonRegistrationTx({
-          keys: identity.keys,
-          utxo: fundable,
-          updateHash: captured.updateHashBytes,
-          // Sign for the coordinator's runtime network so the funded genesis beacon
-          // address and the tx's P2TR script agree with the chain being spent on.
-          network: resolveNetwork(get().network),
-        });
-        rawHex = tx.rawHex;
-        txid = tx.txid;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        set({ regStatus: 'failed', regError: msg });
-        append('bad', `could not build registration tx: ${msg}`);
-        return;
+      // The ONE fork in this path, and it is deliberately as late as possible: every guard, the
+      // chain source and the funding check above are shared, so the wallet path cannot route
+      // around the ADR 0010 acknowledgment, the re-entrancy guard or the funding minimum
+      // (T-05-12-03). Below the fork, both paths broadcast through the SAME call.
+      if (get().signingMethod === 'wallet') {
+        // Re-read the verdict from the store rather than taking bytes from a caller: there is no
+        // parameter through which unvalidated hex could reach the broadcast at all, so the only
+        // transaction this path can send is one that matched the exported template byte for byte.
+        const verdict = get().psbtVerdict;
+        if (!verdict?.ok) {
+          set({
+            regStatus: 'failed',
+            regError: 'Bring back a signed PSBT that matches this transaction before broadcasting.',
+          });
+          append('warn', 'registration blocked: no validated signed PSBT');
+          return;
+        }
+        rawHex = verdict.rawHex;
+        txid = verdict.txid;
+        append('info', `funded (${fundable.value} sats); broadcasting the externally-signed tx`);
+      } else {
+        append('info', `funded (${fundable.value} sats); building + signing registration tx`);
+        try {
+          const tx = buildSingletonRegistrationTx({
+            keys: identity.keys,
+            utxo: fundable,
+            updateHash: captured.updateHashBytes,
+            // Sign for the coordinator's runtime network so the funded genesis beacon
+            // address and the tx's P2TR script agree with the chain being spent on.
+            network: resolveNetwork(get().network),
+          });
+          rawHex = tx.rawHex;
+          txid = tx.txid;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          set({ regStatus: 'failed', regError: msg });
+          append('bad', `could not build registration tx: ${msg}`);
+          return;
+        }
       }
 
       try {
@@ -2180,6 +2293,120 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         // Keep the locally-built txid so the user can look it up if it did land.
         set({ regTxid: txid });
       }
+    },
+
+    setSigningMethod(method) {
+      if (get().signingMethod === method) {
+        return;
+      }
+      // Switching drops the round trip in BOTH directions. A PSBT exported for one path and a
+      // verdict from the other are the kind of leftovers that get acted on by accident.
+      set({
+        signingMethod: method,
+        psbtBase64: null,
+        psbtTemplateHex: null,
+        psbtReturned: '',
+        psbtVerdict: null,
+        psbtExporting: false,
+        psbtExportError: null,
+      });
+    },
+
+    async exportPsbt(baseUrl) {
+      const { identity, did, beaconRegAddress, psbtExporting } = get();
+      // Same re-entrancy discipline as register(): one funding read at a time.
+      if (psbtExporting || !identity || !did || !beaconRegAddress || !captured || captured.did !== did) {
+        return;
+      }
+      set({ psbtExporting: true, psbtExportError: null });
+      // The participant's own chain source when they set one (PART-05): the export must read the
+      // same chain the broadcast will use, or it would hand out a transaction spending a coin
+      // that does not exist where the transaction lands.
+      const endpoint = chainEndpointFor(get());
+      let utxos: Utxo[];
+      try {
+        utxos = await fetchUtxos(baseUrl, beaconRegAddress, endpoint);
+      } catch (err) {
+        const msg = err instanceof TxProxyError ? err.message : String(err);
+        set({ psbtExporting: false, psbtExportError: msg });
+        append('bad', `could not read funds for the unsigned PSBT: ${msg}`);
+        return;
+      }
+      const fundable = selectFundingUtxo(utxos);
+      if (!fundable) {
+        set({
+          psbtExporting: false,
+          psbtExportError: `No spendable funds at that address yet. Send at least ${MIN_REGISTRATION_FUNDING_SATS.toString()} sats in one payment, then try again.`,
+        });
+        return;
+      }
+      try {
+        const { base64, templateHex } = exportRegistrationPsbt({
+          keys: identity.keys,
+          utxo: fundable,
+          updateHash: captured.updateHashBytes,
+          // The coordinator's runtime network, exactly as the signing path derives it.
+          network: resolveNetwork(get().network),
+        });
+        set({
+          psbtBase64: base64,
+          psbtTemplateHex: templateHex,
+          psbtExporting: false,
+          psbtExportError: null,
+          // A fresh export invalidates whatever came back for the previous one.
+          psbtReturned: '',
+          psbtVerdict: null,
+        });
+        append('info', `built an unsigned registration PSBT spending ${fundable.value} sats`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        set({ psbtExporting: false, psbtExportError: msg });
+        append('bad', `could not build the unsigned PSBT: ${msg}`);
+      }
+    },
+
+    submitSignedPsbt(input) {
+      const templateHex = get().psbtTemplateHex;
+      if (!templateHex) {
+        // Nothing was exported, so there is nothing to compare against and no honest verdict to
+        // give. The panel does not offer this step before an export, so this is belt and braces.
+        return;
+      }
+      const text = typeof input === 'string' ? input : psbtBytesToBase64(input);
+      if (text.trim().length === 0) {
+        // An emptied field is not a rejected PSBT: clear the verdict rather than accuse.
+        set({ psbtReturned: text, psbtVerdict: null });
+        return;
+      }
+      const bytes = typeof input === 'string' ? psbtBase64ToBytes(input) : input;
+      if (!bytes) {
+        set({ psbtReturned: text, psbtVerdict: { ok: false, reason: 'unparseable' } });
+        return;
+      }
+      const verdict = validateSignedPsbt(
+        bytes,
+        templateHex,
+        REGISTRATION_FEE_SATS,
+        resolveNetwork(get().network),
+      );
+      set({ psbtReturned: text, psbtVerdict: verdict });
+      append(
+        verdict.ok ? 'good' : 'warn',
+        verdict.ok
+          ? `signed PSBT checks out (${verdict.txid})`
+          : `signed PSBT rejected (${verdict.reason})`,
+      );
+    },
+
+    clearPsbt() {
+      set({
+        psbtBase64: null,
+        psbtTemplateHex: null,
+        psbtReturned: '',
+        psbtVerdict: null,
+        psbtExporting: false,
+        psbtExportError: null,
+      });
     },
 
     async resolve(baseUrl) {
