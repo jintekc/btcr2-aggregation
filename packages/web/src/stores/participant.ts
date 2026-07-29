@@ -41,7 +41,14 @@ import {
   type ResolveResponse,
 } from '../lib/resolve';
 import { buildSidecar, didSlug, downloadJson, type Sidecar } from '../lib/sidecar';
-import { broadcastTx, fetchUtxos, TxProxyError, type Utxo } from '../lib/tx-client';
+import {
+  broadcastTx,
+  fetchUtxos,
+  TxProxyError,
+  type ChainEndpoint,
+  type Utxo,
+} from '../lib/tx-client';
+import { checkEndpoint, confirmTxAt, type EndpointVerdict } from '../lib/esplora';
 import type { LogEntry, LogLevel, StepKey, StepStatus } from '../lib/types';
 
 /** Connection lifecycle of the in-browser participant. */
@@ -128,6 +135,39 @@ interface ParticipantState {
    * anonymous surface never sends the operator session cookie.
    */
   publicStatus?: ServiceStatus;
+  /**
+   * The participant's OWN esplora endpoint, once one has been supplied AND accepted by
+   * the chain guard (PART-05, D-20). `null` means the shipped same-origin proxy, which
+   * is the zero-config default and needs no setup (ADR 0003).
+   *
+   * A refused endpoint never lands here: it leaves {@link chainEndpointVerdict} holding
+   * its specific reason and this field untouched, so "an endpoint is active" and "an
+   * endpoint was typed" can never be confused for one another.
+   */
+  chainEndpoint: string | null;
+  /**
+   * The last verdict on a supplied endpoint, or `null` before any has been tried. Its
+   * four failure members stay four all the way to the copy: a participant deciding what
+   * to do next needs to know whether the endpoint refused their browser, answered about
+   * another chain, could not be reached, or was not a URL.
+   */
+  chainEndpointVerdict: EndpointVerdict | null;
+  /** True while the chain probe is in flight; the field disables and no claim is made yet. */
+  chainEndpointProbing: boolean;
+  /**
+   * The opt-in WITHIN the opt-in (D-20): send the registration transaction to the
+   * participant's endpoint rather than relaying it through the service. Off by default,
+   * and it cannot be on without {@link chainEndpoint}, because a mis-set endpoint must
+   * never be able to silently swallow a real transaction.
+   */
+  broadcastDirect: boolean;
+  /**
+   * Whether the participant's OWN endpoint sees the beacon transaction in a block, or
+   * `null` when no independent check has run. This is an ADDITIONAL confirmation of a
+   * txid the service reported, never a replacement for the service's anchor read: that
+   * read is keyed by COHORT id, and an esplora endpoint has no notion of a cohort.
+   */
+  endpointTxConfirmed: boolean | null;
   /** Load state of the runtime network config; gates identity generation. */
   configStatus: ConfigStatus;
   /** Onboarding model of the current identity: KEY (`k1`) or EXTERNAL (`x1`). */
@@ -378,6 +418,38 @@ interface ParticipantState {
   register(baseUrl: string, opts?: { acknowledgeMainnet?: boolean }): Promise<void>;
   /** Resolve this DID via the coordinator (`GET /resolve/:did`) and keep the document. */
   resolve(baseUrl: string): Promise<void>;
+  /**
+   * Probe `raw` and, only if it is on THIS service's chain, make it the participant's
+   * chain-read source (PART-05, D-20). A refused endpoint is not activated and its
+   * specific verdict is kept for the copy; nothing about the shipped path changes.
+   */
+  useChainEndpoint(raw: string): Promise<void>;
+  /**
+   * The explicit switch back to this service's chain reads. Explicit because the app
+   * never decides this on the participant's behalf: they chose a trust source, so
+   * leaving it is their act, not a silent recovery from a failed read.
+   */
+  clearChainEndpoint(): void;
+  /** Turn the second (broadcast) opt-in on or off. A no-op without an active endpoint. */
+  setBroadcastDirect(on: boolean): void;
+}
+
+/**
+ * Build the {@link ChainEndpoint} parameter the chain calls take, from the participant's
+ * current choice. The ONE place that value is constructed, so there is no second reading
+ * of "is the override on" anywhere in the store.
+ *
+ * `undefined` when no endpoint is active, which is what makes the zero-config path
+ * byte-identical to the shipped one rather than merely equivalent to it.
+ */
+export function chainEndpointFor(state: {
+  chainEndpoint: string | null;
+  broadcastDirect: boolean;
+}): ChainEndpoint | undefined {
+  if (!state.chainEndpoint) {
+    return undefined;
+  }
+  return { esploraBase: state.chainEndpoint, broadcastDirect: state.broadcastDirect };
 }
 
 // The live participant (transport + runner + event emitters) is intentionally
@@ -1203,6 +1275,14 @@ export const useParticipant = create<ParticipantState>((set, get) => {
     network: DEFAULT_NETWORK,
     serviceName: null,
     publicStatus: undefined,
+    // The chain-endpoint choice is a per-browser preference, not per-round state, so it
+    // deliberately does NOT live in INITIAL_OUTCOME: a participant who set an endpoint
+    // keeps it across cohorts, exactly as they would expect a setting to behave.
+    chainEndpoint: null,
+    chainEndpointVerdict: null,
+    chainEndpointProbing: false,
+    broadcastDirect: false,
+    endpointTxConfirmed: null,
     configStatus: 'loading',
     idType: 'KEY',
     secret: null,
@@ -1706,6 +1786,19 @@ export const useParticipant = create<ParticipantState>((set, get) => {
             }
             anchorFailures = 0;
             set({ anchor: dto, unreachable: false });
+            // ADDITIONAL, never a replacement: this poll still reads the SERVICE's anchor
+            // model, because that model is keyed by cohort id and an esplora endpoint has
+            // no notion of a cohort (05-RESEARCH Pattern 7). All the participant's own
+            // endpoint can add is an independent answer about a txid the service already
+            // named, so it runs once per txid and only while an endpoint is active.
+            const { chainEndpoint, endpointTxConfirmed } = get();
+            if (chainEndpoint && dto.txid && endpointTxConfirmed === null) {
+              void confirmTxAt(chainEndpoint, dto.txid).then((confirmed) => {
+                if (epoch === anchorEpoch) {
+                  set({ endpointTxConfirmed: confirmed });
+                }
+              });
+            }
             // Auto-resolve exactly once when the stage completes (D-28): hermetic signed
             // (enabled:false) OR live confirmed. resolve() is a read, so automation is safe.
             if (!autoResolved && shouldAutoResolve(dto)) {
@@ -2018,11 +2111,21 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         return;
       }
 
+      // The participant's own chain source, if they chose one (PART-05, D-20). Built ONCE
+      // here and threaded as a PARAMETER into the two chain calls below. Deliberately
+      // read AFTER all three guards above: the endpoint changes where the chain is read,
+      // never whether the acknowledgment, the re-entrancy guard or the funding check run.
+      const endpoint = chainEndpointFor(get());
       set({ regStatus: 'checking', regError: null });
-      append('info', `checking ${beaconRegAddress} for funds`);
+      append(
+        'info',
+        endpoint?.esploraBase
+          ? `checking ${beaconRegAddress} for funds at ${endpoint.esploraBase}`
+          : `checking ${beaconRegAddress} for funds`,
+      );
       let utxos: Utxo[];
       try {
-        utxos = await fetchUtxos(baseUrl, beaconRegAddress);
+        utxos = await fetchUtxos(baseUrl, beaconRegAddress, endpoint);
       } catch (err) {
         const msg = err instanceof TxProxyError ? err.message : String(err);
         set({ regStatus: 'failed', regError: msg });
@@ -2063,7 +2166,11 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       }
 
       try {
-        const broadcastTxid = await broadcastTx(baseUrl, rawHex);
+        // Direct only when BOTH opt-ins are on; otherwise this is the shipped relay, and
+        // a failure here is reported as-is. Rerouting a failed direct broadcast through
+        // the service would send a real transaction down a path the participant did not
+        // choose, which is the repudiation risk T-05-11-05 exists to close.
+        const broadcastTxid = await broadcastTx(baseUrl, rawHex, endpoint);
         set({ regStatus: 'registered', regTxid: broadcastTxid });
         append('good', `broadcast first-update registration ${broadcastTxid}`);
       } catch (err) {
@@ -2099,6 +2206,49 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         set({ resolveStatus: 'failed', resolveError: msg });
         append('bad', `resolve failed: ${msg}`);
       }
+    },
+
+    async useChainEndpoint(raw) {
+      // The field disables and the line reads a neutral in-flight label while this runs:
+      // no result is claimed until the probe returns (UI-SPEC E16 loading).
+      set({ chainEndpointProbing: true, chainEndpointVerdict: null });
+      const verdict = await checkEndpoint(raw, get().network);
+      if (verdict.kind === 'ok') {
+        set({
+          chainEndpoint: verdict.base,
+          chainEndpointVerdict: verdict,
+          chainEndpointProbing: false,
+          endpointTxConfirmed: null,
+        });
+        append('good', `reading the chain from ${verdict.base}`);
+        return;
+      }
+      // A refused endpoint is NOT activated, and nothing about the current path changes.
+      // The verdict is kept so the surface can say which of the four things happened.
+      set({ chainEndpointVerdict: verdict, chainEndpointProbing: false });
+      append('warn', `chain endpoint not used (${verdict.kind})`);
+    },
+
+    clearChainEndpoint() {
+      // The second opt-in cannot outlive the opt-in it sits inside, and the independent
+      // confirmation was a fact about an endpoint that is no longer in use.
+      set({
+        chainEndpoint: null,
+        chainEndpointVerdict: null,
+        chainEndpointProbing: false,
+        broadcastDirect: false,
+        endpointTxConfirmed: null,
+      });
+      append('info', 'reading the chain through this service');
+    },
+
+    setBroadcastDirect(on) {
+      // Guarded rather than trusted: broadcasting "directly" with no endpoint would mean
+      // broadcasting nowhere, so the flag simply cannot be raised on its own.
+      if (on && !get().chainEndpoint) {
+        return;
+      }
+      set({ broadcastDirect: on });
     },
   };
 });
