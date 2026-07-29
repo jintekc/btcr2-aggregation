@@ -1,11 +1,6 @@
-import { useEffect, useState } from 'react';
 import { resolveNetwork } from '@btcr2-aggregation/shared';
 import { Card, StatusDot } from '../../ui/primitives';
-import { fetchStatus, type ServiceStatus } from '../../lib/directory';
 import { useParticipant } from '../../stores/participant';
-
-/** Status poll cadence (matches PublicStatus): 10s bounded fetch, no new dependency. */
-const POLL_MS = 10000;
 
 /**
  * The anonymous service-identity header (D-02, PART-01). The single Display focal heading is
@@ -14,38 +9,20 @@ const POLL_MS = 10000;
  * active-network chip (including the mainnet `· REAL FUNDS` variant), and the truthful
  * open-cohort count from the same public `GET /v1/status` the directory derives from.
  *
- * Reads without operator credentials (the re-exported {@link fetchStatus} uses
- * `credentials: 'omit'`) and renders nothing until the first successful fetch, so a briefly
- * unreachable service never flashes misleading state.
+ * Reads without operator credentials (the store's public status read uses `credentials: 'omit'`)
+ * and renders nothing until the first successful fetch, so a briefly unreachable service never
+ * flashes misleading state.
+ *
+ * The status itself comes from the participant store rather than a local poll of this component's
+ * own (SVC-04, 05-05): {@link BrowseView} drives ONE public status read that feeds both this
+ * card's open-cohort count and the directory's paused notice. Two independent polls of the same
+ * endpoint would be two snapshots that could disagree about the same service on the same screen.
  */
-export function ServiceIdentityHeader({ baseUrl }: { baseUrl: string }) {
-  const [status, setStatus] = useState<ServiceStatus | undefined>(undefined);
+export function ServiceIdentityHeader() {
+  const status = useParticipant((s) => s.publicStatus);
   // Optional operator-supplied service name (D-51), read from the same GET /v1/config load the
   // App performs on mount; rendered as plain auto-escaped text beside the origin, no edit surface.
   const serviceName = useParticipant((s) => s.serviceName);
-
-  useEffect(() => {
-    let active = true;
-    const load = () => {
-      fetchStatus(baseUrl)
-        .then((s) => {
-          if (active) {
-            setStatus(s);
-          }
-        })
-        .catch(() => {
-          if (active) {
-            setStatus(undefined);
-          }
-        });
-    };
-    load();
-    const timer = setInterval(load, POLL_MS);
-    return () => {
-      active = false;
-      clearInterval(timer);
-    };
-  }, [baseUrl]);
 
   if (!status) {
     return null;

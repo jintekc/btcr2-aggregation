@@ -8,6 +8,9 @@ import { DirectoryList } from './DirectoryList';
 import { JoinIdentityStep } from './JoinIdentityStep';
 import { ServiceIdentityHeader } from './ServiceIdentityHeader';
 
+/** Public status poll cadence, matching the cadence the identity header already used. */
+const STATUS_POLL_MS = 10000;
+
 /**
  * The participant landing composition (D-13) and the browse-and-pick loop (PART-02/PART-03).
  * The directory is the ONLY entry path (D-31, criterion 4): the standalone stepper is gone.
@@ -45,6 +48,20 @@ export function BrowseView({
   const joinClosed = useParticipant((s) => s.joinClosed);
   const error = useParticipant((s) => s.error);
   const leave = useParticipant((s) => s.leave);
+  // The SERVED advertising-pause bit (SVC-04, D-07). `undefined` until the first public status
+  // read lands, and back to `undefined` whenever one fails, so the directory below can never
+  // render a paused claim from missing or stale data (T-05-05-01).
+  const paused = useParticipant((s) => s.publicStatus?.paused);
+  const pollPublicStatus = useParticipant((s) => s.pollPublicStatus);
+
+  // The public status poll lives here rather than in the header card, so the ONE anonymous read
+  // feeds both the header's open-cohort count and the directory's paused notice. Two reads would
+  // be two snapshots that could disagree about the same service on the same screen.
+  useEffect(() => {
+    void pollPublicStatus(baseUrl);
+    const timer = setInterval(() => void pollPublicStatus(baseUrl), STATUS_POLL_MS);
+    return () => clearInterval(timer);
+  }, [pollPublicStatus, baseUrl]);
 
   // A joined cohort lifecycle is active from the moment the join is in flight through completion.
   // Terminal failures (joinClosed / general failed) are handled by their own cards below and are
@@ -83,7 +100,7 @@ export function BrowseView({
   if (joinClosed) {
     return (
       <div className="space-y-8">
-        <ServiceIdentityHeader baseUrl={baseUrl} />
+        <ServiceIdentityHeader />
         <Card className="space-y-3 border-bad/40 bg-bad/10 p-5">
           <p className="text-sm text-bad">
             {error ?? 'That cohort just filled or closed. Pick another from the directory.'}
@@ -101,7 +118,7 @@ export function BrowseView({
   if (status === 'failed' && !joinClosed) {
     return (
       <div className="space-y-8">
-        <ServiceIdentityHeader baseUrl={baseUrl} />
+        <ServiceIdentityHeader />
         <Card className="space-y-3 border-bad/40 bg-bad/10 p-5">
           <h2 className="text-xl font-bold tracking-tight text-ink">Join failed</h2>
           <p className="text-sm text-bad">
@@ -122,7 +139,7 @@ export function BrowseView({
       const stageSettled = stage === 'signed' || stage === 'anchored' || stage === 'resolved';
       return (
         <div className="space-y-8">
-          <ServiceIdentityHeader baseUrl={baseUrl} />
+          <ServiceIdentityHeader />
           <button
             type="button"
             onClick={() => onView('cohort')}
@@ -133,7 +150,7 @@ export function BrowseView({
           </button>
           {/* No onPick while a lifecycle is active: Join is disabled on every row (D-04). The
               seated row surfaces "You're in this cohort" + View cohort via onView. */}
-          <DirectoryList baseUrl={baseUrl} onView={() => onView('cohort')} />
+          <DirectoryList baseUrl={baseUrl} onView={() => onView('cohort')} paused={paused} />
         </div>
       );
     }
@@ -144,7 +161,7 @@ export function BrowseView({
   if (pickedRow) {
     return (
       <div className="space-y-8">
-        <ServiceIdentityHeader baseUrl={baseUrl} />
+        <ServiceIdentityHeader />
         <Card className="p-5">
           <JoinIdentityStep baseUrl={baseUrl} row={pickedRow} onCancel={() => setPickedRow(null)} />
         </Card>
@@ -155,8 +172,8 @@ export function BrowseView({
   // Default: browse. Only an isJoinable row fires onPick.
   return (
     <div className="space-y-8">
-      <ServiceIdentityHeader baseUrl={baseUrl} />
-      <DirectoryList baseUrl={baseUrl} onPick={setPickedRow} />
+      <ServiceIdentityHeader />
+      <DirectoryList baseUrl={baseUrl} onPick={setPickedRow} paused={paused} />
     </div>
   );
 }

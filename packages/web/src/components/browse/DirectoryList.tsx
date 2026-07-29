@@ -1,10 +1,32 @@
 import { useEffect, useState } from 'react';
 import { Card, SectionTitle } from '../../ui/primitives';
-import { fetchDirectory, type DirectoryCohortDTO } from '../../lib/directory';
+import { directoryNotice, fetchDirectory, type DirectoryCohortDTO } from '../../lib/directory';
 import { CohortRow } from './CohortRow';
 
 /** Directory poll cadence (D-05): ~5s so a freshly-advertised cohort appears on its own. */
 const POLL_MS = 5000;
+
+/**
+ * The paused notice shown ABOVE the list while cohorts are still open (D-07, UI-SPEC E5
+ * populated). Its second half is what makes the notice actionable rather than merely informative:
+ * pause is drain mode, so everything already advertised is still genuinely joinable.
+ */
+const PAUSED_WITH_ROWS =
+  "This service isn't offering new cohorts right now. The cohorts below are already open, and you can still join one.";
+
+/**
+ * The paused empty-state body. Deliberately DIFFERENT wording from the inherited idle body below
+ * ("advertising any cohorts" vs "offering new cohorts"), because the two states are otherwise
+ * indistinguishable to a stranger: both show zero open cohorts. A participant must be able to tell
+ * that the operator CHOSE to stop offering cohorts, rather than concluding the service is dead.
+ */
+const PAUSED_EMPTY_BODY = "This service isn't offering new cohorts right now. Check back soon.";
+
+/** The inherited idle empty-state body, unchanged, so a paused service never reads as an idle one. */
+const IDLE_EMPTY_BODY = "This service isn't advertising any cohorts right now. Check back soon.";
+
+/** The shared empty-state heading, identical in both variants; only the body differs. */
+const EMPTY_HEADING = 'No open cohorts right now';
 
 /** The four mutually-exclusive render states of the directory (D-12). */
 export type DirectoryView = 'loading' | 'rows' | 'empty' | 'unreachable';
@@ -58,6 +80,7 @@ export function DirectoryList({
   baseUrl,
   onPick,
   onView,
+  paused,
 }: {
   baseUrl: string;
   onPick?: (row: DirectoryCohortDTO) => void;
@@ -67,6 +90,13 @@ export function DirectoryList({
    * `onPick` at the same time disables Join on every row (one cohort at a time).
    */
   onView?: () => void;
+  /**
+   * The SERVED advertising-pause bit from `GET /v1/status` (SVC-04, D-07), threaded down from
+   * {@link BrowseView} which owns the public status read. `undefined` means UNKNOWN (no status
+   * read has landed, or the last one failed), and the notice is suppressed entirely in that case:
+   * a paused claim is only ever made from a bit this service actually reported.
+   */
+  paused?: boolean;
 }) {
   const [rows, setRows] = useState<DirectoryCohortDTO[] | undefined>(undefined);
   const [reachable, setReachable] = useState(true);
@@ -93,6 +123,11 @@ export function DirectoryList({
   }, [baseUrl]);
 
   const view = directoryView(reachable, rows);
+  // Which paused notice (if any) to render. Computed from the SERVED bit plus the directory's own
+  // reachability and row count, so an unreachable directory and an unknown status both fail closed
+  // (see `directoryNotice`). The `loading` view returns before this is ever consulted, so a notice
+  // can never flash over a directory that has not loaded (UI-SPEC E5 loading).
+  const notice = directoryNotice({ paused, rowCount: rows?.length ?? 0, unreachable: !reachable });
 
   if (view === 'unreachable') {
     return (
@@ -110,11 +145,13 @@ export function DirectoryList({
   }
 
   if (view === 'empty') {
+    // Same heading, different body: the only thing that distinguishes a deliberate pause from an
+    // idle service is these words, so the paused variant is not a decoration on the idle one.
     return (
       <Card className="space-y-1 p-5">
-        <p className="text-sm text-ink">No open cohorts right now</p>
+        <p className="text-sm text-ink">{EMPTY_HEADING}</p>
         <p className="text-sm text-muted">
-          This service isn't advertising any cohorts right now. Check back soon.
+          {notice === 'paused-empty' ? PAUSED_EMPTY_BODY : IDLE_EMPTY_BODY}
         </p>
       </Card>
     );
@@ -124,6 +161,14 @@ export function DirectoryList({
 
   return (
     <div className="space-y-4">
+      {/* The notice sits ABOVE the heading and the list KEEPS rendering below it (UI-SPEC E5
+          populated): pausing does not retract what is already advertised, so suppressing the rows
+          here would hide cohorts a participant can still join. */}
+      {notice === 'paused-with-rows' ? (
+        <Card className="p-5">
+          <p className="text-sm text-ink">{PAUSED_WITH_ROWS}</p>
+        </Card>
+      ) : null}
       <SectionTitle>Open cohorts</SectionTitle>
       <div className="space-y-3">
         {ordered.map((row) => (

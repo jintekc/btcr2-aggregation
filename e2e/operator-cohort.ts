@@ -881,6 +881,218 @@ export async function runCancelLeg(options: OperatorCohortOptions = {}): Promise
   }
 }
 
+/**
+ * The SVC-04 pause leg: prove that advertising DRAIN MODE is a drain and not a kill switch, end to
+ * end over real HTTP.
+ *
+ * The distinction is the whole product claim, and it is only provable from the outside. A pause
+ * that quietly took the public directory down with it would look identical from the gated side
+ * (the operator sees "paused" either way), so this leg asserts the participant-facing half:
+ *
+ *  1. `GET /v1/status` reports `paused: true` while STILL reporting `openCohorts: 1`. Those two
+ *     facts together are exactly what the public paused notice renders, and they are the reason
+ *     the server serves a paused bit at all - a paused service and an idle one both show zero open
+ *     cohorts, so the bit cannot be inferred from the count.
+ *  2. A FRESHLY constructed participant still seats in the cohort advertised BEFORE the pause. A
+ *     participant started earlier already holds the advert and would seat regardless, which is the
+ *     false green this leg exists to avoid (the same discipline as the cancel leg above).
+ *  3. A NEW advertise is refused with 409, never a silent no-op and never a false 200: the
+ *     operator must be able to tell "I am draining" from "that draft is gone".
+ *  4. Resume restores both the public bit and the ability to advertise.
+ *
+ * Hermetic by construction (no live, no chain): the cohort is size 2 and only one participant
+ * joins, so nothing reaches signing and the assertions never race a completion.
+ */
+export async function runPauseLeg(options: OperatorCohortOptions = {}): Promise<string[]> {
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const log = options.quiet ? () => {} : (msg: string) => console.log(msg);
+  const problems: string[] = [];
+  const fail = (problem: string): void => {
+    problems.push(problem);
+  };
+
+  const service = createService({
+    identity: createIdentity(),
+    config: buildCohortConfig(THRESHOLD, 'CASBeacon'),
+    operatorPassword: OPERATOR_PASSWORD,
+    operatorCookieSecure: false,
+  });
+  service.runner.on('error', (err) => log(`[pause] service error: ${err.message}`));
+
+  const { baseUrl } = await service.start(options.port ?? 0);
+  log(`[pause] service listening on ${baseUrl}`);
+
+  const participants: ReturnType<typeof createParticipant>[] = [];
+  try {
+    const loginRes = await fetch(`${baseUrl}/v1/operator/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: OPERATOR_PASSWORD }),
+    });
+    const setCookie = loginRes.headers.getSetCookie().find((c) => c.startsWith('operator_session='));
+    await loginRes.text();
+    if (loginRes.status !== 200 || !setCookie) {
+      fail(`[pause] operator login should be 200 with a session cookie, got ${loginRes.status}`);
+      return problems;
+    }
+    const cookie = setCookie.split(';')[0];
+
+    /** Create a draft; returns its draft id. */
+    const createDraft = async (): Promise<string> => {
+      const res = await fetch(`${baseUrl}/v1/operator/cohorts`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie },
+        body: JSON.stringify({ beaconType: 'CASBeacon', size: THRESHOLD, threshold: THRESHOLD }),
+      });
+      return ((await res.json()) as OperatorCohortDTO).draftId;
+    };
+
+    /* ---- Advertise cohort A BEFORE the pause. ---- */
+    const draftA = await createDraft();
+    const advertiseA = await fetch(`${baseUrl}/v1/operator/cohorts/${draftA}/advertise`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+    if (advertiseA.status !== 200) {
+      fail(`[pause] advertising before the pause should be 200, got ${advertiseA.status}`);
+      return problems;
+    }
+    const cohortA = ((await advertiseA.json()) as OperatorCohortDTO).draftId;
+    log(`[pause] advertised cohort A as ${cohortA} while running`);
+
+    // A draft created before the pause, left un-advertised, so the refusal below has a real target.
+    const draftB = await createDraft();
+
+    /* ---- Pause. ---- */
+    const pauseRes = await fetch(`${baseUrl}/v1/operator/advertising/pause`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+    if (pauseRes.status !== 200) {
+      fail(`[pause] pause should be 200, got ${pauseRes.status}`);
+      return problems;
+    }
+    const pauseBody = (await pauseRes.json()) as { paused?: unknown };
+    if (pauseBody.paused !== true) {
+      fail(`[pause] pause should return the resulting state paused:true, got ${JSON.stringify(pauseBody)}`);
+    }
+
+    /* ---- The public claim: paused, yet STILL offering what is already open. ---- */
+    const paused = (await (await fetch(`${baseUrl}/v1/status`)).json()) as ServiceStatusDTO;
+    if (paused.paused !== true) {
+      fail(`[pause] GET /v1/status should report paused:true while paused, got ${String(paused.paused)}`);
+    }
+    if (paused.openCohorts !== 1) {
+      fail(
+        `[pause] a paused service must STILL count the cohort advertised before the pause: ` +
+          `expected openCohorts 1, got ${paused.openCohorts}`,
+      );
+    }
+    const listedWhilePaused = (await (
+      await fetch(`${baseUrl}/v1/directory`)
+    ).json()) as DirectoryCohortDTO[];
+    if (!listedWhilePaused.some((d) => d.cohortId === cohortA)) {
+      fail(`[pause] the pre-pause cohort ${cohortA} must stay in /v1/directory while paused`);
+    }
+    log('[assert] pause: /v1/status reports paused:true AND openCohorts 1, and the cohort is still listed');
+
+    /* ---- A new advertise is refused LOUDLY (409), and the draft survives the refusal. ---- */
+    const refused = await fetch(`${baseUrl}/v1/operator/cohorts/${draftB}/advertise`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+    if (refused.status !== 409) {
+      fail(`[pause] advertising while paused should be refused with 409, got ${refused.status}`);
+    } else {
+      const body = (await refused.json()) as { error?: string };
+      if (!body.error) {
+        fail('[pause] the 409 refusal should carry an app-authored reason, got an empty body');
+      }
+    }
+    const afterRefusal = (await (
+      await fetch(`${baseUrl}/v1/operator/cohorts`, { headers: { cookie } })
+    ).json()) as OperatorListWithMonitoringDTO;
+    const survivingDraft = afterRefusal.cohorts.find((c) => c.draftId === draftB);
+    if (survivingDraft?.state !== 'draft') {
+      fail(
+        `[pause] a refused advertise must leave the draft a draft (never consumed), ` +
+          `got '${survivingDraft?.state ?? 'missing'}'`,
+      );
+    }
+    log('[assert] pause: a new advertise was refused 409 with a reason, and the draft survived');
+
+    /* ---- A FRESH participant can still join the pre-pause cohort while paused. ---- */
+    const participant = createParticipant({ identity: createIdentity(), baseUrl, cohortId: cohortA });
+    participant.runner.on('error', (err) => log(`[pause] participant error: ${err.message}`));
+    participants.push(participant);
+    await participant.start();
+    log(`[pause] fresh participant started while paused, filtered to ${cohortA}`);
+
+    try {
+      await withTimeout(
+        pollUntil(
+          async () => {
+            const res = await fetch(`${baseUrl}/v1/operator/cohorts/${cohortA}`, { headers: { cookie } });
+            return (await res.json()) as MonitorDetailDTO;
+          },
+          (detail) => detail.seatsJoined >= 1,
+          15_000,
+          '[pause] a fresh participant seats in the pre-pause cohort while paused',
+        ),
+        timeoutMs,
+        '[pause] seat poll',
+      );
+    } catch (err) {
+      fail(
+        `[pause] pause is DRAIN MODE, not a kill switch: a freshly constructed participant must still ` +
+          `seat in cohort ${cohortA}, which was advertised before the pause: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+      return problems;
+    }
+    log('[assert] pause: a freshly constructed participant seated in the pre-pause cohort while paused');
+
+    /* ---- Resume restores both the public bit and the ability to advertise. ---- */
+    const resumeRes = await fetch(`${baseUrl}/v1/operator/advertising/resume`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+    if (resumeRes.status !== 200) {
+      fail(`[pause] resume should be 200, got ${resumeRes.status}`);
+      return problems;
+    }
+    const resumeBody = (await resumeRes.json()) as { paused?: unknown };
+    if (resumeBody.paused !== false) {
+      fail(`[pause] resume should return paused:false, got ${JSON.stringify(resumeBody)}`);
+    }
+    const running = (await (await fetch(`${baseUrl}/v1/status`)).json()) as ServiceStatusDTO;
+    if (running.paused !== false) {
+      fail(`[pause] GET /v1/status should report paused:false after resume, got ${String(running.paused)}`);
+    }
+    const readvertised = await fetch(`${baseUrl}/v1/operator/cohorts/${draftB}/advertise`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+    if (readvertised.status !== 200) {
+      fail(`[pause] advertising after resume should be 200 again, got ${readvertised.status}`);
+    } else {
+      await readvertised.text();
+    }
+    log('[assert] pause: resume restored paused:false and the same draft then advertised successfully');
+
+    if (problems.length === 0) {
+      log('[ok] pause: drain mode paused NEW cohorts only and resume restored advertising');
+    }
+
+    return problems;
+  } finally {
+    for (const participant of participants) {
+      participant.stop();
+    }
+    await service.stop();
+  }
+}
+
 async function main(): Promise<number> {
   const quiet = process.argv.includes('--quiet');
   // `--monitor` runs ONLY the SVC-03 fixture monitoring leg (the `e2e:monitor` script); the
@@ -890,16 +1102,22 @@ async function main(): Promise<number> {
   // `--cancel` runs ONLY the SVC-04 cancel leg (the `e2e:cancel` script); it also joins the
   // default suite so the extended `e2e:operator` gate covers the lifecycle verb too.
   const cancelOnly = process.argv.includes('--cancel');
+  // `--pause` runs ONLY the SVC-04 drain-mode leg (the `e2e:pause` script); it also joins the
+  // default suite so the extended `e2e:operator` gate covers advertising pause too.
+  const pauseOnly = process.argv.includes('--pause');
   const problems = monitorOnly
     ? await runMonitorLeg({ quiet })
     : cancelOnly
       ? await runCancelLeg({ quiet })
-      : [
-          ...(await runOperatorCohort({ quiet })),
-          ...(await runExpiryLeg({ quiet })),
-          ...(await runMonitorLeg({ quiet })),
-          ...(await runCancelLeg({ quiet })),
-        ];
+      : pauseOnly
+        ? await runPauseLeg({ quiet })
+        : [
+            ...(await runOperatorCohort({ quiet })),
+            ...(await runExpiryLeg({ quiet })),
+            ...(await runMonitorLeg({ quiet })),
+            ...(await runCancelLeg({ quiet })),
+            ...(await runPauseLeg({ quiet })),
+          ];
   if (problems.length > 0) {
     console.error('\nE2E FAILED:');
     for (const problem of problems) {
@@ -923,6 +1141,16 @@ async function main(): Promise<number> {
         'the operator with its own canceled fate and neutral chip (never a failure), and the ' +
         'still-open sibling cohort seated a FRESHLY constructed participant afterwards - proving ' +
         'the transport single-advert-slot repair (SVC-04, D-01/D-05).',
+    );
+    return 0;
+  }
+  if (pauseOnly) {
+    console.log(
+      '\nPAUSE E2E PASSED: an operator paused advertising and the service DRAINED rather than ' +
+        'stopping - GET /v1/status reported paused:true while still listing and counting the ' +
+        'cohort advertised before the pause, a FRESHLY constructed participant still seated in ' +
+        'it, a new advertise was refused with a 409 that left the draft intact, and resume ' +
+        'restored both the public bit and the ability to advertise (SVC-04, D-06/D-07).',
     );
     return 0;
   }

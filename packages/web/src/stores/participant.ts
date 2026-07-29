@@ -25,6 +25,7 @@ import {
   type NetworkName,
   type PublishableArtifactKind,
 } from '@btcr2-aggregation/shared';
+import { fetchStatus, type ServiceStatus } from '../lib/directory';
 import { fetchAnchor, type AnchorDTO } from '../lib/anchor';
 import { fetchFunding } from '../lib/funding';
 import { elapsed } from '../lib/clock';
@@ -114,6 +115,18 @@ interface ParticipantState {
    * operator console health strip and the public directory header; there is no edit surface.
    */
   serviceName: string | null;
+  /**
+   * The last SERVED public service status (`GET /v1/status`), or `undefined` when no read has
+   * landed yet AND after a failed read (SVC-04, Phase 5 D-07). It carries the open-cohort count
+   * the service-identity header renders and the advertising `paused` bit the public directory's
+   * notice derives from.
+   *
+   * `undefined` is deliberately load-bearing: it means UNKNOWN, never "not paused". A paused claim
+   * is only ever made from a bit this service actually reported, never from an empty directory, a
+   * stale snapshot, or a client-side guess (T-05-05-01). Read with `credentials: 'omit'`, so the
+   * anonymous surface never sends the operator session cookie.
+   */
+  publicStatus?: ServiceStatus;
   /** Load state of the runtime network config; gates identity generation. */
   configStatus: ConfigStatus;
   /** Onboarding model of the current identity: KEY (`k1`) or EXTERNAL (`x1`). */
@@ -262,6 +275,13 @@ interface ParticipantState {
    * 'ready') if the endpoint is unavailable, so generation is never blocked.
    */
   loadConfig(baseUrl: string): Promise<void>;
+  /**
+   * Read the public `GET /v1/status` once and store it (SVC-04, D-07). On any failure it clears
+   * the slice back to `undefined` rather than keeping the last value: a stale snapshot is exactly
+   * what must NOT be allowed to keep claiming a service is paused after it stopped answering.
+   * Anonymous by construction (`credentials: 'omit'`).
+   */
+  pollPublicStatus(baseUrl: string): Promise<void>;
   /**
    * Generate a fresh did:btcr2 identity in-browser: a KEY (`k1`) DID, or an EXTERNAL
    * (`x1`) DID with a self-verifying genesis document (default KEY).
@@ -1122,6 +1142,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
     did: null,
     network: DEFAULT_NETWORK,
     serviceName: null,
+    publicStatus: undefined,
     configStatus: 'loading',
     idType: 'KEY',
     secret: null,
@@ -1140,6 +1161,16 @@ export const useParticipant = create<ParticipantState>((set, get) => {
     beaconRegAddress: null,
     ipfsInfo: null,
     ...INITIAL_OUTCOME,
+
+    async pollPublicStatus(baseUrl) {
+      try {
+        set({ publicStatus: await fetchStatus(baseUrl) });
+      } catch {
+        // Unknown, not "running": clearing the slice is what stops an unreachable service from
+        // leaving a paused notice on screen indefinitely (UI-SPEC E5 error).
+        set({ publicStatus: undefined });
+      }
+    },
 
     async loadConfig(baseUrl) {
       // Probe IPFS availability in parallel: purely additive (the publish panel's

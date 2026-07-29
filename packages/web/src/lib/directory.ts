@@ -98,6 +98,56 @@ export function statusTone(row: DirectoryCohortDTO): StatusTone {
   }
 }
 
+/**
+ * Which notice (if any) the public directory renders (SVC-04, Phase 5 D-07, UI-SPEC E5).
+ *
+ * - `none`: render nothing extra and keep the inherited behavior. This covers BOTH the unknown
+ *   status (no read has landed, or the last one failed) and the ordinary running service with
+ *   rows: neither has anything to announce.
+ * - `unreachable`: the directory read itself failed. The inherited bad-tone card stands, and a
+ *   paused notice is NEVER rendered here.
+ * - `paused-with-rows`: a notice card above the list, with the list still rendering below it.
+ * - `paused-empty`: the empty state, in its own paused wording.
+ * - `idle-empty`: the inherited idle empty state, unchanged.
+ */
+export type DirectoryNotice = 'none' | 'unreachable' | 'paused-with-rows' | 'paused-empty' | 'idle-empty';
+
+/**
+ * Pick the directory's notice variant from the three facts that decide it (D-07).
+ *
+ * The two branches that carry the honesty guarantee are the first two, and both fail CLOSED:
+ *
+ *  1. An unreachable directory never yields a paused variant. Its rows are last-known or absent,
+ *     so a paused notice drawn beside them would be a claim about a service that is not answering.
+ *  2. An UNDEFINED `paused` is unknown, never false and never true. The bit is read from
+ *     `GET /v1/status`, so before that read lands there is nothing to say. This is precisely why
+ *     the server added a paused bit rather than letting the client infer one: a paused service and
+ *     an idle service both show zero open cohorts, so an empty list can never be evidence of a
+ *     pause (T-05-05-01, prohibition 1).
+ *
+ * The remaining branches split on row count, because a paused service with cohorts still open has
+ * something genuinely useful to say (you can still join these) that a paused empty one does not.
+ * A NOT-paused service with rows gets `none`, and a not-paused service with no rows keeps the
+ * inherited idle body, which is deliberately worded differently from the paused one so a stranger
+ * can tell an operator's choice from an idle service (prohibition 2).
+ */
+export function directoryNotice(input: {
+  paused: boolean | undefined;
+  rowCount: number;
+  unreachable: boolean;
+}): DirectoryNotice {
+  if (input.unreachable) {
+    return 'unreachable';
+  }
+  if (input.paused === undefined) {
+    return 'none';
+  }
+  if (input.paused) {
+    return input.rowCount > 0 ? 'paused-with-rows' : 'paused-empty';
+  }
+  return input.rowCount === 0 ? 'idle-empty' : 'none';
+}
+
 /** The beacon-type chip gloss (D-08): a short code plus a one-phrase expansion. */
 export function beaconGloss(beaconType: OperatorBeaconType): string {
   return beaconType === 'CASBeacon' ? 'CAS · content-addressed' : 'SMT · sparse Merkle tree';
