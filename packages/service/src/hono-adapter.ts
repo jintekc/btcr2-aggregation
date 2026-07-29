@@ -8,11 +8,19 @@ import {
   type SseStream,
 } from '@did-btcr2/aggregation/service';
 import {
+  BTCR2_CONTEXT,
   DEFAULT_NETWORK,
+  TERMS_ACCEPTANCE_FIELDS,
+  TERMS_ACCEPTANCE_TYPE,
   resolveNetwork,
+  termsAcceptanceHashHex,
+  termsAcceptanceSigningBytes,
+  termsHashHex,
   toNetworkConfigDTO,
   type NetworkName,
+  type TermsAcceptance,
 } from '@btcr2-aggregation/shared';
+import { hexToBytes } from '@noble/hashes/utils';
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { BitcoinConnection } from '@did-btcr2/bitcoin';
@@ -47,7 +55,7 @@ import {
   type TestPeerSpawner,
 } from './test-peers.js';
 import { mountStaticSite } from './static-site.js';
-import { mountArtifactRoutes, type ArtifactStore } from './store.js';
+import { mountArtifactRoutes, putAcceptance, type ArtifactStore } from './store.js';
 import { resolveBtcr2, UnconfirmedSignalError } from './resolve.js';
 import { validatePinRequest, type IpfsNode, type PinOutcome } from './ipfs.js';
 import type { Sidecar } from '@did-btcr2/method';
@@ -173,6 +181,173 @@ function recordSettingsChanges(
   }
 }
 
+/**
+ * Resolve a did:btcr2 sender's communication public key, the transport's own `resolveSenderPk`
+ * shape. Threaded into {@link createHonoApp} rather than imported here so the acceptance route
+ * verifies against the EXACT resolution this service already authenticates protocol envelopes
+ * with: one resolution seam, not two that can drift.
+ */
+export type ResolveSenderPk = (
+  did: string,
+  opts?: { genesisDocument?: object },
+) => { verify(signature: Uint8Array, data: Uint8Array, opts?: { scheme?: string }): boolean } | undefined;
+
+/**
+ * The ONE caller-facing body every acceptance refusal returns (T-05-13-06).
+ *
+ * Identical for a wrong key, wrong terms, wrong service, malformed record, unknown DID, and an
+ * unparseable body, because a refusal that names its reason is a probe: a caller could otherwise
+ * ask "does this DID exist here" or "which terms is this service really serving" one request at
+ * a time. The real reason is thrown by {@link recordTermsAcceptance} and logged server-side,
+ * following the shipped discipline for every route that can fail for a caller-supplied reason.
+ */
+const ACCEPTANCE_REFUSED = { error: 'acceptance refused' } as const;
+
+/**
+ * Upper bound on any single string field inside a submitted acceptance. Every field is a DID, a
+ * cohort id, a 64-char hash, a fixed context/type constant, or an ISO timestamp, so 512 is
+ * generous by an order of magnitude while still keeping an unbounded string out of the hash and
+ * out of the store.
+ */
+const MAX_ACCEPTANCE_FIELD_LEN = 512;
+
+/** A well-formed cohort id, the same shape guard the three public cohort reads already apply. */
+const COHORT_ID_SHAPE = /^[0-9a-zA-Z-]{1,64}$/;
+
+/** Narrow an unknown value to a plain JSON object (not null, not an array). */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Verify and store one participation-terms acceptance (SVC-05, D-19), returning its hash.
+ *
+ * THROWS with the real reason on every refusal; the route converts that into the single
+ * {@link ACCEPTANCE_REFUSED} body and logs the reason server-side. Written as one function with
+ * an explicit order because the order IS the security argument: nothing reaches the store until
+ * every check below has passed, so an anonymous caller cannot grow this service's store by
+ * failing (T-05-13-04).
+ *
+ * The order, and why each step comes where it does:
+ *
+ * 1. **This service must have terms set.** Otherwise there is nothing to accept, and storing an
+ *    acceptance of nothing would be a record that asserts nothing.
+ * 2. **The record's shape is validated against the FROZEN field set** by key-set equality, so a
+ *    caller cannot smuggle an extra field into a stored artifact (which would also change the
+ *    bytes the signature was supposed to cover).
+ * 3. **The record must name THIS service.** An acceptance collected by another service that
+ *    happens to publish identical terms text cannot be replayed here.
+ * 4. **The submitted terms hash must equal the hash of this service's CURRENT terms.** This is
+ *    what makes "you agreed to what I actually show" checkable rather than assumed. It also
+ *    means an acceptance of superseded terms is refused, which is the same binding rule read
+ *    from the other direction.
+ * 5. **The signature is verified against the key resolved from the CLAIMED DID** (T-05-13-01),
+ *    using the transport's own resolver. An `x1` (EXTERNAL) participant carries its
+ *    self-verifying genesis document in-band exactly as it does on a cohort opt-in (ADR 066);
+ *    the resolver recomputes that document's hash against the DID, so a forged one cannot be
+ *    substituted.
+ * 6. **Only then is the record stored**, under its own canonical hash.
+ *
+ * Deliberately NOT checked: whether the cohort id names a cohort this service knows. Refusing an
+ * unknown cohort would make this anonymous route an enumeration oracle for the very thing the
+ * uniform refusal body exists to hide, and the record's security properties (the signature and
+ * the terms binding) do not depend on it.
+ */
+async function recordTermsAcceptance(
+  body: unknown,
+  deps: {
+    store?: ArtifactStore;
+    termsText?: string;
+    serviceDid?: string;
+    resolveSenderPk?: ResolveSenderPk;
+  },
+): Promise<string> {
+  const { store, termsText, serviceDid, resolveSenderPk } = deps;
+  if (!store) {
+    throw new Error('no artifact store is wired, so an acceptance cannot be stored');
+  }
+  if (!serviceDid) {
+    throw new Error('this service has no DID to bind an acceptance to');
+  }
+  if (!resolveSenderPk) {
+    throw new Error('no sender-key resolver is wired, so a signature cannot be verified');
+  }
+  if (!termsText) {
+    throw new Error('this service has no participation terms set');
+  }
+
+  if (!isPlainObject(body)) {
+    throw new Error('expected a JSON object body');
+  }
+  const { acceptance, signature, genesisDocument } = body;
+  if (!isPlainObject(acceptance)) {
+    throw new Error('expected an acceptance object');
+  }
+  if (typeof signature !== 'string' || !/^[0-9a-f]{128}$/i.test(signature)) {
+    throw new Error('expected a 64-byte hex schnorr signature');
+  }
+  if (genesisDocument !== undefined && !isPlainObject(genesisDocument)) {
+    throw new Error('genesisDocument, when supplied, must be an object');
+  }
+
+  // Key-set EQUALITY against the frozen field set: neither a missing field nor an extra one
+  // survives. An extra field would otherwise be stored inside an artifact whose whole value is
+  // that its shape is known.
+  const keys = Object.keys(acceptance).sort();
+  if (keys.join(',') !== [...TERMS_ACCEPTANCE_FIELDS].sort().join(',')) {
+    throw new Error(`acceptance carries the wrong field set: ${keys.join(',')}`);
+  }
+  for (const [key, value] of Object.entries(acceptance)) {
+    if (typeof value !== 'string' || value.length === 0 || value.length > MAX_ACCEPTANCE_FIELD_LEN) {
+      throw new Error(`acceptance field "${key}" must be a non-empty string within the length bound`);
+    }
+  }
+  const record = acceptance as unknown as TermsAcceptance;
+
+  if (record['@context'] !== BTCR2_CONTEXT || record.type !== TERMS_ACCEPTANCE_TYPE) {
+    throw new Error('acceptance does not name the participation-terms acceptance type');
+  }
+  if (record.serviceDid !== serviceDid) {
+    throw new Error('acceptance is addressed to a different service');
+  }
+  if (!COHORT_ID_SHAPE.test(record.cohortId)) {
+    throw new Error('acceptance carries a malformed cohort id');
+  }
+  if (Number.isNaN(Date.parse(record.acceptedAt))) {
+    throw new Error('acceptance carries an unparseable acceptedAt');
+  }
+  if (record.termsHash !== termsHashHex(termsText)) {
+    throw new Error("acceptance names terms this service is not currently serving");
+  }
+
+  const pk = resolveSenderPk(
+    record.participantDid,
+    genesisDocument ? { genesisDocument: genesisDocument as object } : undefined,
+  );
+  if (!pk) {
+    throw new Error('could not resolve a communication key for the claimed participant DID');
+  }
+  // `verify` can throw on malformed inputs as well as return false; both are the same answer
+  // here, so the throw is folded into the boolean rather than escaping as a different outcome.
+  let verified = false;
+  try {
+    verified = pk.verify(hexToBytes(signature.toLowerCase()), termsAcceptanceSigningBytes(record), {
+      scheme: 'schnorr',
+    });
+  } catch {
+    verified = false;
+  }
+  if (!verified) {
+    throw new Error('signature does not verify against the claimed participant DID');
+  }
+
+  // Store the SUBMITTED record verbatim, never a rebuilt one: the stored bytes must be exactly
+  // the bytes the signature covers, or the artifact stops being checkable by anyone else.
+  const hash = termsAcceptanceHashHex(record);
+  await putAcceptance(store, hash, record);
+  return hash;
+}
+
 /** Optional features layered onto the protocol transport by {@link createHonoApp}. */
 export interface HonoAppOptions {
   /** Absolute path to the built web SPA; serves the same-origin production topology. */
@@ -210,6 +385,29 @@ export interface HonoAppOptions {
    * pre-existing behavior exactly (a never-paused service whose name is the static option above).
    */
   runtimeSettings?: RuntimeSettings;
+  /**
+   * This service's own did:btcr2 identifier (SVC-05, D-19). Served ADDITIVELY on
+   * `GET /v1/config` and required by `POST /v1/terms/acceptance`.
+   *
+   * It is public information already: every cohort advert this service publishes on the
+   * anonymous SSE stream carries it as the sender. It is served here because a participant's
+   * browser has to build the acceptance record it signs BEFORE it joins anything, and that
+   * record names the service it is addressed to - which is what stops an acceptance collected
+   * by one service from being replayed to another publishing identical terms.
+   *
+   * Optional: a caller that omits it (the older specs, the headless path) serves the
+   * byte-identical config DTO and refuses every acceptance, which is the correct fail-closed
+   * answer for a service that cannot say who it is.
+   */
+  serviceDid?: string;
+  /**
+   * The transport's OWN sender-key resolver, reused by `POST /v1/terms/acceptance` to verify a
+   * participant's signature against the key resolved from their claimed DID (SVC-05,
+   * T-05-13-01). Threaded rather than imported so this app authenticates an acceptance with the
+   * exact resolution it already authenticates protocol envelopes with. Absent, the acceptance
+   * route refuses everything.
+   */
+  resolveSenderPk?: ResolveSenderPk;
   /**
    * Bitcoin REST (esplora) connection. When supplied together with {@link store},
    * a read-only `GET /resolve/:did` route resolves a did:btcr2 identifier
@@ -296,6 +494,8 @@ export function createHonoApp(
     store,
     networkName,
     serviceName,
+    serviceDid,
+    resolveSenderPk,
     runtimeSettings,
     bitcoin,
     ipfs,
@@ -354,12 +554,19 @@ export function createHonoApp(
   // "this operator set no terms" and "this operator set terms that say nothing" are different
   // facts and the wire must keep them apart. Both strings render in the browser as plain
   // auto-escaped React text content, never markup and never a link target (T-05-07-02).
+  // The service DID rides as a THIRD additive key (SVC-05, D-19), for the same reason the terms
+  // do: a participant's browser must build the acceptance record it signs before it joins
+  // anything, and that record names the service it is addressed to. It discloses nothing new -
+  // every advert on the anonymous SSE stream already carries this DID as its sender - and it is
+  // absent when no DID was threaded in, so the frozen network fields stay byte-identical for
+  // every caller that wires none.
   app.get('/v1/config', (c) => {
     const name = runtimeSettings ? runtimeSettings.serviceName.value : serviceName;
     const termsText = runtimeSettings?.termsText.value;
     return c.json({
       ...networkDto,
       ...(name ? { serviceName: name } : {}),
+      ...(serviceDid ? { serviceDid } : {}),
       ...(termsText ? { termsText } : {}),
     });
   });
@@ -488,6 +695,55 @@ export function createHonoApp(
     }
     return c.json(operatorCohorts ? operatorCohorts.cohortFate(cohortId) : { canceled: false });
   });
+
+  // Participation-terms acceptance (SVC-05, D-19). The fourth anonymous sibling in this PUBLIC
+  // block, and the only one that WRITES. Anonymous because the participant accepting terms has
+  // no session and never will: they are a stranger who has not joined anything yet. It is
+  // mounted unconditionally, like the three reads above, so a caller always meets one refusal
+  // shape rather than the difference between a 404 and a 400 telling them how this service was
+  // wired.
+  //
+  // The whole security argument is the ORDER inside `recordTermsAcceptance`, documented there:
+  // nothing is written until this service has proved the participant signed the terms it
+  // actually shows. Two things belong here rather than in that function. The body limit bounds
+  // an unauthenticated body BEFORE it is parsed (mirroring `/v1/ipfs/pin` and the login route);
+  // 16 KiB is ample for a record of short strings plus an optional x1 genesis document, and it
+  // is what keeps an anonymous caller from streaming megabytes at the JSON parser. And the
+  // try/catch is what turns every refusal into ONE caller-facing body while the real reason
+  // goes to the server log - the shipped discipline for routes that can fail for a
+  // caller-supplied reason (T-05-13-06).
+  //
+  // HONEST LIMIT, stated here because this is where someone will look for it: this is
+  // APP-LEVEL enforcement only. The aggregation protocol has no message type that could carry
+  // an acceptance (`@did-btcr2/aggregation@0.4.0` `src/core/messages/constants.ts`), so a
+  // headless client that speaks the protocol directly opts into a cohort without ever calling
+  // this route. That limit is disclosed in the participant copy and in the operator's settings
+  // help rather than papered over.
+  app.post(
+    '/v1/terms/acceptance',
+    bodyLimit({ maxSize: 16 * 1024, onError: (c) => c.json({ error: 'request too large' }, 413) }),
+    async (c) => {
+      let body: unknown;
+      try {
+        body = await c.req.json();
+      } catch (err) {
+        console.error(`[adapter] terms acceptance refused (unparseable body): ${String(err)}`);
+        return c.json(ACCEPTANCE_REFUSED, 400);
+      }
+      try {
+        const hash = await recordTermsAcceptance(body, {
+          store,
+          termsText: runtimeSettings?.termsText.value,
+          serviceDid,
+          resolveSenderPk,
+        });
+        return c.json({ hash });
+      } catch (err) {
+        console.error(`[adapter] terms acceptance refused: ${String(err)}`);
+        return c.json(ACCEPTANCE_REFUSED, 400);
+      }
+    },
+  );
 
   // Operator surface (HOST-01, ADR 0015). Mounted ONLY when operator auth is
   // configured (fail-closed, D-07): a service booted without an OPERATOR_PASSWORD

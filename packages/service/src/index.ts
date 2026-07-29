@@ -192,6 +192,7 @@ export {
   putProof,
   putUpdate,
   putGenesis,
+  putAcceptance,
   exportSidecar,
   mountArtifactRoutes,
 } from './store.js';
@@ -1325,6 +1326,16 @@ export function createService(opts: CreateServiceOptions): Service {
     // health strip + public directory header. Undefined leaves the config DTO byte-identical.
     // Threaded still, as the fallback for the (test-only) shape where no holder is wired.
     serviceName: opts.serviceName,
+    // This service's own DID (SVC-05, D-19), served additively on GET /v1/config so a
+    // participant's browser can build the acceptance record it signs before it joins anything,
+    // and required by the acceptance route so a record addressed to another service is refused.
+    // Already public: every advert this service publishes carries it as the sender.
+    serviceDid: did,
+    // The SAME sender-key resolution the transport authenticates protocol envelopes with (it is
+    // the `resolveSenderPk` built into `transportConfig` below, minus the genesis-staging side
+    // effect, which belongs to the opt-in path and not to a terms acceptance). One resolution
+    // rule, so an acceptance can never be verified against a key the protocol would reject.
+    resolveSenderPk: resolveBtcr2SenderPk,
     // The runtime settings holder (SVC-04): the per-request source of the served service name
     // (D-16) and the state behind the gated pause/resume routes.
     runtimeSettings,

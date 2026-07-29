@@ -170,7 +170,13 @@ describe('POST /v1/terms/acceptance stores only a VERIFIED acceptance', () => {
 });
 
 describe('POST /v1/terms/acceptance refuses without storing anything', () => {
-  /** Each row: a description, and a builder producing the body to POST against a fresh app. */
+  /**
+   * Build a body against a fresh app and POST it, reporting the store size afterwards.
+   *
+   * `terms` takes NO default on purpose: one row here needs a service with no terms at all, and
+   * a defaulted parameter would silently substitute the real terms for the explicit `undefined`
+   * that row passes, turning a refusal row into a passing acceptance.
+   */
   async function refusal(
     build: (ctx: {
       app: ReturnType<typeof acceptanceApp>['app'];
@@ -178,7 +184,7 @@ describe('POST /v1/terms/acceptance refuses without storing anything', () => {
       serviceDid: string;
       runtimeSettings: ReturnType<typeof acceptanceApp>['runtimeSettings'];
     }) => unknown | Promise<unknown>,
-    terms: string | undefined = TERMS,
+    terms: string | undefined,
   ): Promise<{ status: number; body: unknown; storeSize: number }> {
     const ctx = acceptanceApp({ terms });
     const body = await build(ctx);
@@ -193,7 +199,7 @@ describe('POST /v1/terms/acceptance refuses without storing anything', () => {
       const acceptance = acceptanceFor(serviceDid, participant);
       // The record CLAIMS the participant's DID; the signature is the attacker's.
       return { acceptance, signature: signWith(acceptance, attacker) };
-    });
+    }, TERMS);
     expect(out.status).toBe(400);
     expect(out.storeSize).toBe(0);
   });
@@ -204,7 +210,7 @@ describe('POST /v1/terms/acceptance refuses without storing anything', () => {
       // Correctly signed, by the right key, over terms this service does not serve.
       const acceptance = acceptanceFor(serviceDid, participant, 'Some other terms entirely.');
       return { acceptance, signature: signWith(acceptance, participant) };
-    });
+    }, TERMS);
     expect(out.status).toBe(400);
     expect(out.storeSize).toBe(0);
   });
@@ -227,7 +233,7 @@ describe('POST /v1/terms/acceptance refuses without storing anything', () => {
       const elsewhere = createIdentity(resolveNetwork(ACTIVE_NETWORK));
       const acceptance = acceptanceFor(elsewhere.did, participant);
       return { acceptance, signature: signWith(acceptance, participant) };
-    });
+    }, TERMS);
     expect(out.status).toBe(400);
     expect(out.storeSize).toBe(0);
   });
@@ -238,9 +244,25 @@ describe('POST /v1/terms/acceptance refuses without storing anything', () => {
       const acceptance = acceptanceFor(serviceDid, participant);
       const widened = { ...acceptance, note: 'under protest' };
       return { acceptance: widened, signature: signWith(widened as TermsAcceptance, participant) };
-    });
+    }, TERMS);
     expect(out.status).toBe(400);
     expect(out.storeSize).toBe(0);
+  });
+
+  it('ACCEPTS a well-formed but unknown cohort id, on purpose', async () => {
+    // Deliberately NOT a refusal row. Checking that the cohort exists would turn this
+    // anonymous route into exactly the existence oracle the uniform-refusal rule below is
+    // built to prevent: a caller could then enumerate this service's cohorts by watching which
+    // ids are refused. The acceptance names the cohort it was made for; the service does not
+    // vouch that the cohort is real, and nothing downstream reads this record as proof that it
+    // was. The record's real security properties (the signature and the terms binding) are
+    // unaffected by the cohort id being unrecognized.
+    const { app, store, serviceDid } = acceptanceApp({ terms: TERMS });
+    const participant = createIdentity(resolveNetwork(ACTIVE_NETWORK));
+    const acceptance = acceptanceFor(serviceDid, participant, TERMS, 'cohort-never-existed');
+    const res = await post(app, { acceptance, signature: signWith(acceptance, participant) });
+    expect(res.status).toBe(200);
+    expect(await stored(store)).toHaveLength(1);
   });
 
   it('refuses an unparseable body with the generic message while logging the real error', async () => {
@@ -288,9 +310,9 @@ describe('POST /v1/terms/acceptance refuses without storing anything', () => {
         const a = { ...good, participantDid: 'did:btcr2:not-a-real-identifier' };
         return { acceptance: a, signature: signWith(good, participant) };
       })(),
-      // a well-formed but unknown cohort id
+      // a malformed cohort id
       (() => {
-        const a = acceptanceFor(serviceDid, participant, TERMS, 'cohort-never-existed');
+        const a = acceptanceFor(serviceDid, participant, TERMS, 'not a cohort id!!');
         return { acceptance: a, signature: signWith(a, participant) };
       })(),
       // structurally wrong

@@ -8,17 +8,28 @@ import type {
   SignedBTCR2Update,
   SMTProof,
 } from '@did-btcr2/method';
+import type { TermsAcceptance } from '@btcr2-aggregation/shared';
 
 /**
- * The four content-addressed artifact namespaces a did:btcr2 resolver may request
- * while resolving an aggregated update. Each maps to one `DataNeed`:
+ * The content-addressed artifact namespaces this service holds.
+ *
+ * The first four are the namespaces a did:btcr2 resolver may request while resolving
+ * an aggregated update. Each maps to one `DataNeed`:
  *   announcement -> NeedCASAnnouncement  (CAS map, keyed by announcement hash)
  *   proof        -> NeedSMTProof         (SMT inclusion proof, keyed by root hash)
  *   update       -> NeedSignedUpdate     (the signed update body, keyed by update hash)
  *   genesis      -> NeedGenesisDocument  (EXTERNAL onboarding only)
+ *
+ * `acceptance` is the fifth and is NOT a resolution artifact (SVC-05, D-19): it is a
+ * participant's DID-signed agreement to this service's participation terms. It lives here
+ * because it wants exactly what this store already provides and nothing more - a hex-keyed
+ * write, a hash-addressed public read, and no listing surface. Deliberately absent from
+ * {@link exportSidecar}: a controller's resolution sidecar carries what a resolver needs, and
+ * an acceptance is not that.
+ *
  * All keys are lowercase hex (the resolver's hashes and the on-chain signal are hex).
  */
-export const ARTIFACT_KINDS = ['announcement', 'proof', 'update', 'genesis'] as const;
+export const ARTIFACT_KINDS = ['announcement', 'proof', 'update', 'genesis', 'acceptance'] as const;
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
 
 /** The stored value type for each artifact kind. */
@@ -27,6 +38,7 @@ export interface ArtifactValueByKind {
   proof: SMTProof;
   update: SignedBTCR2Update;
   genesis: Record<string, unknown>;
+  acceptance: TermsAcceptance;
 }
 
 const HEX_KEY = /^[0-9a-f]+$/;
@@ -201,6 +213,29 @@ export function putUpdate(
   return store.put('update', hashHex, value);
 }
 
+/**
+ * Store a VERIFIED participation-terms acceptance under its own hex canonical hash (SVC-05,
+ * D-19).
+ *
+ * Keyed by the record's hash exactly like every other artifact here, which is what puts it on
+ * the existing hash-addressed `GET /cas/acceptance/:hash` read and on no listing endpoint at
+ * all: the reference is unguessable, and it is shown only to the accepting participant and to
+ * the operator (T-05-13-05).
+ *
+ * The word VERIFIED is load-bearing and is the caller's obligation, not this function's: the
+ * only call site is `POST /v1/terms/acceptance`, which refuses unless the submitted terms hash
+ * matches this service's current terms AND the signature verifies against the key resolved from
+ * the claimed DID. An unverified record written here would be indistinguishable from a proof to
+ * anyone reading it later, which is exactly what the route's ordering exists to prevent.
+ */
+export function putAcceptance(
+  store: ArtifactStore,
+  hashHex: string,
+  value: TermsAcceptance,
+): Promise<void> {
+  return store.put('acceptance', hashHex, value);
+}
+
 /** Store a genesis document under its hex hash (EXTERNAL onboarding). */
 export function putGenesis(
   store: ArtifactStore,
@@ -251,6 +286,7 @@ const KIND_BY_SEGMENT: Readonly<Record<string, ArtifactKind>> = {
   proof: 'proof',
   update: 'update',
   genesis: 'genesis',
+  acceptance: 'acceptance',
 };
 
 /**

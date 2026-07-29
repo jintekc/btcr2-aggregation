@@ -95,8 +95,12 @@ describe('buildTermsAcceptance: the FROZEN record shape', () => {
   });
 
   it('stamps an ISO 8601 acceptedAt when the caller supplies none', () => {
-    const { acceptedAt: _drop, ...withoutTime } = BASE;
-    const record = buildTermsAcceptance(withoutTime);
+    const record = buildTermsAcceptance({
+      serviceDid: BASE.serviceDid,
+      cohortId: BASE.cohortId,
+      termsHash: BASE.termsHash,
+      participantDid: BASE.participantDid,
+    });
     expect(record.acceptedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
   });
 });
