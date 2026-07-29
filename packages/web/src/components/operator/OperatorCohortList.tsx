@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Badge, Button, Card, CopyField, SectionTitle, StatusDot } from '../../ui/primitives';
+import { Badge, Button, Card, ConfirmPanel, CopyField, SectionTitle, StatusDot } from '../../ui/primitives';
 import { cosignCaption, cosignValue } from '../../lib/directory';
 import {
   canceledEndedLine,
@@ -8,7 +8,17 @@ import {
   type GroupKey,
   type RenderRow,
 } from '../../lib/operator-rows';
-import { ADVERTISE_DISABLED_REASON, EDIT_UNAVAILABLE_REASON, useOperator } from '../../stores/operator';
+import {
+  ADVERTISE_DISABLED_REASON,
+  DISMISS_BODY,
+  DISMISS_BUSY,
+  DISMISS_CONFIRM_LABEL,
+  DISMISS_HEADING,
+  DISMISS_LABEL,
+  EDIT_UNAVAILABLE_REASON,
+  KEEP_RECORD_LABEL,
+  useOperator,
+} from '../../stores/operator';
 import { DraftEditForm } from './DraftEditForm';
 import type { OperatorCohortDTO, ServiceMetricsDTO } from '../../lib/operator';
 
@@ -103,11 +113,19 @@ function ServiceMetricsRow({ metrics }: { metrics?: ServiceMetricsDTO }) {
 function CohortRow({
   baseUrl,
   entry,
+  group,
   onOpen,
 }: {
   baseUrl: string;
   /** The joined row: an operator cohort, a monitoring row, or (usually) both. */
   entry: RenderRow;
+  /**
+   * Which list group this row was bucketed into. The `Dismiss` action (D-15) needs it because
+   * dismissal is for ENDED records only, and a row's chip alone cannot say that: a `failed` chip
+   * can appear on a row the operator list still holds. The grouping already answered the question,
+   * so the row asks it rather than re-deriving a second, drift-prone answer.
+   */
+  group: GroupKey;
   onOpen?: (id: string) => void;
 }) {
   const discard = useOperator((s) => s.discard);
@@ -122,7 +140,10 @@ function CohortRow({
   const advertisingPaused = useOperator((s) => s.health?.paused === true);
   const beginEdit = useOperator((s) => s.beginEdit);
   const editingDraftId = useOperator((s) => s.editingDraftId);
+  const dismissEnded = useOperator((s) => s.dismissEnded);
+  const dismissing = useOperator((s) => s.dismissing);
   const [confirming, setConfirming] = useState(false);
+  const [confirmingDismiss, setConfirmingDismiss] = useState(false);
 
   const { id, chip, cohort, row } = entry;
   const isDraft = cohort?.state === 'draft';
@@ -211,6 +232,15 @@ function CohortRow({
             Open
           </Button>
         ) : null}
+        {/* Dismiss (D-15) on ENDED rows only: the cohort has already finished, so this clears the
+            console's record of it and nothing else. Ghost and rung 1 - the lightest ceremony on
+            this console - because nothing real is at stake; the only cost is that the record is
+            gone, and the confirm says exactly that. */}
+        {group === 'ended' && !confirmingDismiss ? (
+          <Button variant="ghost" onClick={() => setConfirmingDismiss(true)}>
+            {DISMISS_LABEL}
+          </Button>
+        ) : null}
       </div>
 
       {/* A canceled row states WHEN the operator ended it, from the monitoring row's server
@@ -228,6 +258,25 @@ function CohortRow({
           and the draft id stay on screen while the operator changes them. `cohort` is non-undefined
           whenever `isDraft` holds, but the guard keeps the prop honest for a monitoring-only row. */}
       {isEditing && isDraft && cohort ? <DraftEditForm baseUrl={baseUrl} draft={cohort} /> : null}
+
+      {/* The rung-1 dismissal ceremony (UI-SPEC E10): neutral tone, one fixed body, no typed
+          value. Both buttons disable while the delete is in flight, and a failure renders the
+          list's shared action-error line with the row left exactly as it was. */}
+      {confirmingDismiss ? (
+        <ConfirmPanel
+          tone="neutral"
+          heading={DISMISS_HEADING}
+          body={<p>{DISMISS_BODY}</p>}
+          confirmLabel={DISMISS_CONFIRM_LABEL}
+          cancelLabel={KEEP_RECORD_LABEL}
+          busy={dismissing === id}
+          busyLabel={DISMISS_BUSY}
+          onConfirm={() => {
+            void dismissEnded(baseUrl, id).then(() => setConfirmingDismiss(false));
+          }}
+          onCancel={() => setConfirmingDismiss(false)}
+        />
+      ) : null}
 
       {confirming ? (
         <div className="space-y-2 rounded-lg border border-bad/40 bg-bad/10 px-3 py-2 text-sm text-bad">
@@ -314,7 +363,7 @@ export function OperatorCohortList({
               <div key={g} className="space-y-3">
                 <SectionTitle>{GROUP_HEADING[g]}</SectionTitle>
                 {grouped[g].map((entry) => (
-                  <CohortRow key={entry.id} baseUrl={baseUrl} entry={entry} onOpen={onOpen} />
+                  <CohortRow key={entry.id} baseUrl={baseUrl} entry={entry} group={g} onOpen={onOpen} />
                 ))}
               </div>
             ),

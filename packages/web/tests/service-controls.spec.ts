@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { BROADCAST_OFF_CHIP } from '../src/components/operator/HealthStrip';
 import {
+  broadcastControlState,
+  operatorLogState,
   PAUSE_LABEL,
   RESUME_LABEL,
   serviceControlsView,
@@ -10,6 +13,22 @@ import {
   RESTART_HONESTY_LINE,
   FULL_QUIESCE_GUIDANCE,
   ADVERTISE_DISABLED_REASON,
+  BROADCAST_OFF_LINE,
+  DISABLE_BROADCAST_BODY_IN_FLIGHT,
+  DISABLE_BROADCAST_BODY_NEW,
+  DISABLE_BROADCAST_BODY_ONE_WAY,
+  DISABLE_BROADCAST_HEADING,
+  DISABLE_BROADCAST_LABEL,
+  DISMISS_BODY,
+  DISMISS_CONFIRM_LABEL,
+  DISMISS_HEADING,
+  DISMISS_LABEL,
+  KEEP_BROADCAST_LABEL,
+  KEEP_RECORD_LABEL,
+  OPERATOR_ACTIONS_EMPTY,
+  OPERATOR_ACTIONS_EMPTY_BODY,
+  OPERATOR_ACTIONS_LOADING,
+  OPERATOR_ACTIONS_TITLE,
 } from '../src/stores/operator';
 
 /**
@@ -130,6 +149,107 @@ describe('the controls-card copy is the exact 05-UI-SPEC contract copy', () => {
       ADVERTISE_DISABLED_REASON,
       PAUSE_LABEL,
       RESUME_LABEL,
+    ];
+    for (const s of strings) {
+      expect(s).not.toContain('—');
+    }
+  });
+});
+
+describe('broadcastControlState: the kill switch appears only where it can do something (D-14)', () => {
+  it('is absent before the first read lands, so a one-way control is never offered blind', () => {
+    expect(broadcastControlState({ mode: undefined, broadcastDisabled: undefined })).toBe('absent');
+  });
+
+  it('is absent on every non-broadcasting mode (there is nothing to stand down)', () => {
+    expect(broadcastControlState({ mode: 'hermetic' })).toBe('absent');
+    expect(broadcastControlState({ mode: 'live-no-broadcast' })).toBe('absent');
+  });
+
+  it('is available on the served live-broadcasting mode', () => {
+    expect(broadcastControlState({ mode: 'live', broadcastDisabled: false })).toBe('available');
+    // An absent bit on a live service is not a broadcast-off claim: the control still stands.
+    expect(broadcastControlState({ mode: 'live' })).toBe('available');
+  });
+
+  it('is REPLACED once engaged, never merely disabled', () => {
+    // `engaged` renders the restart line instead of the control. A disabled button would imply
+    // the act is still pending or still possible from this console; it is neither.
+    expect(broadcastControlState({ mode: 'live', broadcastDisabled: true })).toBe('engaged');
+  });
+});
+
+describe('operatorLogState: an empty log before a read is not an empty log (UI-SPEC E13)', () => {
+  it('is loading until a read lands, so the console never makes a false empty claim', () => {
+    expect(operatorLogState({ loaded: false, entries: 0 })).toBe('loading');
+  });
+
+  it('is empty only once the service has actually answered with nothing', () => {
+    expect(operatorLogState({ loaded: true, entries: 0 })).toBe('empty');
+  });
+
+  it('renders entries once there are any', () => {
+    expect(operatorLogState({ loaded: true, entries: 1 })).toBe('entries');
+  });
+});
+
+describe('the kill-switch and dismissal copy is exact contract copy (05-UI-SPEC E9/E10/E13)', () => {
+  it('states all three kill-switch confirm body lines, including the no-way-back line', () => {
+    expect(DISABLE_BROADCAST_HEADING).toBe('Disable broadcast for new cohorts?');
+    expect(DISABLE_BROADCAST_BODY_NEW).toBe(
+      'New cohorts will be created on the fixture path and will not publish anything to Bitcoin.',
+    );
+    expect(DISABLE_BROADCAST_BODY_IN_FLIGHT).toBe(
+      'Cohorts already in flight finish under the mode they started with, and chain reads (resolve and anchor tracking) stay on.',
+    );
+    expect(DISABLE_BROADCAST_BODY_ONE_WAY).toBe(
+      'You cannot turn broadcast back on from here. Restart this service with its broadcast environment set to re-enable it.',
+    );
+    expect(KEEP_BROADCAST_LABEL).toBe('Keep broadcast on');
+  });
+
+  it('names the environment variable in the post-engage replacement line', () => {
+    // "Restart with its broadcast environment set" is only actionable if the operator knows which
+    // one, and this is the moment they need it.
+    expect(BROADCAST_OFF_LINE).toBe(
+      'Broadcast is off for new cohorts. Restart this service with BROADCAST=1 to turn it back on.',
+    );
+    expect(BROADCAST_OFF_CHIP).toBe('Broadcast off (this session)');
+  });
+
+  it('states the rung-1 dismissal copy, including that there is no undo', () => {
+    expect(DISMISS_HEADING).toBe('Remove this record?');
+    expect(DISMISS_BODY).toContain('There is no undo.');
+    expect(DISMISS_BODY).toContain('nothing on the chain or in the directory changes');
+    expect(DISMISS_CONFIRM_LABEL).toBe('Dismiss record');
+    expect(KEEP_RECORD_LABEL).toBe('Keep it');
+  });
+
+  it('states the operator-log empty heading and body', () => {
+    expect(OPERATOR_ACTIONS_TITLE).toBe('Operator actions');
+    expect(OPERATOR_ACTIONS_EMPTY).toBe('No operator actions this session.');
+    expect(OPERATOR_ACTIONS_EMPTY_BODY).toContain('a restart clears them');
+  });
+
+  it('carries no long dash in any of it (house style, checker-blocked at the source)', () => {
+    const strings = [
+      DISABLE_BROADCAST_LABEL,
+      DISABLE_BROADCAST_HEADING,
+      DISABLE_BROADCAST_BODY_NEW,
+      DISABLE_BROADCAST_BODY_IN_FLIGHT,
+      DISABLE_BROADCAST_BODY_ONE_WAY,
+      KEEP_BROADCAST_LABEL,
+      BROADCAST_OFF_LINE,
+      BROADCAST_OFF_CHIP,
+      DISMISS_LABEL,
+      DISMISS_HEADING,
+      DISMISS_BODY,
+      DISMISS_CONFIRM_LABEL,
+      KEEP_RECORD_LABEL,
+      OPERATOR_ACTIONS_TITLE,
+      OPERATOR_ACTIONS_EMPTY,
+      OPERATOR_ACTIONS_EMPTY_BODY,
+      OPERATOR_ACTIONS_LOADING,
     ];
     for (const s of strings) {
       expect(s).not.toContain('—');

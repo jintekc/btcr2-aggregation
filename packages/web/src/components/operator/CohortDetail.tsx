@@ -4,6 +4,7 @@ import { LogPanel } from '../LogPanel';
 import { OperatorStageTimeline } from './OperatorStageTimeline';
 import { FundingStage } from './FundingStage';
 import { LifecycleActions } from './LifecycleActions';
+import { fmtWallClock } from '../../lib/clock';
 import { seatReclaimNoteVisible } from '../../lib/lifecycle';
 import { useOperator } from '../../stores/operator';
 import { useParticipant } from '../../stores/participant';
@@ -38,15 +39,6 @@ function shortId(id: string): string {
 /** Shorten a long DID for display; the full DID is available via the row's CopyField. */
 function shortDid(did: string): string {
   return did.length > 24 ? `${did.slice(0, 14)}…${did.slice(-6)}` : did;
-}
-
-/**
- * Render a server wall-clock ms stamp as a local `HH:MM:SS` time (D-22/D-30). The operator
- * activity log and submission times carry SERVER wall-clock stamps, not the participant-side
- * elapsed offset, so they render as a real clock time rather than a `mm:ss.mmm` duration.
- */
-function fmtWallClock(t: number): string {
-  return new Date(t).toLocaleTimeString();
 }
 
 /** The fixed round-state chip tone map (UI-SPEC Members, D-31). */

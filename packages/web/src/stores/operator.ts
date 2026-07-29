@@ -8,6 +8,8 @@ import {
   createDraft as apiCreateDraft,
   updateDraft as apiUpdateDraft,
   discardDraft as apiDiscardDraft,
+  dismissEnded as apiDismissEnded,
+  disableBroadcast as apiDisableBroadcast,
   downloadExport as apiDownloadExport,
   finalizeCohort as apiFinalizeCohort,
   pauseAdvertising as apiPauseAdvertising,
@@ -17,6 +19,7 @@ import {
   fetchSettings as apiFetchSettings,
   saveSettings as apiSaveSettings,
   sessionProbe,
+  type ActivityEntryDTO,
   type CohortDetailDTO,
   type CohortSummaryDTO,
   type DraftInput,
@@ -195,6 +198,69 @@ export const TERMS_HONEST_LIMIT =
 /** The ghost link back to the cohort list, shared verbatim with the drill-down. */
 export const BACK_TO_COHORTS = 'Back to cohorts';
 
+/**
+ * The BROADCAST KILL-SWITCH copy set (SVC-04, 05-UI-SPEC E9, D-14). Every string below is exact
+ * contract copy, free of the long dash, and each one is load-bearing: this is the control that
+ * stands down money movement, and the one control in this console whose effect cannot be undone
+ * from this console. The three body lines say, in order, what happens to new cohorts, what happens
+ * to cohorts already in flight, and that there is no way back from here.
+ */
+export const DISABLE_BROADCAST_LABEL = 'Disable broadcast';
+export const DISABLE_BROADCAST_HEADING = 'Disable broadcast for new cohorts?';
+export const DISABLE_BROADCAST_BODY_NEW =
+  'New cohorts will be created on the fixture path and will not publish anything to Bitcoin.';
+export const DISABLE_BROADCAST_BODY_IN_FLIGHT =
+  'Cohorts already in flight finish under the mode they started with, and chain reads (resolve and anchor tracking) stay on.';
+export const DISABLE_BROADCAST_BODY_ONE_WAY =
+  'You cannot turn broadcast back on from here. Restart this service with its broadcast environment set to re-enable it.';
+export const KEEP_BROADCAST_LABEL = 'Keep broadcast on';
+/** The in-flight confirm label, matching the {@link CANCEL_BUSY} treatment (no invented spinner). */
+export const DISABLE_BROADCAST_BUSY = 'Disabling…';
+/**
+ * What replaces the control once the switch has engaged. It names the environment variable
+ * outright, because "restart with its broadcast environment set" is only actionable if the
+ * operator knows which one, and this is the moment they need it.
+ */
+export const BROADCAST_OFF_LINE =
+  'Broadcast is off for new cohorts. Restart this service with BROADCAST=1 to turn it back on.';
+/*
+ * The warn-tone health chip label lives in `components/operator/HealthStrip.tsx` beside the other
+ * chip labels that file renders inline, rather than here: every chip on that strip is authored in
+ * one place, and the audit grep that proves the chip is rendered alongside the mode chip reads
+ * that file.
+ */
+
+/**
+ * The ENDED-RECORD DISMISSAL copy set (SVC-04, 05-UI-SPEC E10, D-15). Rung 1 of the ceremony
+ * ladder: neutral tone, a simple confirm, no typed value. The body's three sentences are the whole
+ * reason this is rung 1 and not rung 3 - the cohort already ended, nothing real changes, and the
+ * only cost is that the record is gone.
+ */
+export const DISMISS_LABEL = 'Dismiss';
+export const DISMISS_HEADING = 'Remove this record?';
+export const DISMISS_BODY =
+  "This clears the ended cohort's record and its activity log from your console for this session. The cohort itself already ended, so nothing on the chain or in the directory changes. There is no undo.";
+export const DISMISS_CONFIRM_LABEL = 'Dismiss record';
+export const KEEP_RECORD_LABEL = 'Keep it';
+/** The in-flight confirm label for a dismissal. */
+export const DISMISS_BUSY = 'Dismissing…';
+
+/**
+ * The SERVICE-level `Operator actions` log copy (SVC-04, 05-UI-SPEC E13). The empty body states
+ * the same in-memory model the restart-honesty line states, because an operator who finds an empty
+ * log after a restart needs to know whether their actions were forgotten or never recorded.
+ */
+export const OPERATOR_ACTIONS_TITLE = 'Operator actions';
+export const OPERATOR_ACTIONS_EMPTY = 'No operator actions this session.';
+export const OPERATOR_ACTIONS_EMPTY_BODY =
+  'Actions you take here, like pausing advertising or canceling a cohort, are listed as you take them. This service keeps them in memory, so a restart clears them.';
+/**
+ * What the log shows before the first read lands. It is the console-level loading posture, NOT the
+ * empty state: claiming "no operator actions this session" against a service that has not answered
+ * yet would be a false claim about the operator's own history (UI-SPEC E13 loading).
+ */
+export const OPERATOR_ACTIONS_LOADING = 'Checking operator actions';
+
 interface OperatorState {
   auth: OperatorAuthStatus;
   error?: string;
@@ -280,6 +346,30 @@ interface OperatorState {
    * that raised it. The copy is the shared {@link ACTION_FAILED} line.
    */
   pauseError?: string;
+  /**
+   * The SERVED service-level operator actions (SVC-04, D-14/D-15), from the `monitoring` sibling
+   * of the gated list read. Empty until the first ok read lands, which is why the log's rendering
+   * keys on {@link OperatorState.lastUpdated} rather than on this array being empty: an empty
+   * array before any read and an empty array after one mean different things.
+   */
+  operatorActions: ActivityEntryDTO[];
+  /**
+   * True while the broadcast kill switch is in flight (SVC-04, D-14), so the confirm renders its
+   * in-flight label and both its buttons disable. Deliberately NOT a disabled value: the rendered
+   * state comes only from the served bit, so a failed engage paints nothing to roll back.
+   */
+  broadcastBusy: boolean;
+  /**
+   * Bad-tone message for a kill switch that did NOT engage. Its own field for the 05-02 reason:
+   * the controls card and the cohort list are on screen together, so a shared field would render
+   * one failure on two surfaces.
+   */
+  broadcastError?: string;
+  /**
+   * The cohort id whose dismissal is in flight (SVC-04, D-15), so exactly the confirming row
+   * renders its in-flight label and disables both buttons.
+   */
+  dismissing?: string;
   /**
    * The served settings snapshot (SVC-04 criterion 3, D-12), or undefined until the settings view's
    * own read lands. It is the ONLY source the settings form renders from, which is what makes a
@@ -407,6 +497,24 @@ interface OperatorState {
   /** Resume advertising; the exact mirror of {@link pauseAdvertising}, and equally non-optimistic. */
   resumeAdvertising: (baseUrl: string) => Promise<void>;
   /**
+   * Engage the ONE-WAY broadcast kill switch (SVC-04, D-14): new cohorts stop publishing anything
+   * to Bitcoin while cohorts already in flight finish under the mode they started with. Branches
+   * like {@link pauseAdvertising} - `unauthorized` takes the ONE shared session-expiry path
+   * (D-16), any other failure raises the action-error copy - and, like it, sets no local
+   * broadcast value: the chip and the replacement line both render from the SERVED bit, so a
+   * failed engage cannot leave this console claiming a service stood down when it did not.
+   *
+   * There is deliberately no counterpart action. Re-enabling is a restart, and the copy says so.
+   */
+  disableBroadcast: (baseUrl: string) => Promise<void>;
+  /**
+   * Dismiss one ENDED cohort's record from this console (SVC-04, D-15), then re-read the list so
+   * the row disappears from the SERVED projection rather than from an optimistic local filter.
+   * Branches like {@link discard}. Nothing real is touched server-side, so a failure leaves both
+   * the record and the cohort exactly as they were.
+   */
+  dismissEnded: (baseUrl: string, id: string) => Promise<void>;
+  /**
    * Open the service settings view (D-12). SPA-internal view state only, exactly like the
    * drill-down: no routed URL is introduced this phase.
    */
@@ -506,6 +614,10 @@ export const useOperator = create<OperatorState>((set, get) => ({
   pauseBusy: false,
   pauseMessage: undefined,
   pauseError: undefined,
+  operatorActions: [],
+  broadcastBusy: false,
+  broadcastError: undefined,
+  dismissing: undefined,
   settings: undefined,
   settingsStatus: 'idle',
   settingsError: undefined,
@@ -584,6 +696,13 @@ export const useOperator = create<OperatorState>((set, get) => ({
         pauseBusy: false,
         pauseMessage: undefined,
         pauseError: undefined,
+        // Drop the operator log and the kill-switch slice with the rest of the gated state: the
+        // log is session-scoped server-side too, and the next session must re-read it rather than
+        // render one session's actions under another's sign-in.
+        operatorActions: [],
+        broadcastBusy: false,
+        broadcastError: undefined,
+        dismissing: undefined,
         // Drop the settings snapshot with the rest of the gated state: it is this service's
         // in-memory configuration, and the service may be restarted into different values before
         // the next sign-in.
@@ -618,6 +737,10 @@ export const useOperator = create<OperatorState>((set, get) => ({
       pauseBusy: false,
       pauseMessage: undefined,
       pauseError: undefined,
+      operatorActions: [],
+      broadcastBusy: false,
+      broadcastError: undefined,
+      dismissing: undefined,
       settings: undefined,
       settingsStatus: 'idle',
       settingsError: undefined,
@@ -658,6 +781,10 @@ export const useOperator = create<OperatorState>((set, get) => ({
       // service serves no health (fail-closed boot / an older service): the strip then says
       // "Checking mode" instead of claiming a mode the service never reported.
       health: result.value.monitoring?.health,
+      // The served operator log (D-14/D-15). A service that serves none reads as an empty ring
+      // rather than a stale one from a previous read; the log's LOADING posture is keyed on
+      // `lastUpdated` below, so an empty array here is never rendered as a false empty claim.
+      operatorActions: result.value.monitoring?.operatorActions ?? [],
       // This service's CURRENT window defaults (D-11), for the create form's help. Left undefined
       // when the service serves none: the caption then omits the figure rather than naming one
       // this service never reported.
@@ -852,6 +979,46 @@ export const useOperator = create<OperatorState>((set, get) => ({
 
   async resumeAdvertising(baseUrl) {
     await runAdvertisingToggle(set, get, baseUrl, 'resume');
+  },
+
+  async disableBroadcast(baseUrl) {
+    set({ broadcastBusy: true, broadcastError: undefined });
+    const result = await apiDisableBroadcast(baseUrl);
+    if (result.kind === 'unauthorized') {
+      // The ONE shared session-expiry path (D-16); `expireSession` clears `broadcastBusy` itself.
+      get().expireSession();
+      return;
+    }
+    if (result.kind === 'unreachable') {
+      // Nothing on the service changed, so nothing on screen changes except this line: the mode
+      // chip, the control and the log all still show the last SERVED state.
+      set({ broadcastBusy: false, broadcastError: ACTION_FAILED });
+      return;
+    }
+    // No local broadcast value is written here, deliberately. The chip and the replacement line
+    // both render from the served bit, so re-reading is what makes them move - and what makes a
+    // half-landed call safe, since nothing was painted to roll back.
+    set({ broadcastBusy: false });
+    await get().refreshCohorts(baseUrl);
+  },
+
+  async dismissEnded(baseUrl, id) {
+    set({ actionError: undefined, dismissing: id });
+    const result = await apiDismissEnded(baseUrl, id);
+    if (result.kind === 'unauthorized') {
+      get().expireSession();
+      return;
+    }
+    if (result.kind === 'unreachable') {
+      // The server's 404 body is deliberately opaque, so no reason is passed through. Nothing was
+      // dismissed and nothing real was ever at risk, so the row stays exactly as it was.
+      set({ actionError: actionFailedWith(), dismissing: undefined });
+      return;
+    }
+    // Re-read rather than filtering the row out locally: the list must show what the SERVICE now
+    // projects, which is also what makes a dismissal that raced another read resolve correctly.
+    set({ dismissing: undefined });
+    await get().refreshCohorts(baseUrl);
   },
 
   openSettings() {

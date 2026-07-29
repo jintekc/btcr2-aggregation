@@ -1,11 +1,27 @@
-import { Button, Card, SectionTitle } from '../../ui/primitives';
+import { useState } from 'react';
+import { Button, Card, ConfirmPanel, SectionTitle } from '../../ui/primitives';
+import { LogPanel } from '../LogPanel';
+import { fmtWallClock } from '../../lib/clock';
 import {
   ADVERTISING_PAUSED_LINE,
   ADVERTISING_RUNNING_LINE,
+  BROADCAST_OFF_LINE,
+  DISABLE_BROADCAST_BODY_IN_FLIGHT,
+  DISABLE_BROADCAST_BODY_NEW,
+  DISABLE_BROADCAST_BODY_ONE_WAY,
+  DISABLE_BROADCAST_BUSY,
+  DISABLE_BROADCAST_HEADING,
+  DISABLE_BROADCAST_LABEL,
   FULL_QUIESCE_GUIDANCE,
+  KEEP_BROADCAST_LABEL,
+  OPERATOR_ACTIONS_EMPTY,
+  OPERATOR_ACTIONS_EMPTY_BODY,
+  OPERATOR_ACTIONS_LOADING,
+  OPERATOR_ACTIONS_TITLE,
   RESTART_HONESTY_LINE,
   useOperator,
 } from '../../stores/operator';
+import type { LogEntry } from '../../lib/types';
 
 /** The pause control's label (ghost, never accent, never danger: this is a reversible act). */
 export const PAUSE_LABEL = 'Pause advertising';
@@ -84,6 +100,61 @@ export function serviceControlsView(input: { paused?: boolean; busy: boolean }):
 }
 
 /**
+ * What the kill-switch slot on this card renders (SVC-04, 05-UI-SPEC E9, D-14).
+ *
+ * `absent` is the answer for every service that is not broadcasting, and for the window before the
+ * first ok read: offering a control that stands down money movement on a service that moves none
+ * would be an offer to do nothing, and offering it against an UNKNOWN mode would be worse, because
+ * an operator who clicks it has taken a one-way action on a service whose mode this console never
+ * confirmed.
+ */
+export type BroadcastControlState = 'absent' | 'available' | 'engaged';
+
+/**
+ * The pure kill-switch slot state. It exists for the same reason {@link serviceControlsView} does:
+ * the honesty rules here are about what this console may CLAIM, and a rule that lives in a
+ * component is a rule the gate cannot reach.
+ *
+ * Two properties it guarantees:
+ *
+ *  1. The control appears ONLY on the served live-broadcasting mode. `live-no-broadcast` and
+ *     `hermetic` never publish, so there is nothing to stand down, and an undefined mode is
+ *     treated exactly like those: no claim, no control (the health strip's `Checking mode`
+ *     posture, applied to a control instead of a chip).
+ *  2. Once engaged, the control is REPLACED, never merely disabled. A disabled `Disable broadcast`
+ *     would imply the act is still pending or still possible from here; it is neither, and the
+ *     replacement line names the environment variable that is the only way back.
+ */
+export function broadcastControlState(input: {
+  mode?: 'hermetic' | 'live-no-broadcast' | 'live';
+  broadcastDisabled?: boolean;
+}): BroadcastControlState {
+  if (input.mode !== 'live') {
+    return 'absent';
+  }
+  return input.broadcastDisabled === true ? 'engaged' : 'available';
+}
+
+/** What the `Operator actions` log renders, given whether a read has landed yet. */
+export type OperatorLogState = 'loading' | 'empty' | 'entries';
+
+/**
+ * The pure log state (05-UI-SPEC E13). The distinction it exists to make: an empty array BEFORE
+ * the first read and an empty array AFTER one mean different things, and only the second may
+ * render `No operator actions this session.` The first is the console-level loading posture, so
+ * the log never makes a false claim about the operator's own history.
+ *
+ * A STALE read keeps whatever entries it already has (the inherited unreachable banner is the
+ * error surface, D-25): freezing is honest, dropping entries would not be.
+ */
+export function operatorLogState(input: { loaded: boolean; entries: number }): OperatorLogState {
+  if (!input.loaded) {
+    return 'loading';
+  }
+  return input.entries === 0 ? 'empty' : 'entries';
+}
+
+/**
  * The `Service controls` card (SVC-04, 05-UI-SPEC E4), mounted directly under the health strip and
  * above both console views.
  *
@@ -119,8 +190,21 @@ export function ServiceControls({ baseUrl }: { baseUrl: string }) {
   const resume = useOperator((s) => s.resumeAdvertising);
   const openSettings = useOperator((s) => s.openSettings);
   const consoleView = useOperator((s) => s.view);
+  // The kill switch reads the SAME served health payload the pause bit and the mode chip do, so
+  // the control, the chip and the enforced behavior all move on one snapshot (D-14).
+  const mode = useOperator((s) => s.health?.mode);
+  const broadcastDisabled = useOperator((s) => s.health?.broadcastDisabled);
+  const broadcastBusy = useOperator((s) => s.broadcastBusy);
+  const broadcastError = useOperator((s) => s.broadcastError);
+  const disableBroadcast = useOperator((s) => s.disableBroadcast);
+  const operatorActions = useOperator((s) => s.operatorActions);
+  // A read has landed for this session exactly when the list poll stamped its freshness clock.
+  const loaded = useOperator((s) => s.lastUpdated !== undefined);
+  const [confirmingBroadcast, setConfirmingBroadcast] = useState(false);
 
   const view = serviceControlsView({ paused, busy: pauseBusy });
+  const broadcast = broadcastControlState({ mode, broadcastDisabled });
+  const logState = operatorLogState({ loaded, entries: operatorActions.length });
 
   return (
     <Card className="space-y-2 px-4 py-2">
@@ -147,7 +231,52 @@ export function ServiceControls({ baseUrl }: { baseUrl: string }) {
             {SETTINGS_ENTRY_LABEL}
           </Button>
         ) : null}
+        {/* The kill switch (D-14). Danger tone because this is the rung-3 act on this card, and
+            rendered only while a confirm is not open, so the button and its own confirmation are
+            never on screen together. */}
+        {broadcast === 'available' && !confirmingBroadcast ? (
+          <Button variant="danger" onClick={() => setConfirmingBroadcast(true)}>
+            {DISABLE_BROADCAST_LABEL}
+          </Button>
+        ) : null}
       </div>
+
+      {/* Once engaged the control is GONE, replaced by the only route back. A disabled button
+          here would imply the act is still pending or still reversible from this console; it is
+          neither, and the line names BROADCAST=1 because "set the broadcast environment" is only
+          actionable if the operator knows which variable. */}
+      {broadcast === 'engaged' ? <p className="text-sm text-muted">{BROADCAST_OFF_LINE}</p> : null}
+
+      {/* The rung-3 ceremony (UI-SPEC E9). Three stacked body lines, in the order an operator
+          needs them: what happens to new cohorts, what happens to work already in flight, and
+          that there is no way back from here. */}
+      {confirmingBroadcast ? (
+        <ConfirmPanel
+          tone="bad"
+          heading={DISABLE_BROADCAST_HEADING}
+          body={
+            <>
+              <p>{DISABLE_BROADCAST_BODY_NEW}</p>
+              <p>{DISABLE_BROADCAST_BODY_IN_FLIGHT}</p>
+              <p>{DISABLE_BROADCAST_BODY_ONE_WAY}</p>
+            </>
+          }
+          confirmLabel={DISABLE_BROADCAST_LABEL}
+          cancelLabel={KEEP_BROADCAST_LABEL}
+          busy={broadcastBusy}
+          busyLabel={DISABLE_BROADCAST_BUSY}
+          onConfirm={() => {
+            void disableBroadcast(baseUrl).then(() => setConfirmingBroadcast(false));
+          }}
+          onCancel={() => setConfirmingBroadcast(false)}
+        />
+      ) : null}
+
+      {/* A failed engage says so HERE, and the mode chip above stays exactly as the service last
+          reported it: nothing was painted, so there is nothing to roll back. */}
+      {broadcastError ? (
+        <div className="rounded-lg border border-bad/40 bg-bad/10 px-3 py-2 text-sm text-bad">{broadcastError}</div>
+      ) : null}
 
       {/* A failed toggle says so HERE, on the surface that raised it, while the state line above
           stays exactly as the service last reported it. */}
@@ -168,6 +297,38 @@ export function ServiceControls({ baseUrl }: { baseUrl: string }) {
           what pausing does not do is only meaningful once the card can say whether this service is
           paused at all; showing it against an unknown state invites the reading that it IS paused. */}
       {view.state !== 'unknown' ? <p className="text-sm text-muted">{FULL_QUIESCE_GUIDANCE}</p> : null}
+
+      {/* The SERVICE-level operator actions log (D-14/D-15, UI-SPEC E13). It lives on this card
+          because these are service-level acts, and it reads from the SAME polled snapshot the
+          controls above do, so a pause and its log line land on one tick.
+
+          Three states, and the distinction between the first two is the point: before any read
+          the console-level loading posture applies, because claiming "no operator actions this
+          session" against a service that has not answered would be a false claim about the
+          operator's own history. A STALE read keeps its entries frozen under the list's inherited
+          unreachable banner rather than dropping them. */}
+      <div className="space-y-1 pt-1">
+        {logState === 'loading' ? (
+          <>
+            <SectionTitle>{OPERATOR_ACTIONS_TITLE}</SectionTitle>
+            <p className="text-sm text-muted">{OPERATOR_ACTIONS_LOADING}</p>
+          </>
+        ) : logState === 'empty' ? (
+          <>
+            <SectionTitle>{OPERATOR_ACTIONS_TITLE}</SectionTitle>
+            <p className="text-sm text-ink">{OPERATOR_ACTIONS_EMPTY}</p>
+            <p className="text-sm text-muted">{OPERATOR_ACTIONS_EMPTY_BODY}</p>
+          </>
+        ) : (
+          <LogPanel
+            title={OPERATOR_ACTIONS_TITLE}
+            entries={operatorActions as LogEntry[]}
+            emptyHint={OPERATOR_ACTIONS_EMPTY}
+            formatTime={fmtWallClock}
+            className="h-48"
+          />
+        )}
+      </div>
     </Card>
   );
 }

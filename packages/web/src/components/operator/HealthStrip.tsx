@@ -15,6 +15,15 @@ const MODE_LABEL: Record<ServiceMode, string> = {
 const LIVE_MODES: ServiceMode[] = ['live', 'live-no-broadcast'];
 
 /**
+ * The warn-tone chip shown once the one-way broadcast kill switch has engaged (SVC-04, D-14,
+ * 05-UI-SPEC E9). Authored HERE, beside the strip's other chip labels, so every label on this row
+ * has one home and the audit grep that proves the chip renders alongside the mode chip reads this
+ * file. `(this session)` is doing real work: the state is in-memory, and a restart returns this
+ * service to its boot environment.
+ */
+export const BROADCAST_OFF_CHIP = 'Broadcast off (this session)';
+
+/**
  * The always-visible operator health strip (D-17/D-25/D-51). A single-line, wrapping chip row
  * that discloses, at a glance: the broadcast mode, the active Bitcoin network (reusing the
  * header's network-chip treatment, including the mainnet REAL FUNDS variant), esplora
@@ -56,6 +65,10 @@ export function HealthStrip() {
   // deliberate: an absent bit means the service has not reported yet, and an unreported state must
   // never render as a paused claim (T-05-05-01).
   const paused = health?.paused === true;
+  // The one-way broadcast kill switch (SVC-04, D-14), read from the SERVED bit only, with the same
+  // `=== true` discipline as `paused`: an absent bit means the service has not reported, and an
+  // unreported state must never render as a claim either way.
+  const broadcastOff = health?.broadcastDisabled === true;
   const stale = listStale || detailStale;
   const net = resolveNetwork(network);
   const ipfsOn = ipfsInfo?.enabled === true;
@@ -114,6 +127,14 @@ export function HealthStrip() {
           broadcasts. `warn` because a drain is deliberate but non-default - something a returning
           operator must notice, not an error. */}
       {paused ? <Badge tone="warn">Advertising paused</Badge> : null}
+
+      {/* The broadcast-off chip rides BESIDE the mode chip above, never instead of it (D-14). That
+          placement is the honesty: this service really did boot in the mode the first chip names,
+          and its esplora reads (resolve, anchor tracking, the funding watch) really are still live.
+          Rewriting the mode chip would tell the operator this service booted a way it did not
+          (T-05-08-03). `warn` for the same reason the paused chip is: deliberate but non-default,
+          something a returning operator must notice rather than an error. */}
+      {broadcastOff ? <Badge tone="warn">{BROADCAST_OFF_CHIP}</Badge> : null}
 
       <Badge tone="neutral">{ipfsOn ? 'IPFS on' : 'IPFS off'}</Badge>
 

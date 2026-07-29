@@ -625,6 +625,18 @@ export interface ServiceHealthDTO {
    * how this service signs and broadcasts, where pause says whether it is offering new cohorts.
    */
   paused: boolean;
+  /**
+   * True once the operator engaged the one-way broadcast kill switch this session (SVC-04,
+   * Phase 5 D-14). It rides BESIDE {@link mode}, which is never rewritten when it flips: this
+   * service really did boot the way `mode` says, and its chain reads (resolve, anchor tracking)
+   * really are still live. The health strip therefore renders a SECOND chip rather than changing
+   * the mode chip, which would misreport how the service booted.
+   *
+   * Optional on the WIRE for the same reason {@link ServiceHealthDTO} itself is optional on
+   * `monitoring`: a service built before this key existed serves health without it, and the
+   * console must then make no broadcast-off claim rather than presuming one.
+   */
+  broadcastDisabled?: boolean;
 }
 
 /**
@@ -639,7 +651,20 @@ export interface ServiceHealthDTO {
  */
 export interface OperatorCohortsDTO {
   cohorts: OperatorCohortDTO[];
-  monitoring?: { rows: CohortSummaryDTO[]; metrics: ServiceMetricsDTO; health?: ServiceHealthDTO };
+  monitoring?: {
+    rows: CohortSummaryDTO[];
+    metrics: ServiceMetricsDTO;
+    health?: ServiceHealthDTO;
+    /**
+     * The SERVICE-level operator actions log (SVC-04, D-14/D-15), oldest-first with server
+     * wall-clock stamps. It rides this read rather than a stream of its own (ADR 0016), so the
+     * log refreshes on the same tick as the rows, the metrics and the health chips.
+     *
+     * Optional on the wire like `health`: a service that serves none leaves the console showing
+     * no log rather than an empty-log claim it was never told.
+     */
+    operatorActions?: ActivityEntryDTO[];
+  };
   /**
    * This service's current cohort-timing defaults (D-11). Optional on the wire for the same reason
    * `monitoring.health` is: a service built before the key existed serves the read without it, and
@@ -843,6 +868,75 @@ export async function pauseAdvertising(baseUrl: string): Promise<FetchResult<boo
 /** POST `/v1/operator/advertising/resume`; the exact mirror of {@link pauseAdvertising}. */
 export async function resumeAdvertising(baseUrl: string): Promise<FetchResult<boolean>> {
   return advertisingToggle(baseUrl, 'resume');
+}
+
+/**
+ * POST `/v1/operator/broadcast/disable` (SVC-04, Phase 5 D-14): engage the ONE-WAY broadcast kill
+ * switch. Gated + same-origin, discriminated like {@link pauseAdvertising}, and it never throws.
+ *
+ * There is deliberately no `enableBroadcast` beside it, and there never will be: ADR 0010's
+ * layered environment opt-in is the only path to money movement, so the runtime power points one
+ * way only and the console copy tells the operator that a restart is the way back.
+ *
+ * It returns the RESULTING state the service reported, not a bare success flag, for the same
+ * reason the advertising toggles do: the console renders what the SERVICE says, so a call that
+ * half-landed can never leave the card claiming a mode the service is not enforcing.
+ */
+export async function disableBroadcast(baseUrl: string): Promise<FetchResult<boolean>> {
+  let res: Response;
+  try {
+    res = await fetch(endpoint(baseUrl, '/v1/operator/broadcast/disable'), {
+      method: 'POST',
+      headers: { accept: 'application/json' },
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+  } catch {
+    return { kind: 'unreachable' };
+  }
+  if (res.status === 401) {
+    return { kind: 'unauthorized' };
+  }
+  if (!res.ok) {
+    return { kind: 'unreachable' };
+  }
+  try {
+    const body = (await res.json()) as { broadcastDisabled?: unknown };
+    if (typeof body.broadcastDisabled !== 'boolean') {
+      // Never coerce: guessing here would reintroduce exactly the client-side claim the served
+      // bit exists to eliminate, and this is the claim that says whether money can move.
+      return { kind: 'unreachable' };
+    }
+    return { kind: 'ok', value: body.broadcastDisabled };
+  } catch {
+    return { kind: 'unreachable' };
+  }
+}
+
+/**
+ * DELETE `/v1/operator/ended/:id` (SVC-04, Phase 5 D-15): clear one ended cohort's record from
+ * this console ahead of the bounded retention eviction. Gated + same-origin, discriminated like
+ * {@link discardDraft}, and it never throws.
+ *
+ * A 404 (unknown id, already dismissed, or a cohort still live) maps to `unreachable`: from the
+ * console's point of view the dismissal did not take, and the server's body is deliberately
+ * opaque. Dismissal is telemetry-only server-side, so a failure leaves nothing to undo.
+ */
+export async function dismissEnded(baseUrl: string, id: string): Promise<FetchResult<true>> {
+  let res: Response;
+  try {
+    res = await fetch(endpoint(baseUrl, `/v1/operator/ended/${encodeURIComponent(id)}`), {
+      method: 'DELETE',
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+  } catch {
+    return { kind: 'unreachable' };
+  }
+  if (res.status === 401) {
+    return { kind: 'unauthorized' };
+  }
+  return res.ok ? { kind: 'ok', value: true } : { kind: 'unreachable' };
 }
 
 /**
