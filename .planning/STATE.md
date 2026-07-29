@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Completed 05-09-PLAN.md
-last_updated: "2026-07-29T16:23:32.949Z"
+stopped_at: Completed 05-10-PLAN.md
+last_updated: "2026-07-29T16:41:34.174Z"
 last_activity: 2026-07-28
 last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 44
-  completed_plans: 39
+  completed_plans: 40
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 10 of 14
+Plan: 11 of 14
 Status: Ready to execute
 Last activity: 2026-07-28 — Phase 05 execution started
 
-Progress: [█████████░] 89%
+Progress: [█████████░] 91%
 
 ## Performance Metrics
 
@@ -100,6 +100,7 @@ Progress: [█████████░] 89%
 | Phase 05 P07 | 30 min | 3 tasks | 18 files |
 | Phase 05 P08 | 35 min | 3 tasks | 16 files |
 | Phase 05 P09 | 30 min | 2 tasks | 12 files |
+| Phase 05 P10 | 25 min | 2 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -155,6 +156,8 @@ Recent decisions affecting current work (Phase 2):
 - [Phase 05]: [Phase 05] 05-08: dismissEnded removes exactly one ended record plus its retained activity and funding view, refuses an unknown id and a still-live cohort, calls no runner verb, and appends its OWN service-level log entry from inside the method so the one action whose purpose is to remove evidence cannot be the one that goes unrecorded. The bounded (100, oldest-first) service-level operatorActions ring rides the EXISTING gated monitoring poll as an additive sibling key (ADR 0016: no new SSE channel), all entries info-toned because they are the operator's own deliberate acts. A settings change is recorded by comparing two SERVED snapshots, so a save that re-sends held values records nothing, and the values themselves are never logged (an operator-authored string would widen the row without bound). Pause/resume/settings entries live in hono-adapter where the seam actually is (the routes mutate the holder directly, so index.ts never learns), while cancel/finalize stay on the index.ts hooks. An empty log BEFORE a read is not an empty log: operatorLogState keys the loading posture on the freshness stamp, never on the array.
 - [Phase 05]: [Phase 05] 05-09 (SVC-04, D-17 badged test peers): the operator fills a cohort's remaining seats with in-process createParticipant instances that are REAL participants - the seat cap is read LIVE from the runner session at call time (never a number the browser sent), so a mid-signing cohort refuses itself with no phase check at all because it already has every seat filled. The Test peer badge comes from a per-service Set of DIDs written at spawn time and handed to createCohortMonitor as the LIVE instance (a copy taken at construction would badge nothing for every later spawn, and would fail silently); nothing in the advert or opt-in distinguishes a test peer, which is correct, so inferring one could only ever mislabel a genuine stranger. Teardown is COUNTED, not inferred: the registry exposes activeCount, releaseCohortTables releases on every settle path, service.stop() calls stopAll, and the shared stopController.signal is a third net - three specs plus the e2e assert zero afterwards. release() drops only the stop handles and KEEPS the DID set, so an ended cohort's members keep reading badged; the set carries its own oldest-first bound because nothing prunes it.
 - [Phase 05]: [Phase 05] 05-09: addTestPeersFor is exported from test-peers.ts and used by BOTH createService and the route-semantics matrix, so lifecycle-routes.spec.ts asserts the SHIPPING arithmetic over a real registry rather than a re-typed copy (only the participant factory is faked) - the matrix now covers three verbs in one shape (401 before any lookup, 400 malformed, 404 opaque unknown, 409 app-authored reason, 200 result). A peer whose start() rejects is stopped and excluded from the count so a partial failure reports what actually took a seat, and a spawn where every peer failed is a 502 rather than a 200 claiming zero. On a live cohort the rung-2 confirm states BEFORE the act that peers co-sign for real and their DIDs are anchored on the named network, and the service logs + appends an honest note that each peer's own DID registration is SKIPPED (a KEY first update needs its own funded singleton beacon address and a confirmed registration, ADR 0007) rather than attempting it where nobody would look. The member badge and row line are authored in CohortDetail.tsx beside the other member-row labels (the 05-08 HealthStrip precedent), and the surface owns its own testPeerError field because the drill-down already renders the shared actionError on two other cards.
+- [Phase 05]: [Phase 05] 05-10 (SVC-04, participant cancel narration): the aggregation protocol has NO message that could carry an operator's cancel to a seated participant (stopCohort emits nothing), so the attribution rides a narrow anonymous read, GET /v1/cohort-fate/:id, called ONCE after the post-seat gone streak has ALREADY landed the terminal state. The streak's two-consecutive-reads constant is untouched and pinned by a source assertion, because it exists to win the race against cohort-complete (03-07 CR-01) and shortening it to deliver cancel news faster would trade a real success for a faster failure. cohortFate is one expression over the retained record's OWN fate, so an expiry can never read as a cancel and no branch exists that could answer anything but the single boolean; the route mounts in the PUBLIC block ABOVE the operatorAuth gate and answers even on a fail-closed boot, because a route that existed only on an operator-enabled service would itself leak how the service was booted. Non-oracle is asserted by DEEP EQUALITY across unknown, evicted (a real cancel aged out of the 24-record retention), and never-existed, never case by case, and the route never answers 404 so the status code is not an oracle either.
+- [Phase 05]: [Phase 05] 05-10: the cancel fact reaches terminalReason as a REQUIRED boolean checked FIRST, above the stall branch, never as another alternative in the message-text chain. The shipped classifier's first branch fires on submitted-but-unsigned + no validation-requested + unexplained, which is exactly what a mid-round cancel looks like, so any other ordering would have narrated an operator's deliberate act as the stall copy the 04 D-45 fix exists to prevent; the first spec row is constructed to be that exact input and the second is the same input with the fact false. REQUIRED rather than optional so a forgotten call site is a compile error rather than a wrong sentence shown to a participant (cost: five mechanical canceled:false additions in the shipped D-45 spec, assertions unchanged). fetchCohortFate never throws and accepts only a real boolean true, so an unreachable read or a malformed body falls back to the honest 03 D-25 line and can never fabricate an accusation against an operator (T-05-10-04). A source-order pin plus a walk of every regex literal in the file keeps the technique from creeping back one alternative at a time.
 
 ### Pending Todos
 
@@ -192,7 +195,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-29T16:23:22.869Z
-Stopped at: Completed 05-09-PLAN.md
+Last session: 2026-07-29T16:41:02.668Z
+Stopped at: Completed 05-10-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
