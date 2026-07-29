@@ -7,6 +7,16 @@ import { StageTimeline } from './StageTimeline';
 import { SubmitPanel } from './SubmitPanel';
 import { CompletionSummary } from './CompletionSummary';
 
+/**
+ * The next step offered under EITHER terminal narration (SVC-04, D-02, UI-SPEC E14): the
+ * specific "the operator canceled this cohort" and the honest "this service didn't say why"
+ * both leave the participant in the same place, so both get the same two facts - what they
+ * still have, and what they can do now. Fixed contract copy, no interpolation, authored here
+ * beside the card that renders it (the 05-08 HealthStrip precedent).
+ */
+export const TERMINAL_NEXT_STEP_LINE =
+  'Your keys and identity are still in this browser. Pick another cohort from the directory when one opens.';
+
 /** Log-line tone -> text color for the activity log inside the technical-detail expander. */
 const LEVEL_CLASS: Record<LogLevel, string> = {
   info: 'text-muted',
@@ -75,6 +85,9 @@ export function CohortPage({ baseUrl: _baseUrl, onBrowse }: { baseUrl: string; o
   const liveCohort = useParticipant((s) => s.liveCohort);
   const awaitingFunding = useParticipant((s) => s.awaitingFunding);
   const validationRequested = useParticipant((s) => s.validationRequested);
+  // The SERVICE's own report that this cohort was canceled (SVC-04, D-02). False until the
+  // public fate read says otherwise, so the honest fallback is what renders by default.
+  const canceled = useParticipant((s) => s.canceled);
   const error = useParticipant((s) => s.error);
   const startOver = useParticipant((s) => s.startOver);
 
@@ -185,10 +198,17 @@ export function CohortPage({ baseUrl: _baseUrl, onBrowse }: { baseUrl: string; o
       ) : null}
 
       {/* Terminal failure (D-25, E7): a best-effort specific reason with the honest fallback,
-          landed ON the cohort page (not a browse-directory error card). */}
+          landed ON the cohort page (not a browse-directory error card). An operator's deliberate
+          cancel is the ONE terminal cause the service can state about itself (SVC-04, D-02), so it
+          is passed in as a fact rather than inferred from the reason text; when it is absent the
+          inherited honest fallback renders unchanged. Either way the next-step line follows, so a
+          participant is never left holding a dead end with no idea what they still have. */}
       {failed ? (
         <Card className="space-y-3 border-bad/40 bg-bad/10 p-5">
-          <p className="text-sm text-bad">{terminalReason({ error, steps, validationRequested })}</p>
+          <p className="text-sm text-bad">
+            {terminalReason({ canceled, error, steps, validationRequested })}
+          </p>
+          <p className="text-sm text-bad/80">{TERMINAL_NEXT_STEP_LINE}</p>
           <Button
             variant="ghost"
             onClick={() => {

@@ -28,6 +28,7 @@ import {
 import { fetchStatus, type ServiceStatus } from '../lib/directory';
 import { fetchAnchor, type AnchorDTO } from '../lib/anchor';
 import { fetchFunding } from '../lib/funding';
+import { fetchCohortFate } from '../lib/cohort-fate';
 import { elapsed } from '../lib/clock';
 import { fetchNetworkConfig } from '../lib/config';
 import { fetchDirectory, type DirectoryCohortDTO } from '../lib/operator';
@@ -223,6 +224,17 @@ interface ParticipantState {
    */
   validationRequested: boolean;
   /**
+   * True once the SERVICE itself reported that this cohort was canceled by its operator (SVC-04,
+   * D-02), read ONCE from the public `GET /v1/cohort-fate/:id` after the post-seat gone streak
+   * has already declared the cohort dead. It upgrades the honest terminal fallback into a
+   * specific attribution and changes no timing whatsoever.
+   *
+   * Stays false when the read is unreachable or reports false, so an unreachable service can
+   * never fabricate an accusation against an operator (T-05-10-04). A per-round fact (reset via
+   * INITIAL_OUTCOME).
+   */
+  canceled: boolean;
+  /**
    * True once this participant observed the runner's `fallback-requested` event (D-23):
    * the n-of-n key-path stalled and the cohort co-signed the ADR-042 k-of-n script-path
    * fallback instead. Drives the explicit k-of-n fallback completion outcome; reset per round.
@@ -324,8 +336,13 @@ interface ParticipantState {
    * cohort absent from the directory entirely (any phase) while the round is still live is a
    * candidate "cohort ended" -> a terminal fail with a best-effort D-25 reason. A row present
    * in a signing phase is normal (D-26 in-flight rows). Driven by the post-seat directory poll.
+   *
+   * `baseUrl` is OPTIONAL and is used for one thing only: once the gone streak has ALREADY
+   * declared the cohort dead, ask the public fate read whether the operator canceled it, and
+   * upgrade the terminal copy if so (SVC-04, D-02). Omitting it keeps the inherited behavior
+   * byte for byte - the honest fallback, and no network call at all.
    */
-  handlePostSeatSnapshot(rows: DirectoryCohortDTO[]): void;
+  handlePostSeatSnapshot(rows: DirectoryCohortDTO[], baseUrl?: string): void;
   /**
    * Start over from any terminal state (D-10): clear the round record AND erase the
    * in-memory identity (returning to no-identity), tearing down every poll/deferred. The
@@ -895,7 +912,24 @@ export function shouldAutoResolve(anchor: AnchorDTO | null): boolean {
 }
 
 /**
- * Best-effort terminal reason (D-25/D-45, UI-SPEC terminal copy). Maps the store's terminal
+ * The narration for a cohort the OPERATOR deliberately ended (SVC-04, D-02, UI-SPEC E14). Fixed
+ * contract copy, no interpolation. It names the actor because a cancel is a decision, not a
+ * malfunction, and the participant deserves to know which it was.
+ */
+export const CANCELED_NARRATION = 'The operator canceled this cohort.';
+
+/**
+ * The inherited honest fallback (03 D-25) for a cohort that ended with no attribution carried.
+ * This is what renders when the fate read is unreachable or reports false: no certainty is
+ * invented, ever.
+ */
+export const HONEST_TERMINAL_FALLBACK = "The cohort ended and this service didn't say why.";
+
+/** The dedicated 04 D-45 stall copy, exported so the cancel-versus-stall pin can name it. */
+export const STALL_NARRATION = 'This service stalled while collecting updates.';
+
+/**
+ * Best-effort terminal reason (D-25/D-45/D-02, UI-SPEC terminal copy). Maps the store's terminal
  * facts to a specific, honest sentence where the cause is recognizable, falling back to the
  * honest "didn't say why" when it is not (never inventing a cause). Exported as a pure function
  * so CohortPage renders it and the stall-predicate rekey is unit-testable.
@@ -910,8 +944,28 @@ export function shouldAutoResolve(anchor: AnchorDTO | null): boolean {
  *   still died unexplained, so a collection stall is provably wrong -> the uncertainty-honest
  *   `Co-signing could not complete, and this service didn't say why.`
  * - A reason string that positively names a stall keeps the dedicated stall copy regardless.
+ *
+ * The `canceled` input is checked FIRST, and that ordering is load-bearing (SVC-04, D-02,
+ * RESEARCH Pitfall 5). A cohort canceled after this participant submitted but before the service
+ * reached validation satisfies EVERY condition of the stall branch below - submitted-but-unsigned,
+ * no validation-requested, an unexplained reason - so with any other ordering an operator's
+ * deliberate act would be narrated to the participant as a service stall, which is precisely the
+ * misattribution D-45 exists to prevent. Checking the fact first makes that outcome unreachable
+ * rather than unlikely.
+ *
+ * It is a dedicated BOOLEAN and never another alternative in the regular-expression chain below.
+ * The whole point of D-45 was to stop keying narration on message text, and the cancel fact is
+ * carried out of band here exactly as it is server-side (the intent registry declares the fate
+ * before the library call rather than reading it off a rejection message). A false or absent fact
+ * changes nothing: the inherited fallback renders and no certainty is invented (T-05-10-04).
  */
 export function terminalReason(input: {
+  /**
+   * True ONLY when the SERVICE itself reported this cohort canceled, via the public fate read
+   * after the post-seat gone streak already declared the cohort dead. Never inferred from a
+   * message, a timeout, or an absence.
+   */
+  canceled: boolean;
   error: string | null;
   steps: Record<StepKey, StepStatus>;
   validationRequested: boolean;
@@ -921,6 +975,11 @@ export function terminalReason(input: {
   const submittedButUnsigned = input.steps.submit === 'done' && input.steps.sign !== 'done';
   const unexplained = !raw || /didn.t say why/.test(e);
 
+  // FIRST, above every inference: the one fact the service actually stated about this cohort.
+  // Everything below this line is best-effort classification of a reason string; this is not.
+  if (input.canceled) {
+    return CANCELED_NARRATION;
+  }
   // POSITIVE stall (D-45): the reason itself names a collecting-updates stall, OR our update is in
   // but the service NEVER reached validation (no validation-requested fact) and the death is
   // otherwise unexplained. The ABSENCE of validation-requested is the positive discriminator, not
@@ -929,7 +988,7 @@ export function terminalReason(input: {
     /stalled|collectingupdates|collecting updates|waiting for all members/.test(e) ||
     (submittedButUnsigned && !input.validationRequested && unexplained)
   ) {
-    return 'This service stalled while collecting updates.';
+    return STALL_NARRATION;
   }
   // UNCERTAINTY-HONEST (D-45): the service DID collect every update (validation-requested fired) but
   // co-signing still died unexplained with our update unsigned. We cannot claim a collection stall,
@@ -950,7 +1009,7 @@ export function terminalReason(input: {
     return 'The cohort ended: your seat was lost.';
   }
   if (unexplained) {
-    return "The cohort ended and this service didn't say why.";
+    return HONEST_TERMINAL_FALLBACK;
   }
   return `The cohort ended: ${raw}`;
 }
@@ -1024,6 +1083,7 @@ const INITIAL_OUTCOME = {
   liveCohort: false,
   awaitingFunding: false,
   validationRequested: false,
+  canceled: false,
   fallbackObserved: false,
   nonInclusionReason: null as string | null,
   cohortThreshold: null as number | null,
@@ -1325,7 +1385,10 @@ export const useParticipant = create<ParticipantState>((set, get) => {
                 return;
               }
               postSeatFailures = 0;
-              get().handlePostSeatSnapshot(rows);
+              // The baseUrl rides along so that IF this snapshot completes the gone streak, the
+              // handler can ask the public fate read why (SVC-04, D-02). It changes nothing about
+              // when the streak triggers.
+              get().handlePostSeatSnapshot(rows, baseUrl);
             },
             () => {
               // A directory fetch error is "can't reach this service", not "cohort gone"
@@ -1678,7 +1741,7 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       anchorPoll = setInterval(tick, ANCHOR_POLL_MS);
     },
 
-    handlePostSeatSnapshot(rows) {
+    handlePostSeatSnapshot(rows, baseUrl) {
       const { status, seated, pickedCohortId } = get();
       // Only meaningful while seated in a still-live round for a picked cohort. Before
       // seating the pre-seat join poll owns the window; once complete/failed there is
@@ -1709,7 +1772,31 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         // cohort goes dark and the runner emits no cohort-expired event to members (Finding
         // 2). Land the honest D-25 fallback reason - best-effort, no invented certainty.
         append('warn', `cohort ${pickedCohortId} left the directory before completing`);
-        fail("The cohort ended and this service didn't say why.");
+        fail(HONEST_TERMINAL_FALLBACK);
+        // ...then, and ONLY then, ask why (SVC-04, D-02). The terminal state above is already
+        // landed on exactly the shipped timing: the streak's consecutive-reads requirement exists
+        // to win the race against cohort-complete (03-07 CR-01) and is untouched, and this read
+        // runs AFTER it, once, never on a loop. It can only ever UPGRADE the copy from the honest
+        // fallback to the operator's own attribution; an unreachable read or a false answer leaves
+        // the fallback exactly as it is, because a network fault must not be able to accuse an
+        // operator of anything (T-05-10-04).
+        if (baseUrl) {
+          const askedFor = pickedCohortId;
+          void fetchCohortFate(baseUrl, askedFor).then((fate) => {
+            // Guard on the ROUND, not on the poll epoch: `fail()` already tore the poll down, so
+            // an epoch check would reject every answer. The question was asked about one cohort in
+            // one failed round, so the answer applies only if that is still what the store holds.
+            const s = get();
+            if (fate.kind !== 'ok' || !fate.canceled) {
+              return;
+            }
+            if (s.pickedCohortId !== askedFor || s.status !== 'failed') {
+              return;
+            }
+            append('info', `service reports cohort ${askedFor} was canceled by the operator`);
+            set({ canceled: true });
+          });
+        }
         return;
       }
       // Present (a signing-phase in-flight row is normal, D-26): the cohort is alive, so any
