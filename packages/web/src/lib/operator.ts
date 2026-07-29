@@ -401,6 +401,16 @@ export interface CohortMemberDTO {
   round: MemberRound;
   participantPk?: string;
   communicationPk?: string;
+  /**
+   * True for a member the OPERATOR added as an in-process test peer (SVC-04, D-17). Optional on
+   * the wire, and absent for every ordinary member, so an older service simply badges nothing
+   * rather than the console presuming an answer it was not given.
+   *
+   * The service derives it from the per-service set of DIDs it spawned, never from anything on
+   * the protocol wire, so a genuine external participant can never be labelled as the operator's
+   * own. The console therefore renders the badge as a plain served fact.
+   */
+  testPeer?: boolean;
 }
 
 /**
@@ -908,6 +918,78 @@ export async function disableBroadcast(baseUrl: string): Promise<FetchResult<boo
       return { kind: 'unreachable' };
     }
     return { kind: 'ok', value: body.broadcastDisabled };
+  } catch {
+    return { kind: 'unreachable' };
+  }
+}
+
+/**
+ * The result of an add-test-peers call (SVC-04, Phase 5 D-17). It extends the shared
+ * {@link FetchResult} vocabulary with the same `refused` member {@link FinalizeResult} carries,
+ * and for the same reason: the server answers 409 when the cohort has no seats left, and it sends
+ * the human reason with it.
+ *
+ * Preserving that reason matters because the console's rendered seat count is one poll old by the
+ * time the operator clicks. A cohort that filled in between is a RACE, not a fault, and the
+ * operator deserves to read the specific sentence rather than a bare "that didn't work".
+ */
+export type AddTestPeersResult = FetchResult<{ spawned: number }> | { kind: 'refused'; reason: string };
+
+/**
+ * POST `/v1/operator/cohorts/:id/test-peers` (SVC-04, Phase 5 D-17): fill a cohort's remaining
+ * seats with in-process participants this service spawns, so one operator can rehearse the whole
+ * loop alone. Gated + same-origin, discriminated like {@link finalizeCohort}, and it never throws.
+ *
+ * `count` is sent only when the caller asked for a specific number; omitting it is the "fill every
+ * remaining seat" request, which is what the console's own control asks for. The service caps
+ * whatever arrives at the cohort's real remaining seats, so this is a request, never a promise.
+ *
+ * A 404 (unknown, never advertised, or already settled) stays `unreachable`, matching cancel: the
+ * action did not take and the server's 404 body is deliberately opaque.
+ */
+export async function addTestPeers(
+  baseUrl: string,
+  id: string,
+  count?: number,
+): Promise<AddTestPeersResult> {
+  let res: Response;
+  try {
+    res = await fetch(endpoint(baseUrl, `/v1/operator/cohorts/${encodeURIComponent(id)}/test-peers`), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify(count === undefined ? {} : { count }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+  } catch {
+    return { kind: 'unreachable' };
+  }
+  if (res.status === 401) {
+    return { kind: 'unauthorized' };
+  }
+  if (res.status === 409) {
+    // App-authored server-side (never a library string), so it is safe to render verbatim.
+    let reason = '';
+    try {
+      const body = (await res.json()) as { error?: string };
+      if (typeof body.error === 'string') {
+        reason = body.error;
+      }
+    } catch {
+      // Non-JSON body: refuse with no reason rather than inventing one.
+    }
+    return { kind: 'refused', reason };
+  }
+  if (!res.ok) {
+    return { kind: 'unreachable' };
+  }
+  try {
+    const body = (await res.json()) as { spawned?: unknown };
+    // Never coerce a missing count into a number: the member list comes from the next served read
+    // either way, and a fabricated count would be the one number on this screen nothing produced.
+    return typeof body.spawned === 'number'
+      ? { kind: 'ok', value: { spawned: body.spawned } }
+      : { kind: 'unreachable' };
   } catch {
     return { kind: 'unreachable' };
   }

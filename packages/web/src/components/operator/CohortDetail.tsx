@@ -1,12 +1,33 @@
-import { useEffect } from 'react';
-import { Badge, Button, Card, CopyField, Expander, Mono, SectionTitle, StatusDot } from '../../ui/primitives';
+import { useEffect, useState } from 'react';
+import {
+  Badge,
+  Button,
+  Card,
+  ConfirmPanel,
+  CopyField,
+  Expander,
+  Mono,
+  SectionTitle,
+  StatusDot,
+} from '../../ui/primitives';
 import { LogPanel } from '../LogPanel';
 import { OperatorStageTimeline } from './OperatorStageTimeline';
 import { FundingStage } from './FundingStage';
 import { LifecycleActions } from './LifecycleActions';
 import { fmtWallClock } from '../../lib/clock';
 import { seatReclaimNoteVisible } from '../../lib/lifecycle';
-import { useOperator } from '../../stores/operator';
+import {
+  ADD_TEST_PEERS_BODY,
+  ADD_TEST_PEERS_BUSY,
+  ADD_TEST_PEERS_CANCEL_LABEL,
+  ADD_TEST_PEERS_LABEL,
+  addTestPeersConfirmLabel,
+  addTestPeersHeading,
+  addTestPeersHelp,
+  liveTestPeersLine,
+  NO_SEATS_LEFT_REASON,
+  useOperator,
+} from '../../stores/operator';
 import { useParticipant } from '../../stores/participant';
 import type { AnchorDTO } from '../../lib/anchor';
 import type { CohortMemberDTO, MemberRound, SubmissionDTO } from '../../lib/operator';
@@ -49,6 +70,15 @@ const ROUND_LABEL: Record<MemberRound, string> = {
   'nonce-sent': 'Nonce sent',
   rejected: 'Rejected',
 };
+/**
+ * The member-row labels for a peer the operator added (SVC-04, D-17, UI-SPEC E11). Authored here
+ * beside the other member-row labels this file renders inline, the same way `HealthStrip.tsx`
+ * owns its chip labels: every label on a member row has one home, and the audit grep that proves
+ * both the badge and the line render reads this file.
+ */
+const TEST_PEER_BADGE = 'Test peer';
+const TEST_PEER_ROW_LINE = 'Test peer added by the operator.';
+
 const ROUND_TONE: Record<MemberRound, 'neutral' | 'accent' | 'bad'> = {
   seated: 'neutral',
   submitted: 'accent',
@@ -57,14 +87,22 @@ const ROUND_TONE: Record<MemberRound, 'neutral' | 'accent' | 'bad'> = {
   rejected: 'bad',
 };
 
-/** One seated member row: shortened DID + copy-full, round-state chip, and a Technical detail expander (D-28/D-31). */
+/**
+ * One seated member row: shortened DID + copy-full, round-state chip, and a Technical detail
+ * expander (D-28/D-31). A member the OPERATOR added as a test peer (D-17) carries an extra
+ * NEUTRAL badge and a plain line, INLINE in this same list: a test peer really is a participant,
+ * so pulling it into a separate section would misrepresent both the protocol and the cohort's
+ * seat count. The badge is never accent toned, because a test peer is not a progress signal.
+ */
 function SeatedRow({ member }: { member: CohortMemberDTO }) {
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
         <Mono className="text-ink">{shortDid(member.did)}</Mono>
         <Badge tone={ROUND_TONE[member.round]}>{ROUND_LABEL[member.round]}</Badge>
+        {member.testPeer ? <Badge tone="neutral">{TEST_PEER_BADGE}</Badge> : null}
       </div>
+      {member.testPeer ? <p className="text-sm text-muted">{TEST_PEER_ROW_LINE}</p> : null}
       <CopyField label="member did" value={member.did} />
       {member.participantPk || member.communicationPk ? (
         <Expander title="Technical detail">
@@ -84,7 +122,94 @@ function PendingRow({ member }: { member: CohortMemberDTO }) {
     <div className="flex flex-wrap items-center gap-2">
       <Badge tone="neutral">Pending</Badge>
       <Mono className="text-muted">{shortDid(member.did)}</Mono>
-      <span className="text-sm text-muted">Joining, not yet seated.</span>
+      {/* A peer the operator added is badged from the moment it opts in, not only once seated:
+          the operator should never have to wonder whose opt-in they are looking at. */}
+      {member.testPeer ? <Badge tone="neutral">{TEST_PEER_BADGE}</Badge> : null}
+      <span className="text-sm text-muted">
+        {member.testPeer ? TEST_PEER_ROW_LINE : 'Joining, not yet seated.'}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * The test-peer action (SVC-04, D-17, UI-SPEC E11), rendered inside the Members card because it is
+ * about who is in this cohort's seats.
+ *
+ * `remaining` is recomputed from the SERVED detail on every render, so the label, the help line and
+ * the confirm heading all name the same number the service would enforce a moment later; when it
+ * reaches zero the control renders DISABLED with the real reason rather than vanishing, because
+ * the act is a real one that simply has nothing left to do here.
+ *
+ * The confirm is rung 2 of the ceremony ladder: warn tone, one body, no typed value. Nothing is
+ * destroyed by adding a peer. On a LIVE broadcasting service an extra line inside the SAME confirm
+ * states that the peers co-sign for real and their DIDs are anchored on the named network, so the
+ * operator learns it before committing rather than from a block explorer afterwards.
+ */
+function TestPeerAction({
+  baseUrl,
+  cohortId,
+  remaining,
+  live,
+  network,
+}: {
+  baseUrl: string;
+  cohortId: string;
+  remaining: number;
+  live: boolean;
+  network: string;
+}) {
+  const addTestPeers = useOperator((s) => s.addTestPeers);
+  const addingTestPeers = useOperator((s) => s.addingTestPeers);
+  // Its OWN error field, not the shared `actionError`: this page already renders that one on the
+  // Lifecycle card and again on the Export card, so reusing it would print one failure three times.
+  const testPeerError = useOperator((s) => s.testPeerError);
+  const [confirming, setConfirming] = useState(false);
+
+  if (confirming) {
+    return (
+      <div className="space-y-2">
+        <ConfirmPanel
+          tone="warn"
+          heading={addTestPeersHeading(remaining)}
+          body={
+            <>
+              <p>{ADD_TEST_PEERS_BODY}</p>
+              {live ? <p>{liveTestPeersLine(network)}</p> : null}
+            </>
+          }
+          confirmLabel={addTestPeersConfirmLabel(remaining)}
+          cancelLabel={ADD_TEST_PEERS_CANCEL_LABEL}
+          busy={addingTestPeers === cohortId}
+          busyLabel={ADD_TEST_PEERS_BUSY}
+          onConfirm={() => void addTestPeers(baseUrl, cohortId)}
+          onCancel={() => setConfirming(false)}
+        />
+        {/* A failed spawn: the cohort is unchanged, and the confirm stays open so the operator can
+            retry or back out without hunting for the control again. */}
+        {testPeerError ? (
+          <p className="rounded-lg border border-bad/40 bg-bad/10 px-3 py-2 text-sm text-bad">
+            {testPeerError}
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button variant="ghost" disabled={remaining === 0} onClick={() => setConfirming(true)}>
+          {ADD_TEST_PEERS_LABEL}
+        </Button>
+        <span className="text-sm text-muted">
+          {remaining === 0 ? NO_SEATS_LEFT_REASON : addTestPeersHelp(remaining)}
+        </span>
+      </div>
+      {testPeerError ? (
+        <p className="rounded-lg border border-bad/40 bg-bad/10 px-3 py-2 text-sm text-bad">
+          {testPeerError}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -182,6 +307,9 @@ export function CohortDetail({ baseUrl, cohortId }: { baseUrl: string; cohortId:
   // as every gated read, and a fault surfaces a message instead of a silent no-op click.
   const exportCohort = useOperator((s) => s.exportCohort);
   const actionError = useOperator((s) => s.actionError);
+  // The SERVED broadcast mode (D-17): only a live BROADCASTING service anchors a test peer's DID,
+  // so only that mode gets the extra confirm line. An absent health read makes no claim at all.
+  const health = useOperator((s) => s.health);
   // The service's single active network, for the funding stage's beacon-address label (D-36).
   const activeNetwork = useParticipant((s) => s.network);
 
@@ -272,6 +400,15 @@ export function CohortDetail({ baseUrl, cohortId }: { baseUrl: string; cohortId:
             {seatReclaimNoteVisible(detail) ? (
               <p className="text-sm text-muted">{SEAT_RECLAIM_NOTE}</p>
             ) : null}
+            {/* Test peers (D-17): the operator's own participants, added into the seats of THIS
+                cohort, so the control lives with the member list it changes. */}
+            <TestPeerAction
+              baseUrl={baseUrl}
+              cohortId={cohortId}
+              remaining={Math.max(0, detail.capacity - detail.seatsJoined)}
+              live={health?.mode === 'live'}
+              network={activeNetwork}
+            />
           </Card>
 
           {/* Submissions (D-30). */}

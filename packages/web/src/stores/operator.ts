@@ -4,6 +4,7 @@ import {
   logout as apiLogout,
   advertise as apiAdvertise,
   readvertise as apiReadvertise,
+  addTestPeers as apiAddTestPeers,
   cancelCohort as apiCancelCohort,
   createDraft as apiCreateDraft,
   updateDraft as apiUpdateDraft,
@@ -261,6 +262,49 @@ export const OPERATOR_ACTIONS_EMPTY_BODY =
  */
 export const OPERATOR_ACTIONS_LOADING = 'Checking operator actions';
 
+/**
+ * The TEST-PEER copy set (SVC-04, 05-UI-SPEC E11, D-17). Rung 2 of the ceremony ladder: warn tone,
+ * a simple confirm stating the consequence, no typed value. Nothing is destroyed by adding a peer,
+ * but on a live cohort the peers co-sign for real, so the confirm says so BEFORE the act rather
+ * than leaving the operator to discover it from a block explorer (T-05-09-04).
+ *
+ * The framing throughout is REHEARSING YOUR OWN SERVICE. There is no automatic seat padding
+ * anywhere in this product and no boot-time spawn loop; every peer exists because the operator
+ * asked for it, on one named cohort (HOST-03 posture). Every string is exact contract copy and
+ * free of the long dash per house style; the only interpolations are a small integer seat count
+ * and the service's own network name.
+ *
+ * The member-row BADGE and LINE are deliberately not here: they are authored in
+ * `components/operator/CohortDetail.tsx` beside the other member-row labels that file renders
+ * inline, the same way `HealthStrip.tsx` owns its chip labels.
+ */
+export const ADD_TEST_PEERS_LABEL = 'Fill remaining seats with test peers';
+export const addTestPeersHelp = (remaining: number): string =>
+  `Adds ${remaining} in-process test participants so you can rehearse this service on your own. ` +
+  'They use throwaway keys created inside this process.';
+export const addTestPeersHeading = (remaining: number): string =>
+  `Add ${remaining} test peers to this cohort?`;
+export const ADD_TEST_PEERS_BODY =
+  'They join the remaining seats and co-sign like any other participant. They are badged as test ' +
+  'peers everywhere on this console.';
+/**
+ * The live-mode line, rendered inside the SAME confirm rather than as a separate step. On a live
+ * cohort these peers really do co-sign a real transaction and their DIDs really are anchored; that
+ * fact belongs where the operator is deciding, not on a page they may never open.
+ */
+export const liveTestPeersLine = (network: string): string =>
+  `This is a live cohort, so test peers co-sign for real and their DIDs are anchored on ${network}.`;
+export const addTestPeersConfirmLabel = (remaining: number): string => `Add ${remaining} test peers`;
+export const ADD_TEST_PEERS_CANCEL_LABEL = 'Cancel';
+/** The in-flight confirm label, matching the {@link CANCEL_BUSY} treatment (no invented spinner). */
+export const ADD_TEST_PEERS_BUSY = 'Adding…';
+/**
+ * The reason beside the disabled control on a full cohort. Byte-identical to the service's own
+ * 409 refusal reason, so the sentence an operator reads before clicking and the sentence they
+ * would read if they clicked anyway are one string rather than two that can drift.
+ */
+export const NO_SEATS_LEFT_REASON = 'This cohort has no seats left.';
+
 interface OperatorState {
   auth: OperatorAuthStatus;
   error?: string;
@@ -399,6 +443,19 @@ interface OperatorState {
    * its in-flight label and disables both buttons. Undefined whenever nothing is being finalized.
    */
   finalizing?: string;
+  /**
+   * The cohort id whose test-peer spawn is in flight (SVC-04, D-17), so exactly the confirming
+   * panel renders its in-flight label and disables both buttons. Undefined whenever no spawn is
+   * running.
+   */
+  addingTestPeers?: string;
+  /**
+   * Bad-tone message for a test-peer spawn that did NOT take. Its own field for the same reason
+   * {@link broadcastError} has one: the drill-down already renders the shared `actionError` on both
+   * the Lifecycle and the Export cards, so reusing it here would print one failure three times down
+   * a single page.
+   */
+  testPeerError?: string;
   /** Last-known monitoring detail for the open drill-down; undefined until the first poll lands. */
   detail?: CohortDetailDTO;
   /**
@@ -482,6 +539,18 @@ interface OperatorState {
    * read, never from an optimistic local edit.
    */
   finalizeCohort: (baseUrl: string, id: string) => Promise<void>;
+  /**
+   * Fill a cohort's remaining seats with in-process test participants (SVC-04, D-17), so one
+   * operator can rehearse the whole loop on their own service. Branches exactly like
+   * {@link finalizeCohort}: `unauthorized` takes the one shared expiry path, a `refused` 409
+   * raises the action-error copy WITH the server's reason (usually "no seats left", meaning the
+   * cohort filled between the render and the click), and a fault says nothing changed.
+   *
+   * On success the drill-down STAYS OPEN and simply re-reads: the new members arrive from the
+   * SERVED projection, never from an optimistic insert, which is also what keeps their `Test peer`
+   * badge a served fact rather than a local guess.
+   */
+  addTestPeers: (baseUrl: string, id: string, count?: number) => Promise<void>;
   /**
    * Pause advertising service-wide (SVC-04, D-06): new cohorts stop being offered while every
    * cohort already advertised keeps filling. Branches like {@link discard}: `unauthorized` takes
@@ -625,6 +694,8 @@ export const useOperator = create<OperatorState>((set, get) => ({
   view: { kind: 'list' },
   cancelling: undefined,
   finalizing: undefined,
+  addingTestPeers: undefined,
+  testPeerError: undefined,
   detail: undefined,
   detailStale: false,
   lastUpdated: undefined,
@@ -713,6 +784,8 @@ export const useOperator = create<OperatorState>((set, get) => ({
         view: { kind: 'list' },
         cancelling: undefined,
         finalizing: undefined,
+        addingTestPeers: undefined,
+        testPeerError: undefined,
         detail: undefined,
         detailStale: false,
         lastUpdated: undefined,
@@ -750,6 +823,8 @@ export const useOperator = create<OperatorState>((set, get) => ({
       // to be mid-cancel.
       cancelling: undefined,
       finalizing: undefined,
+      addingTestPeers: undefined,
+      testPeerError: undefined,
       detail: undefined,
       detailStale: false,
       lastUpdated: undefined,
@@ -970,6 +1045,31 @@ export const useOperator = create<OperatorState>((set, get) => ({
     // the drill-down stays open and simply re-reads: the committed state arrives from the served
     // projection rather than from an optimistic local edit.
     set({ finalizing: undefined });
+    await get().pollDetail(baseUrl);
+  },
+
+  async addTestPeers(baseUrl, id, count) {
+    set({ testPeerError: undefined, addingTestPeers: id });
+    const result = await apiAddTestPeers(baseUrl, id, count);
+    if (result.kind === 'unauthorized') {
+      // The ONE shared session-expiry path (D-16); `expireSession` clears both fields itself.
+      get().expireSession();
+      return;
+    }
+    if (result.kind === 'refused') {
+      // The server refused with a reason it authored, so it is rendered verbatim. The usual cause
+      // is a race: the console's seat count was one poll old and the cohort filled in between.
+      set({ testPeerError: actionFailedWith(result.reason || undefined), addingTestPeers: undefined });
+      return;
+    }
+    if (result.kind === 'unreachable') {
+      set({ testPeerError: actionFailedWith(), addingTestPeers: undefined });
+      return;
+    }
+    // The spawn took. No member is inserted locally: the peers have to actually seat, which is a
+    // protocol round-trip this browser does not observe, so the list must come from the next
+    // served read. That is also what makes the `Test peer` badge a served fact.
+    set({ addingTestPeers: undefined });
     await get().pollDetail(baseUrl);
   },
 
