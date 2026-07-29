@@ -30,6 +30,22 @@ const REGTEST_NETWORK: BTC_NETWORK = {
   wif: 0xef,
 };
 
+/**
+ * A block hash at a fixed, low, already-buried height: the second half of a chain's
+ * identity where {@link NetworkConfig.genesisHash} alone cannot separate two chains.
+ *
+ * It exists because of one fact about Bitcoin Core: EVERY signet shares block zero.
+ * `SigNetParams` builds its genesis from fixed constants and the signet challenge (the
+ * thing that actually distinguishes mutinynet from plain signet) never enters that
+ * hash, so the two chains are identical at height 0 and have diverged by height 1.
+ */
+export interface ChainBlockMarker {
+  /** Height of the marker block. Low, so an esplora probe is one cheap request. */
+  height: number;
+  /** The block hash at {@link height} on this chain. */
+  hash: string;
+}
+
 /** Everything the app needs to operate against one Bitcoin network. */
 export interface NetworkConfig {
   /** Canonical network name; assignable to `BitcoinConnection`'s `network`. */
@@ -46,8 +62,38 @@ export interface NetworkConfig {
   scureNetwork: BTC_NETWORK;
   /** True for real-money mainnet; live operations must opt in explicitly. */
   isMainnet: boolean;
+  /**
+   * Hash of block zero on this chain. Block zero is the conventional chain identifier:
+   * it is immutable, it is reachable from every esplora deployment at
+   * `GET /block-height/0`, and it costs one request to read.
+   *
+   * This is the value the PARTICIPANT-side endpoint guard compares against (PART-05,
+   * D-20). It lives here, in the declared single source of truth for chain parameters,
+   * rather than in `packages/web`, because a browser-local copy would be a second
+   * source of truth for the one fact that whole guard rests on.
+   *
+   * NOT sufficient on its own for the signet family: see {@link distinguishingBlock}.
+   */
+  genesisHash: string;
+  /**
+   * A second chain marker, present ONLY where {@link genesisHash} is shared with
+   * another registered network (today: mutinynet and signet, which are both signets).
+   * Where block zero is already unique this is absent, so the common probe stays a
+   * single request.
+   */
+  distinguishingBlock?: ChainBlockMarker;
   /** Block-explorer URL for a txid, or `''` where there is no public explorer. */
   explorerTxUrl(txid: string): string;
+}
+
+/**
+ * The full chain identity of a {@link NetworkConfig}: block zero, plus the second
+ * marker where block zero is ambiguous. Two networks with the same fingerprint are
+ * indistinguishable to a chain probe, which is exactly what the registry spec forbids.
+ */
+export function chainFingerprint(config: NetworkConfig): string {
+  const marker = config.distinguishingBlock;
+  return marker ? `${config.genesisHash}@${marker.height}:${marker.hash}` : config.genesisHash;
 }
 
 /**
@@ -63,6 +109,7 @@ export const NETWORKS: Record<NetworkName, NetworkConfig> = {
     esploraHost: 'https://blockstream.info/api',
     scureNetwork: NETWORK,
     isMainnet: true,
+    genesisHash: '000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f',
     explorerTxUrl: (txid) => `https://mempool.space/tx/${txid}`,
   },
   mutinynet: {
@@ -71,6 +118,13 @@ export const NETWORKS: Record<NetworkName, NetworkConfig> = {
     esploraHost: 'https://mutinynet.com/api',
     scureNetwork: TEST_NETWORK,
     isMainnet: false,
+    // Shared with `signet` below: both are signets, and a signet's genesis block does
+    // not depend on its challenge. The height-1 marker is what separates them.
+    genesisHash: '00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6',
+    distinguishingBlock: {
+      height: 1,
+      hash: '000002855893a0a9b24eaffc5efc770558a326fee4fc10c9da22fc19cd2954f9',
+    },
     explorerTxUrl: (txid) => `https://mutinynet.com/tx/${txid}`,
   },
   signet: {
@@ -79,6 +133,12 @@ export const NETWORKS: Record<NetworkName, NetworkConfig> = {
     esploraHost: 'https://mempool.space/signet/api',
     scureNetwork: TEST_NETWORK,
     isMainnet: false,
+    // Identical to mutinynet's: see the note there. Height 1 is where they diverge.
+    genesisHash: '00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6',
+    distinguishingBlock: {
+      height: 1,
+      hash: '00000086d6b2636cb2a392d45edc4ec544a10024d30141c9adf4bfd9de533b53',
+    },
     explorerTxUrl: (txid) => `https://mempool.space/signet/tx/${txid}`,
   },
   testnet3: {
@@ -87,6 +147,7 @@ export const NETWORKS: Record<NetworkName, NetworkConfig> = {
     esploraHost: 'https://mempool.space/testnet/api',
     scureNetwork: TEST_NETWORK,
     isMainnet: false,
+    genesisHash: '000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943',
     explorerTxUrl: (txid) => `https://mempool.space/testnet/tx/${txid}`,
   },
   testnet4: {
@@ -95,6 +156,7 @@ export const NETWORKS: Record<NetworkName, NetworkConfig> = {
     esploraHost: 'https://mempool.space/testnet4/api',
     scureNetwork: TEST_NETWORK,
     isMainnet: false,
+    genesisHash: '00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043',
     explorerTxUrl: (txid) => `https://mempool.space/testnet4/tx/${txid}`,
   },
   regtest: {
@@ -103,6 +165,11 @@ export const NETWORKS: Record<NetworkName, NetworkConfig> = {
     esploraHost: 'http://127.0.0.1:3000',
     scureNetwork: REGTEST_NETWORK,
     isMainnet: false,
+    // Every regtest chain shares this genesis, and two DIFFERENT local regtest chains
+    // are therefore indistinguishable to any chain probe. No marker can fix that (a
+    // local chain's block 1 is deployment-specific), so the guard's honest reach on
+    // regtest is "this is a regtest chain", not "this is YOUR regtest chain".
+    genesisHash: '0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206',
     explorerTxUrl: () => '',
   },
 };

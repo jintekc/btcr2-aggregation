@@ -91,7 +91,10 @@ describe('per-network chain identity (PART-05 endpoint guard)', () => {
   });
 
   it('keeps the chain markers OFF the wire DTO (nothing derivable is published)', () => {
-    const dto = toNetworkConfigDTO(resolveNetwork('mutinynet')) as Record<string, unknown>;
+    const dto = toNetworkConfigDTO(resolveNetwork('mutinynet')) as unknown as Record<
+      string,
+      unknown
+    >;
     expect(dto.genesisHash).toBeUndefined();
     expect(dto.distinguishingBlock).toBeUndefined();
   });
