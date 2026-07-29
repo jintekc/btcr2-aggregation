@@ -239,7 +239,11 @@ describe('GET /v1/cohort-fate/:id is not an existence oracle (T-05-10-01)', () =
 
     expect((await app.request('/v1/cohort-fate/not a cohort id')).status).toBe(400);
     expect((await app.request(`/v1/cohort-fate/${'x'.repeat(65)}`)).status).toBe(400);
-    expect((await app.request('/v1/cohort-fate/../../etc/passwd')).status).toBe(400);
+    // A traversal attempt that DOES reach the handler as one segment (a multi-segment path is a
+    // router miss, which is the same answer for every input and carries no cohort information).
+    expect(
+      (await app.request(`/v1/cohort-fate/${encodeURIComponent('../../etc/passwd')}`)).status,
+    ).toBe(400);
 
     // Every WELL-FORMED id - canceled, unknown, evicted - is a 200. Nothing answers 404.
     for (const id of [cohortId, 'unknown-cohort', 'another-unknown-cohort']) {

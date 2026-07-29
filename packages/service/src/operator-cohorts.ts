@@ -262,6 +262,30 @@ export interface CohortWindows {
 }
 
 /**
+ * The PUBLIC wire shape of one cohort's fate (SVC-04, D-02), served anonymously by
+ * `GET /v1/cohort-fate/:id`. It is the deliberately stripped anonymous projection that sits
+ * beside the rich operator list, exactly as `publicFunding` sits beside the operator funding
+ * view in {@link file://./monitor.ts}.
+ *
+ * ONE bit crosses. The operator-only fields the same terminal record holds - the reason string,
+ * the seat counts, the member DIDs, the beacon amounts - stay behind the gated reads, because
+ * the participant needs only the attribution, not the record (T-05-10-02).
+ *
+ * `canceled: false` is also the answer for an unknown, an evicted, and a never-existed id, so
+ * this read can never be used to probe which cohorts this service has ever run (T-05-10-01).
+ */
+export interface CohortFateDTO {
+  /**
+   * True ONLY when this service holds a retained terminal record for the id whose fate is the
+   * operator's deliberate `'canceled'`. A cohort that expired, failed, completed normally, is
+   * still live, is still a draft, was evicted from the bounded retention, or never existed at
+   * all all read `false` - so a `true` here is a positive statement the service is willing to
+   * make, never an absence of evidence.
+   */
+  canceled: boolean;
+}
+
+/**
  * The wire shape of an operator cohort in the operator's OWN list. Only operator-safe
  * fields are exposed (T-02-04): no recovery key, no keys, no secrets - just what the
  * operator's cohort list renders. `state` is `'draft'` for an un-advertised draft and
@@ -563,6 +587,28 @@ export interface OperatorCohorts {
    * Terminal records are operator-only (never in {@link directory}).
    */
   listCohorts(): OperatorCohortDTO[];
+  /**
+   * PUBLIC (SVC-04, D-02): the one bit of a cohort's fate a stranger may read - whether the
+   * OPERATOR deliberately canceled it. Backs the anonymous `GET /v1/cohort-fate/:id`.
+   *
+   * This exists because the aggregation protocol has no message type that could carry a cancel
+   * to a seated participant: they learn their cohort is gone only by its absence from the
+   * directory, which is honest but says nothing about why. Reading this ONE bit after that
+   * absence is already established upgrades "the cohort ended and this service didn't say why"
+   * into "the operator canceled this cohort" - and only when the service is willing to say so.
+   *
+   * It is the deliberately stripped anonymous projection beside {@link listCohorts}, mirroring
+   * how `publicFunding` sits beside the operator funding view: the same terminal record backs
+   * both, and only the fate bit crosses (T-05-10-02).
+   *
+   * Non-oracle by construction (T-05-10-01): the answer is `false` for EVERY case that is not a
+   * retained cancel - unknown, evicted, never-existed, expired, failed, completed (whose record
+   * is pruned on success), still live, and still a draft. There is deliberately no `exists`
+   * bit and no second key, so no combination of answers distinguishes a cohort this service
+   * once ran from one it never heard of. O(1), no chain or disk I/O, so the anonymous route
+   * cannot be turned into a load generator (T-05-10-03).
+   */
+  cohortFate(cohortId: string): CohortFateDTO;
   /** Public: the open/joinable cohorts derived from the live set (D-14/D-15). */
   directory(): DirectoryCohortDTO[];
   /** Public: up / active network / open-cohort count, reusing {@link directory} (D-09). */
@@ -1355,6 +1401,15 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
 
     pendingWindowTimers(): number {
       return windowTimers.size;
+    },
+
+    cohortFate(cohortId: string): CohortFateDTO {
+      // One expression, and that is the point: there is no branch here that could ever answer
+      // something OTHER than this single boolean, so the route cannot grow an existence signal
+      // by accident. A record's own `fate` is the authority (never the rejection message it
+      // carries), which is what makes an expiry unable to read as a cancel, and a missing
+      // record - unknown, evicted, pruned-on-success, never advertised - simply reads false.
+      return { canceled: terminal.get(cohortId)?.fate === 'canceled' };
     },
 
     directory,

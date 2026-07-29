@@ -465,6 +465,30 @@ export function createHonoApp(
     return c.json(monitor ? monitor.publicFunding(cohortId) : { awaitingFunding: false });
   });
 
+  // Public cohort-fate read (SVC-04, D-02). The third anonymous sibling beside /v1/anchor and
+  // /v1/funding, and mounted for the same reason and in the same place - here in the PUBLIC
+  // block, BEFORE the `if (operatorAuth)` gate. A seated participant learns their cohort is gone
+  // only through the directory poll's post-seat gone streak (no protocol message can carry an
+  // operator's cancel), so this ONE bit is what turns the honest "this service didn't say why"
+  // into "the operator canceled this cohort". It must be reachable with no session, and it must
+  // be reachable even on a FAIL-CLOSED boot (no OPERATOR_PASSWORD): a route that existed only on
+  // a service with an operator surface would itself be a signal about how the service was booted.
+  //
+  // Non-oracle by construction (T-05-10-01): the SAME cheap 400 shape guard as the two reads
+  // above, then one 200 for every well-formed id. Never a 404, and the body shape never varies -
+  // an unknown id, an evicted id, and a never-existed id are byte-identical, so no status code
+  // and no key set can be used to probe which cohorts this service has run. With no operator
+  // surface wired, answer the same neutral `{ canceled: false }` rather than omitting the route.
+  // The projection carries the canceled fact and nothing else (T-05-10-02) and is an O(1) map
+  // lookup with no chain or disk I/O (T-05-10-03).
+  app.get('/v1/cohort-fate/:id', (c) => {
+    const cohortId = c.req.param('id');
+    if (!/^[0-9a-zA-Z-]{1,64}$/.test(cohortId)) {
+      return c.json({ error: 'invalid cohort id' }, 400);
+    }
+    return c.json(operatorCohorts ? operatorCohorts.cohortFate(cohortId) : { canceled: false });
+  });
+
   // Operator surface (HOST-01, ADR 0015). Mounted ONLY when operator auth is
   // configured (fail-closed, D-07): a service booted without an OPERATOR_PASSWORD
   // exposes no operator/mutating routes and no gated telemetry at all. Registration

@@ -839,6 +839,36 @@ export async function runCancelLeg(options: OperatorCohortOptions = {}): Promise
     }
     log("[assert] cancel: the operator list shows the canceled fate with its own chip and no failure count");
 
+    /* ---- A STRANGER can learn the cancel, over real HTTP, with no session (SVC-04, D-02). ---- */
+    // This is the whole participant-facing half of the cancel slice: the protocol carries no
+    // cancel message, so a seated participant can only ask this read. It runs here with NO cookie
+    // header at all, because a browser that was never logged in is exactly the caller it serves.
+    const fateOf = async (id: string): Promise<{ status: number; body: unknown }> => {
+      const res = await fetch(`${baseUrl}/v1/cohort-fate/${id}`);
+      return { status: res.status, body: await res.json() };
+    };
+    const canceledFate = await fateOf(cohortB);
+    if (canceledFate.status !== 200 || JSON.stringify(canceledFate.body) !== JSON.stringify({ canceled: true })) {
+      fail(
+        `[cancel] the anonymous fate read for the canceled cohort ${cohortB} should be 200 {"canceled":true}, ` +
+          `got ${canceledFate.status} ${JSON.stringify(canceledFate.body)}`,
+      );
+    }
+    // The live sibling and an id this service never issued must both read false, and must read
+    // IDENTICALLY: the route carries one bit of attribution and no way to probe this service.
+    const liveFate = await fateOf(cohortA);
+    const unknownFate = await fateOf('a-cohort-id-this-service-never-issued');
+    if (JSON.stringify(liveFate) !== JSON.stringify(unknownFate)) {
+      fail(
+        `[cancel] the live cohort and an unknown id must answer identically, got ` +
+          `${JSON.stringify(liveFate)} vs ${JSON.stringify(unknownFate)}`,
+      );
+    }
+    if (JSON.stringify(unknownFate.body) !== JSON.stringify({ canceled: false })) {
+      fail(`[cancel] an unknown id should read {"canceled":false}, got ${JSON.stringify(unknownFate.body)}`);
+    }
+    log('[assert] cancel: an anonymous caller reads the canceled fact, and learns nothing else about this service');
+
     /* ---- The sibling cohort is still genuinely joinable (the advert-slot repair). ---- */
     // FRESHLY constructed AFTER the cancel: a participant started earlier already holds A's
     // advert and would seat even with the single-advert-slot defect live.
@@ -1374,7 +1404,9 @@ async function main(): Promise<number> {
         'advertised one; it left the public directory and the open count immediately, was filed to ' +
         'the operator with its own canceled fate and neutral chip (never a failure), and the ' +
         'still-open sibling cohort seated a FRESHLY constructed participant afterwards - proving ' +
-        'the transport single-advert-slot repair (SVC-04, D-01/D-05).',
+        'the transport single-advert-slot repair (SVC-04, D-01/D-05). An ANONYMOUS caller then ' +
+        'read the canceled fact from GET /v1/cohort-fate with no session, while the live sibling ' +
+        'and an id this service never issued answered identically (SVC-04, D-02).',
     );
     return 0;
   }
