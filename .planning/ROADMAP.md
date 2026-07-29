@@ -196,7 +196,7 @@ Plans:
 
 **Slip order** (CONTEXT D-22, three tiers): CORE never slips - SVC-04 lifecycle control (plans 01 through 07 and 10). SECOND - the four absorbed parked items (plans 08 and 09). SLIP-FIRST - the three folded scoping one-pagers (plans 11, 12, and 13), which re-park cleanly to Phase 6 or the next milestone if the phase runs long.
 
-**Plans**: 14/14 plans executed
+**Plans**: 14/14 executed, plus 6 gap-closure plans (05-15 through 05-20) planned 2026-07-29
 Plans:
 **Wave 1**
 
@@ -253,6 +253,26 @@ Plans:
 **Wave 14** *(blocked on Wave 13)*
 
 - [x] 05-14-PLAN.md - Phase proof and docs: hermetic gate, ADR 0017, DEPLOY, upstream limits, owner verification (SVC-04/SVC-05/PART-05/PART-06, Wave 14)
+
+**Gap closure** (planned 2026-07-29 from the 8 confirmed defects in `05-AUDIT.md`; run with `/gsd-execute-phase 5 --gaps-only`). Waves restart at 1 for this round: the two real-funds fixes land first and alone.
+
+**Gap wave 1**
+
+- [ ] 05-15-PLAN.md - Pin the sighash type in the registration PSBT validator (PART-06, real funds, Gap wave 1)
+- [ ] 05-16-PLAN.md - Stand down the funding watch under the broadcast kill switch (SVC-04, real funds, Gap wave 1)
+
+**Gap wave 2** *(sequenced after the real-funds fixes)*
+
+- [ ] 05-17-PLAN.md - Bound the anonymous terms-acceptance artifact store (SVC-05, Gap wave 2)
+- [ ] 05-18-PLAN.md - Discovery-window seed ceiling + the deploy-doc reconciliation (SVC-04, Gap wave 2)
+
+**Gap wave 3** *(blocked on 05-17: shared HTTP adapter)*
+
+- [ ] 05-19-PLAN.md - Dismissal actually dismisses + the type-to-confirm gate becomes load-bearing (SVC-04, Gap wave 3)
+
+**Gap wave 4** *(blocked on 05-19: shared cohort-list surface)*
+
+- [ ] 05-20-PLAN.md - Reserve the Anchored chip for confirmed anchors (SVC-04, Gap wave 4)
 
 **UI hint**: yes
 
