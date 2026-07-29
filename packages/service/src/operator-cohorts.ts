@@ -142,6 +142,45 @@ export const THRESHOLD_ERROR = 'Signing threshold must be a whole number between
 const FALLBACK_OFF_ERROR =
   'A signing threshold below the cohort size needs the stall fallback, which this service disabled (AUTO_FALLBACK=0).';
 
+/** One minute in ms: the floor both per-draft timing windows are measured against. */
+const ONE_MINUTE_MS = 60_000;
+
+/**
+ * The exact UI-SPEC validation strings for the two per-draft timing windows. The wire unit is
+ * MILLISECONDS (what every consumer needs) while the console field the operator edits is MINUTES,
+ * so the message names the unit the human typed rather than the unit stored here.
+ *
+ * EXPORTED for the same reason as {@link SIZE_ERROR}: the settings surface
+ * ({@link file://./runtime-settings.ts}) validates the SAME two numbers as this create/edit path,
+ * so they must refuse them in the same words. One definition, two forms.
+ */
+export const DISCOVERY_WINDOW_ERROR = 'Discovery window must be a whole number of minutes, at least 1.';
+export const FUNDING_WINDOW_ERROR = 'Funding window must be a whole number of minutes, at least 1.';
+
+/**
+ * The refusal a per-draft discovery window longer than this service's own cohort TTL earns
+ * (D-11, RESEARCH Pitfall 7), naming the real ceiling in minutes.
+ *
+ * It is a REFUSAL rather than a silent truncation because the alternative is a promise this
+ * service cannot keep. `cohortTtlMs` is a PER-RUNNER constructor option armed once at advertise
+ * and never reset, and nothing in `aggregation@0.4.0` is per-cohort, so an app-side window can
+ * only ever SHORTEN a cohort's life. A 45-minute window on a service that ends every cohort at 30
+ * would advertise 45 and die at 30, and the operator would have no way to know which number was
+ * real. Naming the ceiling tells them exactly what they can ask for.
+ */
+export function discoveryWindowCeilingError(ceilingMs: number): string {
+  const minutes = Math.floor(ceilingMs / ONE_MINUTE_MS);
+  return `This service ends a cohort after ${minutes} minutes, so the discovery window must be ${minutes} minutes or less.`;
+}
+
+/**
+ * The exact operator-facing reason filed on a cohort its own DISCOVERY WINDOW closed (D-11). A
+ * fixed, app-authored contract string for the same reason as {@link CANCELED_REASON}: the library
+ * rejects a stopped cohort with the machine string `Cohort {id} stopped.`, which reads as a
+ * malfunction rather than as this service's own window doing exactly what the operator set it to.
+ */
+const WINDOW_EXPIRED_REASON = 'the discovery window closed';
+
 /**
  * The exact operator-facing reason filed on a CANCELED terminal record (D-05). A fixed
  * contract string, deliberately NOT the library's raw rejection message `Cohort {id} stopped.`
@@ -186,6 +225,33 @@ export interface DraftInput {
   beaconType: string;
   size: number;
   threshold?: number;
+  /**
+   * OPTIONAL per-draft discovery window in ms (D-11): how long this cohort stays advertised before
+   * it expires. Omitted (or null) means "use this service's default", NEVER "no window" - the
+   * console field renders empty for exactly that meaning. It can only ever SHORTEN the cohort's
+   * life: a value above this service's runner-level `cohortTtlMs` is refused at save time with
+   * {@link discoveryWindowCeilingError}, because the library arms its TTL at advertise and never
+   * resets it (RESEARCH Pitfall 7).
+   */
+  discoveryWindowMs?: number | null;
+  /**
+   * OPTIONAL per-draft funding window in ms (D-11): how long this service waits for this cohort's
+   * beacon address to be funded. Unlike the discovery window this is genuinely per-cohort, because
+   * the funding wait is app-owned rather than a library timer - subject to the 04 D-38 clamp,
+   * which still computes `min(window, remainingTtl - slack)` so the wait throws its own specific
+   * reason before either library timer fires.
+   */
+  fundingWindowMs?: number | null;
+}
+
+/**
+ * The per-cohort timing windows a draft carries into its advertised life (D-11). Both are
+ * EFFECTIVE values (the operator's explicit number when they set one, else this service's default
+ * resolved at draft time), so a consumer never has to know which of the two it is looking at.
+ */
+export interface CohortWindows {
+  discoveryWindowMs?: number;
+  fundingWindowMs?: number;
 }
 
 /**
@@ -220,6 +286,23 @@ export interface OperatorCohortDTO {
    * carries the fixed operator-facing string). Absent for drafts / advertised cohorts.
    */
   reason?: string;
+  /**
+   * The operator's EXPLICIT per-draft discovery window in ms, present only on a draft row and only
+   * when they actually set one (D-11). Absent means "this draft uses the service default", which
+   * is exactly what the edit form's empty field means, so the two agree without a sentinel value.
+   */
+  discoveryWindowMs?: number;
+  /** The operator's EXPLICIT per-draft funding window in ms; absent means the service default. */
+  fundingWindowMs?: number;
+  /**
+   * This service's OWN discovery-window default in ms, as it stood when the draft was created
+   * (D-13: read once at draft time, never re-read later). Carried beside the explicit value so the
+   * console's `Leave it empty to use this service's default of {n} min.` help can name a real
+   * number without a second read, and so an empty field is never mistaken for no window at all.
+   */
+  defaultDiscoveryWindowMs?: number;
+  /** This service's own funding-window default in ms at draft time; see {@link defaultDiscoveryWindowMs}. */
+  defaultFundingWindowMs?: number;
 }
 
 /**
@@ -314,6 +397,34 @@ export interface OperatorCohortsOptions {
    * `createService` always supplies one.
    */
   settings?: RuntimeSettings;
+  /**
+   * This service's runner-level cohort TTL in ms, threaded from `createService` (D-11). It is the
+   * honest CEILING for a per-draft discovery window: the library arms this TTL at advertise and
+   * never resets it, and nothing in `aggregation@0.4.0` is per-cohort, so an app-side window can
+   * only ever shorten a cohort's life. A draft asking for longer is refused at save time with
+   * {@link discoveryWindowCeilingError} rather than accepted and quietly overruled.
+   *
+   * Optional: a service with no TTL of its own imposes no ceiling (any window shortens an
+   * unbounded life), which is also what every existing caller that omits it gets.
+   */
+  cohortTtlMs?: number;
+  /**
+   * Aborts every armed per-draft discovery-window timer, wired to `service.stop()` exactly like
+   * the funding watch's signal. Without it a stopped service would keep a live timer that could
+   * still fire against a cohort whose runner is gone.
+   */
+  stopSignal?: AbortSignal;
+  /**
+   * Fire-and-forget side effect invoked immediately AFTER each `runner.advertiseCohort` call,
+   * carrying the cohort's EFFECTIVE per-cohort timing windows (D-11). `createService` wires it to
+   * the per-cohort funding-window table the live funding wait and the operator display watch both
+   * read, which is how a per-DRAFT funding window reaches machinery that is constructed long
+   * before any draft exists.
+   *
+   * A throw here is caught, logged, and swallowed, matching {@link onCancel} and every other side
+   * effect in this service: a bookkeeping failure must never disturb the protocol.
+   */
+  onAdvertised?: (cohortId: string, windows: CohortWindows) => void;
   /**
    * Fire-and-forget side effect invoked at the START of {@link OperatorCohorts.cancelCohort},
    * BEFORE `runner.stopCohort`, so the cancel's fate is captured AT EVENT TIME while the
@@ -449,6 +560,14 @@ export interface OperatorCohorts {
   directory(): DirectoryCohortDTO[];
   /** Public: up / active network / open-cohort count, reusing {@link directory} (D-09). */
   status(): ServiceStatusDTO;
+  /**
+   * How many per-draft discovery-window timers are currently armed (D-11). A diagnostic read, and
+   * the one that makes "the timer is cleared on every settle path" assertable rather than assumed:
+   * a timer left behind after a cohort settles is a timer that can fire against a REUSED id and
+   * mislabel a different cohort's fate, which is exactly the failure the intent registry exists to
+   * prevent. Always 0 on a service with no advertised cohort carrying its own window.
+   */
+  pendingWindowTimers(): number;
 }
 
 /**
@@ -462,11 +581,25 @@ export interface OperatorCohorts {
  * fallback OFF, a k < size draft is refused ({@link FALLBACK_OFF_ERROR}, Decision 4) so an
  * "anchors with at least k of n" promise the service cannot keep is never advertised; k == n
  * is allowed either way. The two numeric messages are the exact UI-SPEC copy.
+ *
+ * The two OPTIONAL timing windows (D-11) are guarded in the same style and returned as an
+ * `explicit` pair: absent (or null) stays absent, so a caller can tell "the operator set 5 min"
+ * from "the operator left it empty, use the service default" without a sentinel. A supplied value
+ * must be a whole number of minutes or more, and a supplied DISCOVERY window must additionally fit
+ * under `cohortTtlMs` when this service arms one - the shorten-only ceiling (RESEARCH Pitfall 7),
+ * refused here at save time rather than accepted and silently overruled by the library timer.
  */
 function validateDraft(
   input: DraftInput,
   autoFallbackOnStall: boolean,
-): { beaconType: BeaconType; size: number; threshold: number } {
+  cohortTtlMs?: number,
+): {
+  beaconType: BeaconType;
+  size: number;
+  threshold: number;
+  discoveryWindowMs?: number;
+  fundingWindowMs?: number;
+} {
   const { beaconType, size, threshold } = input;
   if (typeof beaconType !== 'string' || !KNOWN_BEACON_TYPES.has(beaconType)) {
     throw new Error(`operator: unknown beacon type "${String(beaconType)}" (expected CASBeacon or SMTBeacon)`);
@@ -483,7 +616,29 @@ function validateDraft(
   if (k < size && !autoFallbackOnStall) {
     throw new Error(FALLBACK_OFF_ERROR);
   }
-  return { beaconType: beaconType as BeaconType, size, threshold: k };
+  // The two OPTIONAL timing windows. Null is treated exactly like absent (the browser sends null
+  // for a cleared field), so an empty field always means "use this service's default".
+  const discoveryWindowMs = input.discoveryWindowMs ?? undefined;
+  const fundingWindowMs = input.fundingWindowMs ?? undefined;
+  if (discoveryWindowMs !== undefined && (!Number.isInteger(discoveryWindowMs) || discoveryWindowMs < ONE_MINUTE_MS)) {
+    throw new Error(DISCOVERY_WINDOW_ERROR);
+  }
+  if (fundingWindowMs !== undefined && (!Number.isInteger(fundingWindowMs) || fundingWindowMs < ONE_MINUTE_MS)) {
+    throw new Error(FUNDING_WINDOW_ERROR);
+  }
+  // The shorten-only ceiling (D-11, RESEARCH Pitfall 7). Only a SUPPLIED discovery window is
+  // measured against it: the service's own default is by construction something the service can
+  // honor, and refusing every create on a service whose default drifted above its TTL would punish
+  // the operator for a setting this form does not own.
+  if (
+    discoveryWindowMs !== undefined &&
+    cohortTtlMs !== undefined &&
+    Number.isFinite(cohortTtlMs) &&
+    discoveryWindowMs > cohortTtlMs
+  ) {
+    throw new Error(discoveryWindowCeilingError(cohortTtlMs));
+  }
+  return { beaconType: beaconType as BeaconType, size, threshold: k, discoveryWindowMs, fundingWindowMs };
 }
 
 /**
@@ -499,12 +654,50 @@ function validateDraft(
  */
 const MAX_TERMINAL = 24;
 
+/**
+ * A draft's timing windows, held as TWO separate facts rather than one merged number (D-11/D-13).
+ *
+ * `explicit` is what the operator actually typed, so an empty console field stays empty on the way
+ * back out and never has to be reconstructed by comparing against a default. `defaults` is this
+ * service's own values AS THEY STOOD when the draft was created, captured once and never re-read:
+ * a draft, like an advertised cohort, keeps the shape it was made with, so changing the service
+ * default later must not silently reshape a draft the operator already reviewed.
+ */
+interface DraftWindows {
+  explicit: CohortWindows;
+  defaults: CohortWindows;
+}
+
+/** The window that actually governs a cohort: what the operator set, else the service default. */
+function effectiveWindows(windows: DraftWindows): CohortWindows {
+  const discoveryWindowMs = windows.explicit.discoveryWindowMs ?? windows.defaults.discoveryWindowMs;
+  const fundingWindowMs = windows.explicit.fundingWindowMs ?? windows.defaults.fundingWindowMs;
+  return {
+    ...(discoveryWindowMs !== undefined ? { discoveryWindowMs } : {}),
+    ...(fundingWindowMs !== undefined ? { fundingWindowMs } : {}),
+  };
+}
+
+/**
+ * The optional window keys a DRAFT row carries. Spread into the DTO so an unset window is an
+ * ABSENT key rather than an explicit `undefined`, keeping the wire shape additive.
+ */
+function windowFields(windows: DraftWindows): Partial<OperatorCohortDTO> {
+  const { explicit, defaults } = windows;
+  return {
+    ...(explicit.discoveryWindowMs !== undefined ? { discoveryWindowMs: explicit.discoveryWindowMs } : {}),
+    ...(explicit.fundingWindowMs !== undefined ? { fundingWindowMs: explicit.fundingWindowMs } : {}),
+    ...(defaults.discoveryWindowMs !== undefined ? { defaultDiscoveryWindowMs: defaults.discoveryWindowMs } : {}),
+    ...(defaults.fundingWindowMs !== undefined ? { defaultFundingWindowMs: defaults.fundingWindowMs } : {}),
+  };
+}
+
 export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCohorts {
   const { runner, activeNetwork, recoveryKey, intents } = opts;
   // Undefined is treated as OFF (library-parity default): a plain createService without an
   // explicit autoFallbackOnStall refuses a k < size over-promise (Decision 4).
   const autoFallbackOnStall = opts.autoFallbackOnStall ?? false;
-  const drafts = new Map<string, { config: CohortConfig; dto: OperatorCohortDTO }>();
+  const drafts = new Map<string, { config: CohortConfig; dto: OperatorCohortDTO; windows: DraftWindows }>();
   // Enrichment ONLY (D-15): keyed by the LIVE cohort id, holds the config each cohort
   // was advertised with so `directory()` can surface threshold/capacity/beaconType
   // without re-reading them off the runner. Membership + openness always come from
@@ -519,8 +712,93 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
   // operator-only (T-06-03).
   const terminal = new Map<
     string,
-    { config: CohortConfig; reason: string; fate: 'expired' | 'canceled' }
+    { config: CohortConfig; reason: string; fate: 'expired' | 'canceled'; windows: DraftWindows }
   >();
+  // The per-cohort timing windows an ADVERTISED cohort was advertised with, so a re-advertise
+  // carries the same shape forward and the settle paths can release them alongside everything
+  // else. Keyed by the LIVE cohort id, exactly like `advertised`.
+  const advertisedWindows = new Map<string, DraftWindows>();
+  // ONE app-side discovery-window timer per advertised cohort (D-11). Bounded like every other
+  // per-cohort map in this service, `unref`'d so it never holds the process open, aborted on the
+  // service's stop signal, and cleared on EVERY settle path - a timer that outlives its cohort is
+  // a timer that can fire against a REUSED id and mislabel a different cohort's fate (T-05-06-05).
+  const windowTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  /** Cancel and forget a cohort's window timer. Idempotent, so every settle path can call it. */
+  function clearWindowTimer(cohortId: string): void {
+    const timer = windowTimers.get(cohortId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      windowTimers.delete(cohortId);
+    }
+  }
+
+  /**
+   * Arm the per-cohort discovery window (D-11), the app-side enforcement of a value the library
+   * cannot express. On fire it DECLARES the `'window-expired'` intent and only then calls
+   * `runner.stopCohort`, in that order: the stop is silent and rejects through the same channel as
+   * a stall, a TTL lapse, and a whole-runner shutdown, so a tag declared afterwards would be read
+   * too late and the cohort would be filed as an ordinary expiry with the library's machine string.
+   *
+   * It arms ONLY when the window is strictly SHORTER than this service's own cohort TTL. At or
+   * above the ceiling the library's timer already ends the cohort at the same moment or sooner, so
+   * a second timer would add nothing but a race between two settlements for the same cohort.
+   */
+  function armWindowTimer(cohortId: string, windowMs: number | undefined): void {
+    if (windowMs === undefined || !Number.isFinite(windowMs) || windowMs <= 0) {
+      return;
+    }
+    if (opts.cohortTtlMs !== undefined && Number.isFinite(opts.cohortTtlMs) && windowMs >= opts.cohortTtlMs) {
+      return;
+    }
+    if (opts.stopSignal?.aborted) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      windowTimers.delete(cohortId);
+      // 1. DECLARE, then 2. STOP. The order is the contract (RESEARCH Pattern 1).
+      intents.declare(cohortId, 'window-expired');
+      runner.stopCohort(cohortId);
+    }, windowMs);
+    // Never keep the process alive for a window that has not closed yet.
+    if (typeof (timer as { unref?: () => void }).unref === 'function') {
+      (timer as { unref: () => void }).unref();
+    }
+    windowTimers.set(cohortId, timer);
+    // Bounded like `terminal` and the index.ts side tables (T-05-06-04): an operator advertising
+    // many cohorts cannot accumulate timers without limit. Evicting the OLDEST simply returns that
+    // cohort to the service's own TTL, which is never worse than the pre-existing behavior.
+    while (windowTimers.size > MAX_TERMINAL) {
+      const oldest = windowTimers.keys().next().value;
+      if (oldest === undefined) {
+        break;
+      }
+      clearWindowTimer(oldest);
+    }
+  }
+
+  // `service.stop()` must take every armed timer down with it, exactly as it aborts the funding
+  // watch and the funding wait: a timer surviving its runner could still call `stopCohort` on a
+  // torn-down session.
+  opts.stopSignal?.addEventListener(
+    'abort',
+    () => {
+      for (const cohortId of [...windowTimers.keys()]) {
+        clearWindowTimer(cohortId);
+      }
+    },
+    { once: true },
+  );
+
+  /** Report a cohort's effective windows to the service, swallowing a bookkeeping failure. */
+  function noteAdvertised(cohortId: string, windows: DraftWindows): void {
+    try {
+      opts.onAdvertised?.(cohortId, effectiveWindows(windows));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[operator] advertise side effect for cohort ${cohortId} failed: ${message}`);
+    }
+  }
 
   /**
    * The cohort whose advert we believe currently occupies the transport's SINGLE advert slot
@@ -583,8 +861,9 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
     config: CohortConfig,
     reason: string,
     fate: 'expired' | 'canceled' = 'expired',
+    windows: DraftWindows = { explicit: {}, defaults: {} },
   ): void {
-    terminal.set(cohortId, { config, reason, fate });
+    terminal.set(cohortId, { config, reason, fate, windows });
     while (terminal.size > MAX_TERMINAL) {
       const oldest = terminal.keys().next().value;
       if (oldest === undefined) {
@@ -606,8 +885,11 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
    * whole-runner `stop()` (a service shutdown) both reject through this exact channel with
    * different codes, and a stall or TTL lapse rejects here too, so only an out-of-band
    * declaration can tell them apart. A declared `'canceled'` files the fixed
-   * {@link CANCELED_REASON} under the `'canceled'` fate; everything else keeps the
-   * pre-existing `reasonString(err)` / `'expired'` behavior byte-for-byte.
+   * {@link CANCELED_REASON} under the `'canceled'` fate, and a declared `'window-expired'` files
+   * the app-authored {@link WINDOW_EXPIRED_REASON} under the `'expired'` fate (D-11: the cohort
+   * genuinely expired, but for a reason this service can name rather than the library's machine
+   * string); everything else keeps the pre-existing `reasonString(err)` / `'expired'` behavior
+   * byte-for-byte.
    *
    * Fire-and-forget like the index.ts side-effect listeners: the trailing `.catch` swallows
    * so a failed cohort never surfaces as an unhandled rejection.
@@ -617,6 +899,10 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
       .then(
         () => {
           advertised.delete(cohortId);
+          advertisedWindows.delete(cohortId);
+          // Settle path 1 of 3 for the window timer: a cohort that anchored has no window left to
+          // enforce, and a surviving timer could fire against a reused id (T-05-06-05).
+          clearWindowTimer(cohortId);
           // A cohort that completes successfully was never stopped on purpose, but clear any
           // stale tag anyway so a recycled id can never inherit a previous cohort's intent.
           intents.clear(cohortId);
@@ -626,14 +912,21 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
         },
         (err) => {
           const config = advertised.get(cohortId);
+          const windows = advertisedWindows.get(cohortId);
           advertised.delete(cohortId);
+          advertisedWindows.delete(cohortId);
+          // Settle path 2 of 3: a failure, a stall, a TTL lapse, or the window timer's OWN stop
+          // all land here. Clearing is idempotent, so the timer that just fired clears harmlessly.
+          clearWindowTimer(cohortId);
           const intent = intents.read(cohortId);
           intents.clear(cohortId);
           if (config) {
             if (intent === 'canceled') {
-              rememberTerminal(cohortId, config, CANCELED_REASON, 'canceled');
+              rememberTerminal(cohortId, config, CANCELED_REASON, 'canceled', windows);
+            } else if (intent === 'window-expired') {
+              rememberTerminal(cohortId, config, WINDOW_EXPIRED_REASON, 'expired', windows);
             } else {
-              rememberTerminal(cohortId, config, reasonString(err), 'expired');
+              rememberTerminal(cohortId, config, reasonString(err), 'expired', windows);
             }
           }
           repairAdvertSlot(cohortId);
@@ -696,9 +989,30 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
     return directory().filter((row) => OPEN_PHASES.has(row.phase)).length;
   }
 
+  /**
+   * This service's timing defaults AS THEY STAND RIGHT NOW, captured into a draft at creation (and
+   * at edit) time and never re-read afterwards (D-13). Reading them once here is what keeps a
+   * draft's shape stable: an operator who changes the service default later has changed what the
+   * NEXT draft starts from, not what an existing draft or an advertised cohort will do.
+   */
+  function currentDefaults(): CohortWindows {
+    const discoveryWindowMs = opts.settings?.defaultDiscoveryWindowMs.value;
+    const fundingWindowMs = opts.settings?.defaultFundingWindowMs.value;
+    return {
+      ...(discoveryWindowMs !== undefined ? { discoveryWindowMs } : {}),
+      ...(fundingWindowMs !== undefined ? { fundingWindowMs } : {}),
+    };
+  }
+
   return {
     createDraft(input: DraftInput): OperatorCohortDTO {
-      const { beaconType, size, threshold: k } = validateDraft(input, autoFallbackOnStall);
+      const {
+        beaconType,
+        size,
+        threshold: k,
+        discoveryWindowMs,
+        fundingWindowMs,
+      } = validateDraft(input, autoFallbackOnStall, opts.cohortTtlMs);
       // Build on the SERVICE active network (D-10). `minParticipants` is the n-of-n seat
       // count; pin `maxParticipants` = the SAME size so min === max === n VERBATIM (T-KOFN-04,
       // no unfillable seat, the cohort locks at n). Pass k as the 5th `buildCohortConfig` arg
@@ -712,6 +1026,13 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
       const config = buildCohortConfig(size, beaconType, activeNetwork, recoveryKey, k);
       config.maxParticipants = size;
       const draftId = randomUUID();
+      const windows: DraftWindows = {
+        explicit: {
+          ...(discoveryWindowMs !== undefined ? { discoveryWindowMs } : {}),
+          ...(fundingWindowMs !== undefined ? { fundingWindowMs } : {}),
+        },
+        defaults: currentDefaults(),
+      };
       const dto: OperatorCohortDTO = {
         draftId,
         beaconType,
@@ -720,8 +1041,9 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
         capacity: size,
         joined: 0,
         state: 'draft',
+        ...windowFields(windows),
       };
-      drafts.set(draftId, { config, dto });
+      drafts.set(draftId, { config, dto, windows });
       console.log(`[operator] created draft ${draftId} (${beaconType} ${k}-of-${size})`);
       return dto;
     },
@@ -736,12 +1058,27 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
       }
       // The SAME validator the create path runs (there is exactly one), so the two paths refuse
       // the same input in the same words and a rule added to either is added to both.
-      const { beaconType, size, threshold: k } = validateDraft(input, autoFallbackOnStall);
+      const {
+        beaconType,
+        size,
+        threshold: k,
+        discoveryWindowMs,
+        fundingWindowMs,
+      } = validateDraft(input, autoFallbackOnStall, opts.cohortTtlMs);
       // ...and the SAME config build, including the pinned `maxParticipants` (min === max === n,
       // T-KOFN-04) and the EXPLICIT fifth fallback-threshold argument, so an edited draft and a
       // freshly created one with identical numbers produce identical configs.
       const config = buildCohortConfig(size, beaconType, activeNetwork, recoveryKey, k);
       config.maxParticipants = size;
+      const windows: DraftWindows = {
+        explicit: {
+          ...(discoveryWindowMs !== undefined ? { discoveryWindowMs } : {}),
+          ...(fundingWindowMs !== undefined ? { fundingWindowMs } : {}),
+        },
+        // Re-captured at edit time for the same read-once reason: the operator is looking at the
+        // service's CURRENT defaults while they edit, so the draft should carry the ones they saw.
+        defaults: currentDefaults(),
+      };
       const dto: OperatorCohortDTO = {
         draftId,
         beaconType,
@@ -750,10 +1087,11 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
         capacity: size,
         joined: 0,
         state: 'draft',
+        ...windowFields(windows),
       };
       // Replace under the SAME key: the draft id is stable across an edit, so the operator watches
       // their own row change rather than one row vanish and another appear.
-      drafts.set(draftId, { config, dto });
+      drafts.set(draftId, { config, dto, windows });
       console.log(`[operator] updated draft ${draftId} (${beaconType} ${k}-of-${size})`);
       return dto;
     },
@@ -776,10 +1114,17 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
       // the removed loop.
       const { cohortId, completion } = runner.advertiseCohort(entry.config);
       advertised.set(cohortId, entry.config);
+      advertisedWindows.set(cohortId, entry.windows);
       // The advertise just published this cohort's advert, so it now owns the transport's
       // single advert slot (RESEARCH Pattern 3).
       advertSlotOwner = cohortId;
       drafts.delete(draftId);
+      // The per-cohort timing windows the draft carried: report them to the service (which is how
+      // a per-draft FUNDING window reaches the funding wait, constructed long before this draft
+      // existed) and arm the app-side DISCOVERY window, which the library cannot express (D-11).
+      const windows = effectiveWindows(entry.windows);
+      noteAdvertised(cohortId, entry.windows);
+      armWindowTimer(cohortId, windows.discoveryWindowMs);
       // Settle the completion: prune on success, retain an expired terminal record on
       // rejection so the cohort is surfaced to the operator instead of silently deleted
       // (D-15, Pitfall 5, F2).
@@ -816,6 +1161,11 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
       //    an operator cancel from a stall, a TTL lapse, or a whole-runner shutdown, all of
       //    which reject through the same channel (RESEARCH Pattern 1, Pitfall 2).
       intents.declare(cohortId, 'canceled');
+      // Settle path 3 of 3: disarm the window timer IMMEDIATELY, before the stop below. The
+      // rejection settles on the next microtask turn and would clear it anyway, but a cancel is
+      // the one path where the operator is watching, and a window timer that fired in that gap
+      // would overwrite their deliberate `canceled` fate with an expiry they did not choose.
+      clearWindowTimer(cohortId);
       // 2. Capture the fate AT EVENT TIME (D-23) while the cohort is still in the live
       //    session, and retire its per-cohort side tables. Fire-and-forget: a monitoring or
       //    bookkeeping failure must never disturb the protocol, so it is logged and swallowed.
@@ -903,9 +1253,14 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
       // the fresh cohort id, and drop the old expired record.
       const { cohortId: newCohortId, completion } = runner.advertiseCohort(record.config);
       advertised.set(newCohortId, record.config);
+      advertisedWindows.set(newCohortId, record.windows);
       // The re-advertise published a fresh advert, so this cohort now owns the slot.
       advertSlotOwner = newCohortId;
       terminal.delete(cohortId);
+      // The retained record carries its windows forward, so a re-advertised cohort keeps the
+      // timing the operator chose rather than silently reverting to the service default.
+      noteAdvertised(newCohortId, record.windows);
+      armWindowTimer(newCohortId, effectiveWindows(record.windows).discoveryWindowMs);
       settleCompletion(newCohortId, completion);
       console.log(`[operator] re-advertised expired cohort ${cohortId} as ${newCohortId}`);
       return {
@@ -948,6 +1303,10 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
         reason: record.reason,
       }));
       return [...draftDtos, ...advertisedDtos, ...terminalDtos];
+    },
+
+    pendingWindowTimers(): number {
+      return windowTimers.size;
     },
 
     directory,

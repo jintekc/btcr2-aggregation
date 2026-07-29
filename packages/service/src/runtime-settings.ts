@@ -38,7 +38,12 @@ import type { BeaconType } from '@btcr2-aggregation/shared';
 // form and the create form can never drift apart. This is a VALUE import, and
 // `operator-cohorts.ts` imports only the TYPE of this module's holder, so the cycle is erased
 // at compile time and there is no runtime import cycle.
-import { SIZE_ERROR, THRESHOLD_ERROR } from './operator-cohorts.js';
+import {
+  DISCOVERY_WINDOW_ERROR,
+  FUNDING_WINDOW_ERROR,
+  SIZE_ERROR,
+  THRESHOLD_ERROR,
+} from './operator-cohorts.js';
 
 /**
  * Parse a numeric boot knob (an env string or the programmatic option) into a finite number at or
@@ -186,14 +191,6 @@ const KNOWN_BEACON_TYPES = new Set<string>(['CASBeacon', 'SMTBeacon']);
 
 /** The exact validation string for an unknown default beacon type. */
 const BEACON_TYPE_ERROR = 'Beacon type must be CASBeacon or SMTBeacon.';
-
-/**
- * The exact UI-SPEC validation strings for the two timing windows. The holder stores MILLISECONDS
- * (the unit every consumer needs) while the console field the operator edits is MINUTES, so the
- * message names the unit the human typed rather than the unit stored here.
- */
-const DISCOVERY_WINDOW_ERROR = 'Discovery window must be a whole number of minutes, at least 1.';
-const FUNDING_WINDOW_ERROR = 'Funding window must be a whole number of minutes, at least 1.';
 
 /** One minute in ms: the floor for both timing windows. */
 const ONE_MINUTE_MS = 60_000;

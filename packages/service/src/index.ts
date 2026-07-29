@@ -74,6 +74,10 @@ export {
   NOT_SIGNING_REASON,
   SIZE_ERROR,
   THRESHOLD_ERROR,
+  DISCOVERY_WINDOW_ERROR,
+  FUNDING_WINDOW_ERROR,
+  discoveryWindowCeilingError,
+  type CohortWindows,
   type OperatorCohorts,
   type OperatorCohortsOptions,
   type OperatorCohortDTO,
@@ -629,6 +633,23 @@ export function createService(opts: CreateServiceOptions): Service {
   const advertisedAt = new Map<string, number>();
 
   /**
+   * Per-cohort FUNDING windows (Phase 5 D-11), populated at advertise time from the draft the
+   * cohort came from. It exists because the live config below is built ONCE at construction, long
+   * before any draft: a closure over this table is the seam through which a per-draft window
+   * reaches both the authoritative wait in `tx.ts` and the operator display watch's truncation
+   * disclosure, so the two keep agreeing about the window (D-38).
+   *
+   * Bounded and pruned exactly like {@link advertisedAt}, and through the SAME
+   * {@link releaseCohortTables} call, so an operator advertising many cohorts cannot grow it.
+   */
+  const cohortFundingWindows = new Map<string, number>();
+
+  /** This cohort's own funding window when its draft carried one, else this service's default. */
+  function fundingWindowFor(cohortId: string): number | undefined {
+    return cohortFundingWindows.get(cohortId) ?? opts.fundingWindowMs;
+  }
+
+  /**
    * Aborted by `stop()` (review WR-03). The AUTHORITATIVE funding wait in `tx.ts` runs inside the
    * in-flight `onProvideTxData` promise, which `stop()` can only abandon, not cancel - so without
    * this signal a stopped service kept polling esplora for the rest of the funding window. The
@@ -653,6 +674,9 @@ export function createService(opts: CreateServiceOptions): Service {
       // Funding wait (D-38): threaded only when a window is configured (the live+broadcast product
       // path). Without it the live branch keeps its single-shot pre-flight, unchanged.
       fundingWindowMs: opts.fundingWindowMs,
+      // The per-DRAFT funding window (Phase 5 D-11), when the advertised cohort carried one. It
+      // takes precedence over the service default above and enables the wait on its own.
+      cohortFundingWindowMs: (cohortId: string): number | undefined => cohortFundingWindows.get(cohortId),
       fundingPollIntervalMs: opts.fundingPollIntervalMs,
       remainingCohortTtlMs:
         opts.cohortTtlMs !== undefined
@@ -866,6 +890,7 @@ export function createService(opts: CreateServiceOptions): Service {
     fundingWatches.delete(cohortId);
     lastFundingView.delete(cohortId);
     advertisedAt.delete(cohortId);
+    cohortFundingWindows.delete(cohortId);
   }
 
   // Success path: a cohort that anchors settles here and never fires `cohort-failed`, so without
@@ -899,7 +924,9 @@ export function createService(opts: CreateServiceOptions): Service {
           ? opts.cohortTtlMs - (Date.now() - at)
           : undefined;
       const { truncatedWindowMin } = computeFundingDeadline({
-        configuredWindowMs: opts.fundingWindowMs,
+        // The cohort's OWN window when its draft carried one (Phase 5 D-11), so the operator's
+        // disclosed truncation is computed from the same number the wait is enforcing.
+        configuredWindowMs: fundingWindowFor(cohortId),
         remainingTtlMs: remainingTtl,
         slackMs: FUNDING_SLACK_MS,
       });
@@ -978,8 +1005,23 @@ export function createService(opts: CreateServiceOptions): Service {
         // Thread the service's stall-fallback setting so validateDraft can gate the
         // Decision-4 over-promise guard (a k < size draft needs the fallback, G-02-1).
         autoFallbackOnStall: opts.autoFallbackOnStall,
-        // The intent registry the cancel action declares into before stopping a cohort.
+        // The intent registry the cancel action declares into before stopping a cohort, and that
+        // the per-draft discovery-window timer declares `'window-expired'` into (Phase 5 D-11).
         intents,
+        // The runner-level cohort TTL, which is the honest CEILING for a per-draft discovery
+        // window: the library arms it at advertise and never resets it, so an app-side window can
+        // only ever SHORTEN a cohort's life and a longer one is refused at save time.
+        cohortTtlMs: opts.cohortTtlMs,
+        // Take every armed window timer down with the service, exactly as `stop()` aborts the
+        // funding watch and the funding wait.
+        stopSignal: stopController.signal,
+        // Carry each cohort's effective FUNDING window into the per-cohort table the live wait and
+        // the display watch both read. Bounded + oldest-first, and released on every terminal path.
+        onAdvertised: (cohortId: string, windows: { fundingWindowMs?: number }) => {
+          if (windows.fundingWindowMs !== undefined) {
+            rememberBounded(cohortFundingWindows, cohortId, windows.fundingWindowMs);
+          }
+        },
         // The runtime settings holder, read for exactly one thing here: the advertising pause
         // gate at the two `runner.advertiseCohort` call sites, and the same value reported on
         // the public status read (SVC-04, D-06/D-07).

@@ -39,6 +39,18 @@ export interface LiveTxConfig {
    */
   fundingWindowMs?: number;
   /**
+   * Returns THIS cohort's own funding window in ms, when the operator set one on the draft it was
+   * advertised from (Phase 5 D-11), else undefined. It takes precedence over the service-wide
+   * {@link fundingWindowMs} and, on its own, is enough to enable the wait: a per-draft window on a
+   * service with no configured default must not silently fall back to the single-shot pre-flight.
+   *
+   * A per-cohort funding window is possible where a per-cohort DISCOVERY window is not, because
+   * this wait is app-owned: nothing in `aggregation@0.4.0` is per-cohort, so the discovery window
+   * can only ever shorten a cohort's life app-side, while this window IS the mechanism.
+   * The D-38 clamp is unchanged either way - the deadline stays `min(window, remainingTtl - slack)`.
+   */
+  cohortFundingWindowMs?: (cohortId: string) => number | undefined;
+  /**
    * Returns the cohort's REMAINING TTL in ms (the library `cohortTtlMs` armed at advertise minus
    * elapsed), or undefined when no cohort TTL is armed. The funding wait clamps its deadline to
    * `min(fundingWindowMs, remainingTtl - slack)` (D-38) so it always throws before `cohortTtlMs`
@@ -114,7 +126,9 @@ async function waitForFunding(
   suggestedMinSats: number,
 ): Promise<AddressUtxo> {
   const { deadlineMs } = computeFundingDeadline({
-    configuredWindowMs: live.fundingWindowMs,
+    // The cohort's OWN window when its draft carried one (Phase 5 D-11), else this service's
+    // configured default. The clamp itself is untouched.
+    configuredWindowMs: live.cohortFundingWindowMs?.(cohortId) ?? live.fundingWindowMs,
     remainingTtlMs: live.remainingCohortTtlMs?.(cohortId),
     slackMs: live.fundingSlackMs ?? FUNDING_SLACK_MS,
   });
@@ -247,7 +261,10 @@ export function makeProvideTxData(
     // MIN_LIVE_FUNDING_SATS unless a fee-derived need raises it.
     const suggestedMinSats = computeSuggestedMinSats();
 
-    if (live.fundingWindowMs !== undefined) {
+    // A per-COHORT window opens the wait on its own (Phase 5 D-11): a draft-level funding window on
+    // a service with no configured default must not silently degrade to the single-shot pre-flight,
+    // which would fail an unfunded cohort instantly instead of waiting the window the operator set.
+    if (live.fundingWindowMs !== undefined || live.cohortFundingWindowMs?.(cohortId) !== undefined) {
       // D-38 funding WAIT: the operator-funded product path. Poll until the beacon address is
       // funded (or dead-end / lapse), throwing the specific reason from inside this callback so a
       // real boot surfaces an honest funding message instead of a generic timer expiry. The wait

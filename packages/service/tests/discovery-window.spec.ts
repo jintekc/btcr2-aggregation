@@ -2,7 +2,7 @@ import { SchnorrKeyPair } from '@did-btcr2/keypair';
 import { p2tr } from '@scure/btc-signer';
 import type { BTC_NETWORK } from '@scure/btc-signer/utils';
 import { resolveNetwork } from '@btcr2-aggregation/shared';
-import type { AggregationServiceRunner, CohortConfig } from '@did-btcr2/aggregation/service';
+import type { AggregationServiceRunner } from '@did-btcr2/aggregation/service';
 import type { AddressUtxo, BitcoinConnection } from '@did-btcr2/bitcoin';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCohortIntents, type CohortIntent, type CohortIntentRegistry } from '../src/cohort-intent.js';
@@ -60,7 +60,7 @@ function fakeRunner() {
         cohorts.some((c) => c.id === id) ? 'Advertised' : undefined,
       getCohort: (id: string) => cohorts.find((c) => c.id === id),
     },
-    advertiseCohort(_config: CohortConfig) {
+    advertiseCohort() {
       const cohortId = `cohort-${++seq}`;
       cohorts.push({ id: cohortId, participants: [] });
       let resolve!: () => void;
