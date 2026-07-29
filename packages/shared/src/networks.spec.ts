@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  chainFingerprint,
   DEFAULT_NETWORK,
   NETWORKS,
   resolveNetwork,
@@ -23,6 +24,76 @@ const ALL_NETWORKS = Object.keys(NETWORKS) as NetworkName[];
 describe('network registry contract', () => {
   it('pins the public default network (both server and browser consume this)', () => {
     expect(DEFAULT_NETWORK).toBe('mutinynet');
+  });
+});
+
+/**
+ * The chain-identity markers the participant-side esplora override compares against
+ * (PART-05, D-20). The registry is the declared single source of truth for chain
+ * parameters, so the hashes live HERE and never as literals in `packages/web`: a
+ * browser-local copy would be a second source of truth for the one fact the whole
+ * wrong-chain guard rests on.
+ *
+ * Block zero alone is NOT enough, and that is a fact about Bitcoin rather than a
+ * shortcut taken here: every signet shares one genesis block, because Bitcoin Core
+ * builds the signet genesis from fixed constants and the signet challenge (which is
+ * what actually separates mutinynet from plain signet) never enters that hash. So a
+ * signet-family entry carries a second marker at a low height, where the two chains
+ * have provably diverged, and the fingerprint is the PAIR.
+ */
+describe('per-network chain identity (PART-05 endpoint guard)', () => {
+  it('carries a 64-hex block-zero hash for every registered network', () => {
+    for (const name of ALL_NETWORKS) {
+      expect(NETWORKS[name].genesisHash, name).toMatch(/^[0-9a-f]{64}$/);
+    }
+  });
+
+  it('gives every registered network a DISTINCT chain fingerprint', () => {
+    const seen = new Map<string, NetworkName>();
+    for (const name of ALL_NETWORKS) {
+      const print = chainFingerprint(NETWORKS[name]);
+      expect(seen.has(print), `${name} collides with ${seen.get(print)}`).toBe(false);
+      seen.set(print, name);
+    }
+    expect(seen.size).toBe(ALL_NETWORKS.length);
+  });
+
+  it('records the signet-family block-zero collision the second marker exists for', () => {
+    // The collision is asserted rather than described: if a future Bitcoin Core ever
+    // made the signet genesis challenge-dependent, this row fails and the second
+    // marker can be retired deliberately instead of quietly rotting.
+    expect(NETWORKS.mutinynet.genesisHash).toBe(NETWORKS.signet.genesisHash);
+    expect(NETWORKS.mutinynet.distinguishingBlock?.hash).not.toBe(
+      NETWORKS.signet.distinguishingBlock?.hash,
+    );
+  });
+
+  it('gives a signet-family entry a second marker, and a unique-genesis entry none', () => {
+    for (const name of ALL_NETWORKS) {
+      const shared = ALL_NETWORKS.some(
+        (other) => other !== name && NETWORKS[other].genesisHash === NETWORKS[name].genesisHash,
+      );
+      // A marker is required exactly where block zero is ambiguous, and pointless
+      // (an extra request on every probe) where it is not.
+      expect(Boolean(NETWORKS[name].distinguishingBlock), name).toBe(shared);
+    }
+  });
+
+  it('places every second marker at a real, low, positive height with a 64-hex hash', () => {
+    for (const name of ALL_NETWORKS) {
+      const marker = NETWORKS[name].distinguishingBlock;
+      if (!marker) {
+        continue;
+      }
+      expect(marker.height, name).toBeGreaterThan(0);
+      expect(marker.hash, name).toMatch(/^[0-9a-f]{64}$/);
+    }
+  });
+
+  it('keeps the chain markers OFF the wire DTO (nothing derivable is published)', () => {
+    const dto = toNetworkConfigDTO(resolveNetwork('mutinynet')) as Record<string, unknown>;
+    expect(dto.genesisHash).toBeUndefined();
+    expect(dto.distinguishingBlock).toBeUndefined();
   });
 });
 
