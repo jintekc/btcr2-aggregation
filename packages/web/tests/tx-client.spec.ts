@@ -1,5 +1,8 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NETWORKS } from '@btcr2-aggregation/shared';
+import { chainEndpointFor, useParticipant } from '../src/stores/participant';
 import { broadcastTx, fetchUtxos, TxProxyError } from '../src/lib/tx-client';
 import {
   checkEndpoint,
@@ -380,5 +383,233 @@ describe('esplora - confirmTxAt is an ADDITIONAL check on a known txid', () => {
     expect(await confirmTxAt(ENDPOINT, 'ffee')).toBe(false);
     stubFetch(() => textResponse('Transaction not found', 404));
     expect(await confirmTxAt(ENDPOINT, 'ffee')).toBe(false);
+  });
+});
+
+/**
+ * The store half (PART-05, D-20, 05-RESEARCH Pitfall 8).
+ *
+ * The endpoint rides the SINGLE shipped `register()` path as a parameter. That is not a
+ * style preference: the ADR 0010 real-funds acknowledgment, the re-entrancy guard and the
+ * funding check all sit at the top of that one path, and a second "override" path is
+ * precisely how such a gate stops firing without anybody deciding that it should.
+ *
+ * Some of what follows is asserted against the SOURCE rather than by driving the call.
+ * Reaching the UTXO read requires the module-private first-update artifacts, which only a
+ * real cohort round produces, so a behavioral test there would have to fake the very
+ * thing it claims to prove. The source pins are narrow and specific instead: one register
+ * path, one UTXO call site, one broadcast call site, both carrying the endpoint, the
+ * three guards ahead of them, and no catch block that quietly retries through the
+ * service. The 05-10 source-order pin is the precedent.
+ */
+
+/** The `register()` body, isolated so a pin cannot accidentally match elsewhere. */
+function registerBody(): string {
+  const path = fileURLToPath(new URL('../src/stores/participant.ts', import.meta.url));
+  const source = readFileSync(path, 'utf8');
+  const start = source.indexOf('async register(');
+  const end = source.indexOf('async resolve(', start);
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  return source.slice(start, end);
+}
+
+/** Count non-overlapping matches of `re` (which must be global) in `text`. */
+function count(text: string, re: RegExp): number {
+  return text.match(re)?.length ?? 0;
+}
+
+describe('participant store - the endpoint is a parameter, so no guard rail moves', () => {
+  beforeEach(() => {
+    useParticipant.setState({
+      identity: null,
+      did: null,
+      network: 'mutinynet',
+      regStatus: 'idle',
+      regError: null,
+      chainEndpoint: null,
+      chainEndpointVerdict: null,
+      chainEndpointProbing: false,
+      broadcastDirect: false,
+      endpointTxConfirmed: null,
+      log: [],
+    });
+  });
+
+  it('fires the mainnet real-funds gate identically with and without an endpoint', async () => {
+    // The SAME scenario, twice. If the override were a second flow, this is the row that
+    // would notice: an acknowledgment gate that fires in one mode and not the other.
+    for (const endpoint of [null, 'https://esplora.example.com']) {
+      useParticipant.setState({
+        network: 'bitcoin',
+        regStatus: 'idle',
+        regError: null,
+        chainEndpoint: endpoint,
+        broadcastDirect: endpoint !== null,
+      });
+      await useParticipant.getState().register('http://127.0.0.1:0');
+      const s = useParticipant.getState();
+      expect(s.regStatus, String(endpoint)).toBe('failed');
+      expect(s.regError, String(endpoint)).toMatch(/mainnet/i);
+    }
+  });
+
+  it('holds the re-entrancy guard in both modes', async () => {
+    for (const endpoint of [null, 'https://esplora.example.com']) {
+      useParticipant.setState({
+        network: 'bitcoin',
+        regStatus: 'broadcasting',
+        regError: null,
+        chainEndpoint: endpoint,
+      });
+      await useParticipant.getState().register('http://127.0.0.1:0');
+      // Untouched: the guard returned before the mainnet gate could rewrite it.
+      expect(useParticipant.getState().regStatus, String(endpoint)).toBe('broadcasting');
+      expect(useParticipant.getState().regError, String(endpoint)).toBeNull();
+    }
+  });
+
+  it('keeps exactly ONE register path, ONE UTXO call site and ONE broadcast call site', () => {
+    const body = registerBody();
+    const path = fileURLToPath(new URL('../src/stores/participant.ts', import.meta.url));
+    expect(count(readFileSync(path, 'utf8'), /async register\(/g)).toBe(1);
+    expect(count(body, /fetchUtxos\(/g)).toBe(1);
+    expect(count(body, /broadcastTx\(/g)).toBe(1);
+  });
+
+  it('passes the endpoint INTO those two call sites rather than branching around them', () => {
+    const body = registerBody();
+    expect(body).toMatch(/fetchUtxos\([^)]*endpoint[^)]*\)/);
+    expect(body).toMatch(/broadcastTx\([^)]*endpoint[^)]*\)/);
+  });
+
+  it('keeps the three guards ahead of the chain reads in source order', () => {
+    const body = registerBody();
+    const utxoRead = body.indexOf('fetchUtxos(');
+    // Re-entrancy guard, then the ADR 0010 acknowledgment, both before any network I/O.
+    expect(body.indexOf("regStatus === 'checking'")).toBeGreaterThan(-1);
+    expect(body.indexOf("regStatus === 'checking'")).toBeLessThan(utxoRead);
+    expect(body.indexOf('acknowledgeMainnet')).toBeLessThan(utxoRead);
+    // The funding check reads the UTXOs, so it sits between the two chain calls.
+    const funding = body.indexOf('MIN_REGISTRATION_FUNDING_SATS');
+    expect(funding).toBeGreaterThan(utxoRead);
+    expect(funding).toBeLessThan(body.indexOf('broadcastTx('));
+  });
+
+  it('has no failure path that quietly retries through the service', () => {
+    // A silent fallback would take the participant's chosen trust source away from them
+    // without saying so, which is the one thing this feature must never do. The catch
+    // blocks are located by brace matching rather than by a character window, so the pin
+    // means exactly what it says: neither chain call happens inside a failure handler.
+    const body = registerBody();
+    const utxoRead = body.indexOf('fetchUtxos(');
+    const broadcast = body.indexOf('broadcastTx(');
+    for (let at = body.indexOf('catch'); at !== -1; at = body.indexOf('catch', at + 1)) {
+      const open = body.indexOf('{', at);
+      let depth = 0;
+      let close = open;
+      for (; close < body.length; close += 1) {
+        if (body[close] === '{') depth += 1;
+        if (body[close] === '}') depth -= 1;
+        if (depth === 0) break;
+      }
+      for (const call of [utxoRead, broadcast]) {
+        expect(call > open && call < close, `call at ${call} inside catch at ${at}`).toBe(false);
+      }
+    }
+  });
+});
+
+describe('participant store - chainEndpointFor is the one place the parameter is built', () => {
+  it('is undefined with no endpoint, so the shipped call is made unchanged', () => {
+    expect(chainEndpointFor({ chainEndpoint: null, broadcastDirect: false })).toBeUndefined();
+    // Even with the broadcast opt-in somehow on, no endpoint means no direct anything.
+    expect(chainEndpointFor({ chainEndpoint: null, broadcastDirect: true })).toBeUndefined();
+  });
+
+  it('reads the chain directly while broadcast still goes through the service', () => {
+    expect(
+      chainEndpointFor({ chainEndpoint: 'https://esplora.example.com', broadcastDirect: false }),
+    ).toEqual({ esploraBase: 'https://esplora.example.com', broadcastDirect: false });
+  });
+
+  it('carries the second opt-in only when the participant turned it on', () => {
+    expect(
+      chainEndpointFor({ chainEndpoint: 'https://esplora.example.com', broadcastDirect: true }),
+    ).toEqual({ esploraBase: 'https://esplora.example.com', broadcastDirect: true });
+  });
+});
+
+describe('participant store - setting and clearing an endpoint', () => {
+  beforeEach(() => {
+    clearEndpointCache();
+    useParticipant.setState({
+      network: 'regtest',
+      chainEndpoint: null,
+      chainEndpointVerdict: null,
+      chainEndpointProbing: false,
+      broadcastDirect: false,
+      endpointTxConfirmed: null,
+      log: [],
+    });
+  });
+
+  it('activates an endpoint that is on this service\'s chain', async () => {
+    stubChain({ 0: NETWORKS.regtest.genesisHash });
+    await useParticipant.getState().useChainEndpoint(ENDPOINT);
+    const s = useParticipant.getState();
+    expect(s.chainEndpoint).toBe(ENDPOINT);
+    expect(s.chainEndpointVerdict).toEqual({ kind: 'ok', base: ENDPOINT });
+    expect(s.chainEndpointProbing).toBe(false);
+  });
+
+  it('keeps a refused endpoint INACTIVE and holds its specific verdict', async () => {
+    stubChain({ 0: NETWORKS.bitcoin.genesisHash });
+    await useParticipant.getState().useChainEndpoint(ENDPOINT);
+    const s = useParticipant.getState();
+    expect(s.chainEndpoint).toBeNull();
+    expect(s.chainEndpointVerdict).toEqual({
+      kind: 'mismatch',
+      theirNetwork: NETWORKS.bitcoin.label,
+      ourNetwork: NETWORKS.regtest.label,
+    });
+  });
+
+  it('tells a browser rejection apart from an unreachable host, in the store too', async () => {
+    stubFetch(() => {
+      throw new TypeError('Failed to fetch');
+    });
+    await useParticipant.getState().useChainEndpoint(ENDPOINT);
+    expect(useParticipant.getState().chainEndpointVerdict).toEqual({ kind: 'browser-rejected' });
+    clearEndpointCache();
+    stubFetch(() => textResponse('nope', 502));
+    await useParticipant.getState().useChainEndpoint(ENDPOINT);
+    expect(useParticipant.getState().chainEndpointVerdict).toEqual({ kind: 'unreachable' });
+  });
+
+  it('refuses a non-https endpoint without making a request', async () => {
+    stubChain({ 0: NETWORKS.regtest.genesisHash });
+    await useParticipant.getState().useChainEndpoint('esplora.example.com');
+    expect(useParticipant.getState().chainEndpointVerdict).toEqual({ kind: 'malformed' });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('drops an active endpoint and its second opt-in on the explicit switch back', async () => {
+    stubChain({ 0: NETWORKS.regtest.genesisHash });
+    await useParticipant.getState().useChainEndpoint(ENDPOINT);
+    useParticipant.getState().setBroadcastDirect(true);
+    expect(useParticipant.getState().broadcastDirect).toBe(true);
+    useParticipant.getState().clearChainEndpoint();
+    const s = useParticipant.getState();
+    expect(s.chainEndpoint).toBeNull();
+    expect(s.chainEndpointVerdict).toBeNull();
+    // The opt-in within the opt-in cannot outlive the opt-in it sits inside.
+    expect(s.broadcastDirect).toBe(false);
+    expect(s.endpointTxConfirmed).toBeNull();
+  });
+
+  it('cannot turn on direct broadcast without an active endpoint', () => {
+    useParticipant.getState().setBroadcastDirect(true);
+    expect(useParticipant.getState().broadcastDirect).toBe(false);
   });
 });
