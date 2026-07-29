@@ -130,6 +130,194 @@ change-routing line explicitly.
 specific reason before the generic phase-stall timer fires. If you shorten one, keep the
 ordering or the boot throws with both values named.
 
+## Running the service: the operator's runtime controls
+
+Everything in this section is done from the authenticated operator console at `/operator`, while
+the process keeps running. None of it needs a restart, and none of it is persisted: see
+"What survives a restart" below. The decisions behind these controls, and the library behavior that
+forced their shape, are recorded in
+[ADR 0017](adr/0017-runtime-lifecycle-control.md).
+
+### Cancel a cohort
+
+`Cancel cohort` ends a cohort deliberately, at any point BEFORE its beacon transaction is
+broadcast. Seated participants lose their seats, the cohort stops being joinable immediately, and
+it is recorded with its own `Canceled` fate, never folded into "failed". A seated participant is
+told the operator canceled it, rather than getting the generic "this service didn't say why" line.
+
+The confirmation is laddered by consequence: an ordinary cancel names the cohort and its seated
+count, and canceling a FUNDED live cohort asks you to type the cohort id and states the
+recovery-key situation, because money has already arrived at the beacon address.
+
+Once the beacon transaction has broadcast the action is HIDDEN rather than disabled: the
+transaction is out on the network, and there is nothing left to cancel. A draft that was never
+advertised is discarded, not canceled.
+
+### Finalize a stalled signing round
+
+`Finalize now` commits the k-of-n script-path fallback so a cohort that is stuck waiting for a
+missing co-signer can still anchor. It is available only while the cohort is in one of the three
+signing phases, because that is the only window in which the library's fallback can be started; at
+any other point the button renders disabled with the reason. The same fallback also fires
+automatically on the stall timer, so this control moves the moment forward rather than adding a
+new outcome. It is idempotent: a second click is a no-op, not a second finalize.
+
+### There is no "close" button, and that is deliberate
+
+Seats are `min == max == n`, so the nth participant to join both locks the roster and starts key
+aggregation. Closing therefore happens by itself, and the console narrates it as a stage rather
+than offering a control. There is no way to keep a partially filled n-of-n cohort while refusing
+further joins, because such a cohort could never anchor. If you want a half-filled cohort gone,
+cancel it.
+
+### Pause advertising (drain mode)
+
+`Pause advertising` stops NEW cohorts from being offered. It is a drain, not a kill switch:
+
+- Cohorts advertised BEFORE the pause stay in the public directory, stay joinable, and keep
+  filling.
+- In-flight cohorts run to completion. Seated participants are untouched.
+- Resolve, the anchor reads, the artifact routes, monitoring, export, cancel, finalize, and draft
+  editing all keep working.
+- Advertise and re-advertise refuse with an honest reason; the draft is left intact.
+
+The public directory shows an honest paused notice, and `GET /v1/status` carries a `paused` bit so
+a headless client can tell a paused service from an idle one (a paused service and an idle service
+both show zero open cohorts, so an empty list is never evidence of a pause).
+
+A full quiesce is pause PLUS canceling each remaining open cohort individually. There is no bulk
+retract, on purpose: each cancel throws away real participants' seats and gets its own
+confirmation.
+
+`Resume advertising` reverses it. Neither direction asks for confirmation, because both are
+reversible and spending friction here would dilute the ceremony that cancel depends on.
+
+### Service settings
+
+The settings surface edits, for the running process: the service display name, the defaults a NEW
+draft starts from (beacon type, size n, threshold k, discovery window, funding window), and the
+participation terms text.
+
+Two rules govern it:
+
+- **Settings apply to NEW cohorts only.** A draft reads the defaults once, when it is created. An
+  advertised or in-flight cohort's shape never changes: its advert is public and its seats may be
+  filling.
+- **Saves are all-or-nothing.** If any field in a save is invalid, nothing is applied, so the
+  surface can never show a half-saved state.
+
+Each field displays where its current value came from, either the environment default or a change
+made this session, with the environment value named so you can see what a restart would restore.
+
+The discovery window can only be SHORTENED. The underlying library has no per-cohort timing value
+at all, so this service enforces the window itself and can only cut a cohort short of the
+runner-level `COHORT_TTL_MS`. A larger value is refused at save with the real maximum named, rather
+than accepted and quietly not honored.
+
+### Turning broadcast off (one way, this session)
+
+`Disable broadcast` stops the money-moving leg for NEW cohorts: they are created on the fixture
+path instead, so they never wait for funding and never read a UTXO. LIVE esplora reads stay up, so
+resolve, anchor observation, and the health strip are unaffected. Cohorts already advertised when
+you flip the switch finish under the mode they started with.
+
+**There is no way to turn it back on from the console.** Re-enabling broadcast is a restart with
+`BROADCAST=1` in the environment. That is deliberate: the layered environment opt-in
+([ADR 0010](adr/0010-mainnet-guard-rails.md)) is the only path to money movement, and a runtime
+control may only ever point toward safety. The health strip keeps reporting the LIVE mode the
+service really booted with, with a separate chip stating that broadcast is off for this session.
+
+### Dismissing an ended cohort
+
+Ended records (anchored, failed, expired, canceled) are bounded telemetry, not protocol state. A
+`Dismiss` action removes one from the console ahead of the automatic eviction. There is no undo,
+and the dismissal itself is written to the operator actions log, so the one action whose purpose is
+to remove evidence is not the one that goes unrecorded.
+
+### Test peers (rehearse your service by yourself)
+
+From a cohort's drill-down, `Add test peers` fills the remaining seats with in-process participants
+so one operator can rehearse the whole loop alone instead of needing a second human. It works in
+hermetic AND live mode. Test peers are REAL participants: on a live cohort they co-sign for real
+with throwaway keys and their DIDs are anchored on the network you named, which the confirmation
+states before you commit.
+
+They are badged as test peers everywhere they appear in the console, and stamped in the activity
+log. Nothing in the protocol distinguishes a test peer from a stranger, so the badge comes from
+this service's own record of the DIDs it spawned, never from an inference about someone else's
+identity.
+
+Each peer's own first-update registration is deliberately SKIPPED, with a note saying so. A first
+update needs its own funded singleton beacon address and a confirmed registration
+([ADR 0007](adr/0007-resolve-driver-and-first-update-discovery.md)), so attempting it per peer would demand a
+funding step each and would fail where nobody would look.
+
+## What survives a restart
+
+Nothing in the section above does. Pause, the broadcast switch, and every runtime setting live in
+memory for the life of the process, and a restart returns the service to its boot environment:
+whatever `docker-compose.yml` or your `.env` says. This is the same in-memory posture as cohort
+state itself (single box, [ADR 0014](adr/0014-deployment-topology.md)); durability is a deliberate
+future decision, not an accident of omission, and the console says so plainly.
+
+So the way to make a setting permanent is to put it in the environment. The runtime controls are
+for running the service today.
+
+## Participant-facing features you are hosting
+
+These are used by the strangers who point their browser at your service, not by you, but you are
+the one who has to explain them, so they are documented here too.
+
+### Participants can use their own chain endpoint
+
+By default a participant's browser makes its chain reads through this service's same-origin proxy,
+which needs zero configuration and is the recommended path. A participant may instead supply their
+own esplora endpoint, in which case their UTXO checks and anchor confirmations go directly there.
+Broadcasting through their own endpoint is a SECOND explicit opt-in on top of that.
+
+An endpoint whose chain disagrees with this service's network is refused before any read, by
+comparing chain markers rather than trusting a label. Four failure cases are reported distinctly:
+a chain mismatch, an endpoint that does not allow browser requests, an unreachable endpoint, and a
+malformed URL. There is no silent fallback in either direction: a refused endpoint is never
+activated, and a failing override never quietly reverts to your proxy.
+
+**The browser-request constraint is the one you will get asked about.** A browser can only read
+from an endpoint that sends permissive CORS headers. Many public esplora deployments do; a
+self-hosted electrs behind a default proxy usually does not, and there is nothing the participant
+can do about it from their side. That case gets its own message rather than being reported as
+"unreachable".
+
+### Participants can sign the registration transaction in their own wallet
+
+Instead of pasting a private key into the browser, a participant can export the first-update
+registration transaction as an unsigned PSBT, sign it in whatever wallet they use, and return the
+signed PSBT for validation and broadcast. The app validates the returned PSBT against the exact
+template it created before anything is broadcast, and the same real-funds guard rails apply as in
+the in-browser path.
+
+The exported PSBT is a standards-correct P2TR key-spend. **Wallet interoperability was not verified
+in this environment, so no specific wallet is named here as compatible.** If a participant's wallet
+refuses the transaction (its data output is the usual sticking point), that is a support question,
+not a defect in the round trip: the round trip itself is proven programmatically.
+
+Nothing from the round trip is written to browser storage.
+
+### Participation terms
+
+Set `TERMS_TEXT` at boot, or the participation terms field in the settings surface at runtime, and
+joining through the web app requires the participant to read the terms and agree. The agreement is
+recorded as a DID-signed artifact, verified server-side before anything is stored, and bound to the
+HASH of the exact document that was shown, so editing the terms afterwards cannot rewrite what
+somebody agreed to. Clearing the terms removes the step entirely; the feature is absent, not empty.
+
+**Be honest with yourself about what this enforces.** The aggregation protocol carries no message
+that could hold an acceptance, so enforcement is app-level: it applies to participants joining
+through the web app. A client speaking the protocol directly opts in WITHOUT the step. That limit
+is stated in the console, in the participant-facing copy, and here. Do not represent it as
+protocol-level consent.
+
+Terms text is rendered as plain escaped text, never as HTML and never as a link.
+
 ## TLS and reverse proxy (required for a public deployment)
 
 The container serves plain HTTP on 8080 and binds `0.0.0.0` inside the container.
@@ -257,7 +445,13 @@ curl -fsS http://localhost:8080/v1/config
 | `RECOVERY_KEY` | unset | x-only recovery pubkey for funded cohorts. Required before funding (else keys are throwaway). |
 | `FUNDING_WINDOW_MS` | `720000` (12m) | How long co-signing waits for a cohort beacon to be funded before it dead-ends (needs `BROADCAST=1`; must be < `PHASE_TIMEOUT_MS`). |
 | `LIVE_CHANGE_ADDRESS` | beacon address | Route the beacon tx change to an operator wallet instead of the beacon address (needs `BROADCAST=1`). |
-| `SERVICE_NAME` | unset | Display name shown in the operator console health strip and the public directory header. Display text only; no edit surface. |
+| `SERVICE_NAME` | unset | Display name shown in the operator console health strip and the public directory header. Plain escaped text. Editable at runtime from the settings surface; a restart returns it to this value. |
+| `DEFAULT_BEACON_TYPE` | `CASBeacon` | Beacon type a NEW cohort draft starts from (`CASBeacon` or `SMTBeacon`). Runtime-editable; a malformed value warns at boot and falls back. |
+| `DEFAULT_SIZE` | `2` | Seats (n) a NEW cohort draft starts from. Runtime-editable. |
+| `DEFAULT_THRESHOLD` | same as `DEFAULT_SIZE` | Fallback signing threshold (k) a NEW cohort draft starts from; clamped to n. Runtime-editable. |
+| `DEFAULT_DISCOVERY_WINDOW_MS` | unset (service default window) | Discovery window a NEW cohort draft starts from, in ms, minimum 60000. Can only SHORTEN a cohort relative to `COHORT_TTL_MS`; a larger value is refused. Runtime-editable. |
+| `DEFAULT_FUNDING_WINDOW_MS` | unset (uses `FUNDING_WINDOW_MS`) | Per-cohort funding window a NEW cohort draft starts from, in ms, minimum 60000. Runtime-editable. |
+| `TERMS_TEXT` | unset | Participation terms shown at join in the web app. Set = a DID-signed acceptance is required to join through the web app (app-level enforcement only, see above). Empty = no terms step at all. Runtime-editable. |
 | `PHASE_TIMEOUT_MS` | (built-in default) | Per-phase stall budget. Under `BROADCAST=1` it must exceed `FUNDING_WINDOW_MS` (boot-validated). |
 | `COHORT_TTL_MS` | (built-in default) | Overall wall-clock budget per cohort, from advertise to signing-complete. |
 | `OPERATOR_PASSWORD` | unset | Operator console password (HOST-01, ADR 0015). Set it to enable the login-gated console + gated telemetry. Unset = fail-closed: public participant surface still serves, operator surface disabled with a loud boot warning. Keep it in a `.env` file, never bake it into the image. |

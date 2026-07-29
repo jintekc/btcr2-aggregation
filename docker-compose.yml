@@ -41,7 +41,34 @@ services:
       LIVE_CHANGE_ADDRESS: ${LIVE_CHANGE_ADDRESS:-}
       # Optional display name for this service, shown on the operator health strip
       # and the public directory header. Plain text; empty = no name shown.
+      # Editable at runtime from the operator settings surface; a restart returns
+      # it to this value (that is true of every runtime setting - see
+      # docs/DEPLOY.md "What survives a restart").
       SERVICE_NAME: ${SERVICE_NAME:-}
+      # Boot SEEDS for what a NEW cohort draft starts from. Each is editable at
+      # runtime from the operator settings surface, applies to new drafts only
+      # (an advertised cohort's shape never changes), and returns to the value
+      # here on restart. A malformed value warns at boot and falls back.
+      # Beacon type: CASBeacon (default) or SMTBeacon.
+      DEFAULT_BEACON_TYPE: ${DEFAULT_BEACON_TYPE:-CASBeacon}
+      # Seats (n) and the k-of-n fallback threshold. k defaults to n and is
+      # clamped to it, so a malformed pair can never seed an unsatisfiable draft.
+      DEFAULT_SIZE: ${DEFAULT_SIZE:-2}
+      DEFAULT_THRESHOLD: ${DEFAULT_THRESHOLD:-}
+      # Per-draft timing windows in ms (minimum 60000 each). Empty = the service
+      # defaults apply (the built-in discovery window; FUNDING_WINDOW_MS for
+      # funding). The discovery window can only SHORTEN a cohort relative to
+      # COHORT_TTL_MS: a larger value is refused at save with the real maximum
+      # named, never silently ignored.
+      DEFAULT_DISCOVERY_WINDOW_MS: ${DEFAULT_DISCOVERY_WINDOW_MS:-}
+      DEFAULT_FUNDING_WINDOW_MS: ${DEFAULT_FUNDING_WINDOW_MS:-}
+      # Participation terms shown at join in the web app. Set = joining through
+      # the web app requires a DID-signed acceptance, verified server-side and
+      # bound to the hash of the exact text shown. Empty = no terms step at all.
+      # Enforcement is APP-LEVEL: a client speaking the protocol directly joins
+      # without the step (docs/DEPLOY.md says so plainly; do not represent this
+      # as protocol-level consent).
+      TERMS_TEXT: ${TERMS_TEXT:-}
       # Point resolution + the tx proxy at your own indexer (needs LIVE=1). Empty
       # uses the registry's public host for NETWORK.
       ESPLORA_HOST: ${ESPLORA_HOST:-}
