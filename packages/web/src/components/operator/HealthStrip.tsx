@@ -80,6 +80,12 @@ export function HealthStrip() {
     <Card className="flex flex-wrap items-center gap-2 px-4 py-2">
       <Badge tone="neutral">{mode ? MODE_LABEL[mode] : 'Checking mode'}</Badge>
 
+      {/* OPERATOR-SUPPLIED TEXT (D-16/D-51, T-05-07-02). Rendered as plain auto-escaped React text
+          content ONLY: never `dangerouslySetInnerHTML`, never markup, and never a link target or
+          any other attribute an operator-authored string could steer. It is now runtime-EDITABLE
+          from the settings view, so this constraint matters more than it did when the value was a
+          boot constant: the same string also renders to anonymous participants on the public
+          directory header, under the identical rule. */}
       {serviceName ? <span className="text-sm text-ink">{serviceName}</span> : null}
 
       <span

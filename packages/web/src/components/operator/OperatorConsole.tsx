@@ -35,6 +35,8 @@ export function OperatorConsole({ baseUrl }: { baseUrl: string }) {
   const openCohort = useOperator((s) => s.openCohort);
   const refreshCohorts = useOperator((s) => s.refreshCohorts);
   const listStale = useOperator((s) => s.listStale);
+  const loadSettings = useOperator((s) => s.loadSettings);
+  const settings = useOperator((s) => s.settings);
 
   const [showCreate, setShowCreate] = useState(false);
 
@@ -53,6 +55,18 @@ export function OperatorConsole({ baseUrl }: { baseUrl: string }) {
     const timer = setInterval(() => void refreshCohorts(baseUrl), LIST_POLL_MS);
     return () => clearInterval(timer);
   }, [auth, view.kind, refreshCohorts, baseUrl]);
+
+  // Load this service's settings ONCE per session, here in the shell rather than inside the create
+  // form (D-12/D-13). The create form opens on these defaults, and a form that fetched its own
+  // would re-read on every `New cohort` click while the settings view read the same values again:
+  // two reads of one holder are two snapshots that can visibly disagree on the same screen, which
+  // is the mistake 05-05 already corrected for the public status poll. Not polled: these change
+  // only when this operator changes them, and the settings view re-reads on open.
+  useEffect(() => {
+    if (auth === 'logged-in' && settings === undefined) {
+      void loadSettings(baseUrl);
+    }
+  }, [auth, settings, loadSettings, baseUrl]);
 
   if (auth === 'checking') {
     return (

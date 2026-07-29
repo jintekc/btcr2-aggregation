@@ -1,10 +1,48 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Badge, Button, Card, Field, Input, Select, SectionTitle } from '../../ui/primitives';
 import { useOperator } from '../../stores/operator';
 import { useParticipant } from '../../stores/participant';
 import { AdvancedTiming, BEACON_OPTIONS } from './DraftEditForm';
 import { parseWindow, validateCohortForm, windowKeys } from '../../lib/cohort-form';
-import type { OperatorBeaconType } from '../../lib/operator';
+import type { OperatorBeaconType, SettingsSnapshotDTO } from '../../lib/operator';
+
+/**
+ * The shape a cohort form falls back to when this service has not (yet) told us its own defaults.
+ *
+ * These are the literals this form has always shipped with. They stay ONLY as a fallback so the
+ * form is never blank on first paint: a form that renders empty fields while a read is in flight
+ * invites an operator to type over values that are about to arrive.
+ */
+export const SHIPPED_BEACON_TYPE: OperatorBeaconType = 'CASBeacon';
+export const SHIPPED_SIZE_TEXT = '2';
+export const SHIPPED_THRESHOLD_TEXT = '2';
+
+/**
+ * Resolve the create form's opening shape (SVC-04 criterion 3, D-12/D-13).
+ *
+ * A new cohort must start from the defaults the operator set on THIS running service, not from
+ * literals compiled into the browser bundle: the whole point of the settings surface is that an
+ * operator stops having to restate their own defaults on every create. When no snapshot has landed
+ * the shipped literals stand in, so the form never claims a default it has not received and never
+ * renders blank while the read is in flight (UI-SPEC E8 empty).
+ *
+ * Pure and exported so the preference order is asserted by a unit test rather than by opening the
+ * console and squinting at a number.
+ */
+export function createFormDefaults(snapshot?: SettingsSnapshotDTO): {
+  beaconType: OperatorBeaconType;
+  sizeText: string;
+  thresholdText: string;
+} {
+  return {
+    beaconType: snapshot?.defaultBeaconType.value ?? SHIPPED_BEACON_TYPE,
+    sizeText: snapshot?.defaultSize.value !== undefined ? String(snapshot.defaultSize.value) : SHIPPED_SIZE_TEXT,
+    thresholdText:
+      snapshot?.defaultThreshold.value !== undefined
+        ? String(snapshot.defaultThreshold.value)
+        : SHIPPED_THRESHOLD_TEXT,
+  };
+}
 
 /**
  * Create-a-cohort form (SVC-01, UI-SPEC, G-02-1). An authenticated operator picks a beacon
@@ -30,15 +68,38 @@ export function CreateCohortForm({ baseUrl }: { baseUrl: string }) {
   // This service's CURRENT defaults (D-11). A cohort that does not exist yet has no captured
   // defaults of its own, so the help names what a draft created right now would inherit.
   const defaults = useOperator((s) => s.defaults);
+  // This service's CURRENT shape defaults, loaded once by the console shell. The form opens on
+  // them rather than on bundle literals, which is the operator-facing half of D-13: a settings
+  // change reshapes the NEXT cohort, and this is where "next" begins.
+  const settings = useOperator((s) => s.settings);
 
-  const [beaconType, setBeaconType] = useState<OperatorBeaconType>('CASBeacon');
-  const [sizeText, setSizeText] = useState('2');
+  const seed = createFormDefaults(settings);
+  const [beaconType, setBeaconType] = useState<OperatorBeaconType>(seed.beaconType);
+  const [sizeText, setSizeText] = useState(seed.sizeText);
   // The signing threshold k defaults to the size (k = n, unanimous) until the operator lowers it.
-  const [thresholdText, setThresholdText] = useState('2');
-  // Both timing fields start EMPTY, which is what "use this service's default" looks like.
+  const [thresholdText, setThresholdText] = useState(seed.thresholdText);
+  // Both timing fields start EMPTY, which is what "use this service's default" looks like (D-11).
+  // They are DELIBERATELY not pre-filled from the served defaults: an empty field means "inherit",
+  // and a field pre-filled with the default figure would submit that number EXPLICITLY, freezing
+  // this cohort's window at today's value even if the service default moves. The help below names
+  // the real served figure instead, so the operator sees the number without committing to it.
   const [discoveryText, setDiscoveryText] = useState('');
   const [fundingText, setFundingText] = useState('');
   const [clientError, setClientError] = useState<string | undefined>(undefined);
+  // Track which snapshot the fields were seeded from, so a snapshot ARRIVING (or changing, after a
+  // settings save) re-seeds an untouched form exactly once instead of overwriting live typing on
+  // every render.
+  const [seededFrom, setSeededFrom] = useState<SettingsSnapshotDTO | undefined>(settings);
+
+  useEffect(() => {
+    if (settings !== seededFrom) {
+      const next = createFormDefaults(settings);
+      setBeaconType(next.beaconType);
+      setSizeText(next.sizeText);
+      setThresholdText(next.thresholdText);
+      setSeededFrom(settings);
+    }
+  }, [settings, seededFrom]);
 
   const creating = createStatus === 'creating';
 

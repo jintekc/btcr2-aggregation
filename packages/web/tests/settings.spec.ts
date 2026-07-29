@@ -11,6 +11,12 @@ import {
   SOURCE_UNSET,
 } from '../src/components/operator/SettingsView';
 import {
+  createFormDefaults,
+  SHIPPED_BEACON_TYPE,
+  SHIPPED_SIZE_TEXT,
+  SHIPPED_THRESHOLD_TEXT,
+} from '../src/components/operator/CreateCohortForm';
+import {
   SETTINGS_MODEL_LINE,
   SETTINGS_SAVED_OK,
   TERMS_HONEST_LIMIT,
@@ -188,6 +194,35 @@ describe('the settings copy is the UI-SPEC contract, free of the long dash', () 
     for (const copy of [SETTINGS_MODEL_LINE, SETTINGS_SAVED_OK, TERMS_HONEST_LIMIT, SOURCE_ENV_DEFAULT]) {
       expect(copy).not.toMatch(/—/);
     }
+  });
+});
+
+describe('the create form opens on the SERVED defaults, falling back to the shipped literals', () => {
+  it('prefers this service\'s current defaults over the bundle literals', () => {
+    // The whole point of the settings surface: an operator stops restating their own defaults on
+    // every create. A form that ignored the served snapshot would make the setting decorative.
+    const served: SettingsSnapshotDTO = {
+      ...UNTOUCHED,
+      defaultBeaconType: { value: 'SMTBeacon', envDefault: 'CASBeacon', changed: true },
+      defaultSize: { value: 5, envDefault: 2, changed: true },
+      defaultThreshold: { value: 3, envDefault: 2, changed: true },
+    };
+    expect(createFormDefaults(served)).toEqual({
+      beaconType: 'SMTBeacon',
+      sizeText: '5',
+      thresholdText: '3',
+    });
+  });
+
+  it('falls back to the shipped literals when no snapshot has landed', () => {
+    // Never blank: a form rendering empty fields while a read is in flight invites the operator to
+    // type over values that are about to arrive. And never a claimed default the service did not
+    // send: these literals are what this form has always shipped with.
+    expect(createFormDefaults(undefined)).toEqual({
+      beaconType: SHIPPED_BEACON_TYPE,
+      sizeText: SHIPPED_SIZE_TEXT,
+      thresholdText: SHIPPED_THRESHOLD_TEXT,
+    });
   });
 });
 
