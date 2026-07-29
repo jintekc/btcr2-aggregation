@@ -27,13 +27,22 @@ import { createCohortIntents } from './cohort-intent.js';
 import { createAdvertRepublisher } from './advert-republish.js';
 import { createAnchorState } from './anchor-state.js';
 import {
+  addedTestPeersText,
   canceledCohortText,
   createCohortMonitor,
   finalizedCohortText,
+  operatorAddedTestPeersText,
   OPERATOR_FINALIZED_TEXT,
+  TEST_PEER_REGISTRATION_SKIPPED_TEXT,
   type FundingView,
   type ServiceMode,
 } from './monitor.js';
+import {
+  addTestPeersFor,
+  createTestPeers,
+  type AddTestPeersOutcome,
+  type TestPeerRegistry,
+} from './test-peers.js';
 import { makeProvideTxData, type LiveTxConfig } from './tx.js';
 import {
   computeFundingDeadline,
@@ -109,6 +118,23 @@ export {
   type AdvertRepublisher,
   type AdvertRepublisherDeps,
 } from './advert-republish.js';
+export {
+  addTestPeersFor,
+  createTestPeers,
+  spawnTestPeers,
+  NO_SEATS_REASON,
+  TEST_PEERS_FAILED_REASON,
+  TEST_PEERS_UNAVAILABLE_REASON,
+  type AddTestPeersOutcome,
+  type CohortSeats,
+  type SpawnTestPeersOptions,
+  type TestPeerFactory,
+  type TestPeerHandle,
+  type TestPeerRegistry,
+  type TestPeerRegistryOptions,
+  type TestPeerSpawn,
+  type TestPeerSpawner,
+} from './test-peers.js';
 export {
   createCohortMonitor,
   type CohortMonitor,
@@ -485,6 +511,13 @@ export interface Service {
    * {@link runner} and {@link transport} are exposed for the protocol.
    */
   readonly settings: RuntimeSettings;
+  /**
+   * This service's operator test-peer registry (SVC-04, D-17), exposed for the same reason
+   * {@link settings} is: a harness (the hermetic `e2e:testpeers` leg, the unit spec) can spawn
+   * peers and, crucially, COUNT the ones still running after a cohort settles or the service
+   * stops, which is the only way to prove a rehearsal left no subscription behind.
+   */
+  readonly testPeers: TestPeerRegistry;
   /** Start listening. Pass port 0 (default) for an ephemeral port. */
   start(port?: number, host?: string): Promise<StartedService>;
   /** Stop the runner, transport, and HTTP server. */
@@ -738,6 +771,28 @@ export function createService(opts: CreateServiceOptions): Service {
    */
   const stopController = new AbortController();
 
+  /**
+   * This service's own origin, captured when `start()` resolves. The operator's test peers connect
+   * back over the SAME real HTTP transport a stranger uses, so they need an origin, and a service
+   * that is not listening has none - hence the lazy read rather than a boot-time constant.
+   */
+  let startedBaseUrl: string | undefined;
+
+  /**
+   * The per-service operator test-peer registry (SVC-04, D-17). Closure-scoped like
+   * {@link seatedRosterKeys} and the runtime settings holder, never a module singleton, so one
+   * service's rehearsal can neither badge nor tear down another service's members. Its stop signal
+   * is the SAME {@link stopController} the funding wait rides, so `service.stop()` reclaims every
+   * peer subscription on the established path.
+   */
+  const testPeers = createTestPeers({
+    baseUrl: () => startedBaseUrl,
+    // Config-driven network (project hard rule): a throwaway peer DID names the chain this
+    // service actually targets, never a build-time constant.
+    network: resolveNetwork(opts.config.network),
+    signal: stopController.signal,
+  });
+
   let live: LiveTxConfig | undefined;
   let netConfig: NetworkConfig | undefined;
   if (opts.live) {
@@ -972,7 +1027,16 @@ export function createService(opts: CreateServiceOptions): Service {
   // from the SAME value the advertise gate reads (SVC-04, D-07), rather than the console
   // maintaining a second, drift-prone copy of that fact.
   const mode: ServiceMode = broadcaster ? 'live' : live ? 'live-no-broadcast' : 'hermetic';
-  const monitor = createCohortMonitor(runner, broadcaster, anchorState, mode, runtimeSettings);
+  // `testPeers.dids` is handed over as the LIVE set instance (SVC-04, D-17), so a peer spawned at
+  // any later moment is badged on the next read without the monitor being rebuilt.
+  const monitor = createCohortMonitor(
+    runner,
+    broadcaster,
+    anchorState,
+    mode,
+    runtimeSettings,
+    testPeers.dids,
+  );
 
   // Stamp each cohort's advertise time so the funding wait's remaining-TTL clamp is honest (D-38).
   // Registered unconditionally (cheap, harmless off the live path); consumed only by the live
@@ -1019,6 +1083,11 @@ export function createService(opts: CreateServiceOptions): Service {
     lastFundingView.delete(cohortId);
     advertisedAt.delete(cohortId);
     cohortFundingWindows.delete(cohortId);
+    // ...and every operator test peer this cohort was rehearsed with (SVC-04, D-17). A peer holds
+    // two SSE subscriptions, so a peer that outlives the cohort it was created for is a leaked
+    // connection; the settle path is where a rehearsal genuinely ends. The badge SET is untouched,
+    // because the drill-down must keep labelling those members after the cohort has ended.
+    testPeers.release(cohortId);
   }
 
   // Success path: a cohort that anchors settles here and never fires `cohort-failed`, so without
@@ -1195,6 +1264,55 @@ export function createService(opts: CreateServiceOptions): Service {
       })
     : undefined;
 
+  /**
+   * The gated add-test-peers action (SVC-04, D-17). The verdict logic lives in
+   * {@link file://./test-peers.ts}; this only supplies the two seams it needs.
+   *
+   * The seats are read LIVE from the runner session, which is also what makes an ended or
+   * never-advertised id indistinguishable (`'unknown'` -> one opaque 404) and what makes a
+   * mid-signing cohort refuse on its own: a cohort that has started signing has all n seats
+   * filled, so its remaining count is zero and the action is refused without a phase check.
+   */
+  async function addTestPeers(cohortId: string, requested?: number): Promise<AddTestPeersOutcome> {
+    return addTestPeersFor(
+      {
+        seats: (id: string) => {
+          const cohort = runner.session.getCohort(id);
+          return cohort
+            ? { seatsJoined: cohort.participants.length, capacity: cohort.minParticipants }
+            : undefined;
+        },
+        registry: testPeers,
+        onSpawned: (id: string, spawned: number) => {
+          // Fire-and-forget like every other monitoring side effect: a logging failure must never
+          // turn a successful spawn into a 500.
+          try {
+            monitor.noteOperatorAction(id, operatorAddedTestPeersText(spawned));
+            monitor.noteOperatorAction(addedTestPeersText(spawned, id));
+            // Live-mode honesty (D-17, ADR 0007). These peers co-sign for real and their DIDs are
+            // anchored, but their OWN first updates are not registered: that needs a funded
+            // singleton beacon address and a confirmed registration per peer. Say so rather than
+            // attempting it and failing where nobody would look.
+            if (mode === 'live') {
+              monitor.noteOperatorAction(id, TEST_PEER_REGISTRATION_SKIPPED_TEXT);
+            }
+          } catch (err) {
+            console.error(`[service] failed to record the test-peer action: ${String(err)}`);
+          }
+          if (mode === 'live') {
+            console.log(
+              `[service] cohort ${id}: added ${spawned} operator test peers; they co-sign for real, ` +
+                'and their own DID registrations are skipped (a first update needs its own funded ' +
+                'beacon address and a confirmed registration)',
+            );
+          }
+        },
+      },
+      cohortId,
+      requested,
+    );
+  }
+
   const app = createHonoApp(transport, {
     webDistDir: opts.webDistDir,
     store: opts.store,
@@ -1227,6 +1345,9 @@ export function createService(opts: CreateServiceOptions): Service {
     // threaded; the route only mounts inside the operatorAuth block, so it stays
     // operator-only (D-26).
     monitor,
+    // The gated add-test-peers action (SVC-04, D-17). Threaded always; the route mounts ONLY
+    // inside the operatorAuth block, so a fail-closed boot exposes no way to spawn anything.
+    testPeers: { addTestPeers },
   });
   let server: ServerType | undefined;
 
@@ -1235,12 +1356,17 @@ export function createService(opts: CreateServiceOptions): Service {
     transport,
     broadcaster,
     settings: runtimeSettings,
+    testPeers,
     start(port = 0, host = '127.0.0.1'): Promise<StartedService> {
       transport.start();
       return new Promise<StartedService>((resolve, reject) => {
         try {
           server = serve({ fetch: app.fetch, port, hostname: host }, (info: AddressInfo) => {
-            resolve({ port: info.port, baseUrl: `http://${host}:${info.port}` });
+            const baseUrl = `http://${host}:${info.port}`;
+            // Capture this service's own origin for the test-peer spawner (D-17): the peers
+            // connect back over the same real HTTP transport a stranger uses.
+            startedBaseUrl = baseUrl;
+            resolve({ port: info.port, baseUrl });
           });
         } catch (err) {
           reject(err instanceof Error ? err : new Error(String(err)));
@@ -1253,6 +1379,11 @@ export function createService(opts: CreateServiceOptions): Service {
       for (const handle of fundingWatches.values()) {
         handle.stop();
       }
+      // Every operator test peer still running (D-17). The abort below would also reach them, but
+      // stopping them here keeps the handle map (and therefore `testPeers.activeCount`) honest the
+      // moment `stop()` is called rather than one listener hop later.
+      testPeers.stopAll();
+      startedBaseUrl = undefined;
       // ...and the AUTHORITATIVE funding wait inside onProvideTxData (review WR-03), which the
       // runner teardown below can only abandon: without this it kept hitting esplora for the rest
       // of the funding window on a service that had already stopped.

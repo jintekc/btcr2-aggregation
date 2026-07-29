@@ -64,24 +64,28 @@ function fakePeers(): { started: string[]; stopped: string[]; createPeer: TestPe
   return { started, stopped, createPeer };
 }
 
-/** Deterministic throwaway identities, so a DID assertion never depends on real key generation. */
-function fakeIdentities(): () => Identity {
+/**
+ * Deterministic throwaway identities, so a DID assertion never depends on real key generation.
+ * `prefix` keeps two independent registries in one test from minting the SAME DID, which would
+ * make an independence assertion pass or fail for the wrong reason.
+ */
+function fakeIdentities(prefix = 'test-peer'): () => Identity {
   let n = 0;
   return () => {
     n += 1;
-    return { did: `did:example:test-peer-${n}`, keys: {} as Identity['keys'] };
+    return { did: `did:example:${prefix}-${n}`, keys: {} as Identity['keys'] };
   };
 }
 
 /** A registry wired with the fakes, against a base URL that is always available. */
-function fakeRegistry(signal?: AbortSignal) {
+function fakeRegistry(signal?: AbortSignal, prefix?: string) {
   const peers = fakePeers();
   const registry = createTestPeers({
     baseUrl: () => 'http://127.0.0.1:9999',
     network: resolveNetwork(ACTIVE_NETWORK),
     signal,
     createPeer: peers.createPeer,
-    createPeerIdentity: fakeIdentities(),
+    createPeerIdentity: fakeIdentities(prefix),
   });
   return { registry, ...peers };
 }
@@ -266,8 +270,8 @@ describe('the test-peer registry records every spawned DID for the badge', () =>
   });
 
   it('keeps two registries in one process completely independent', async () => {
-    const a = fakeRegistry();
-    const b = fakeRegistry();
+    const a = fakeRegistry(undefined, 'service-a-peer');
+    const b = fakeRegistry(undefined, 'service-b-peer');
 
     const spawnedA = await a.registry.spawn({ cohortId: 'c1', remainingSeats: 1 });
     const spawnedB = await b.registry.spawn({ cohortId: 'c1', remainingSeats: 1 });

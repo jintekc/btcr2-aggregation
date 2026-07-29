@@ -98,6 +98,8 @@ interface MonitorMemberDTO {
   did: string;
   status: 'pending' | 'seated';
   round: 'seated' | 'submitted' | 'validated' | 'nonce-sent' | 'rejected';
+  /** True for a member this service spawned as an operator test peer (SVC-04, D-17). */
+  testPeer?: boolean;
 }
 interface MonitorSubmissionDTO {
   did: string;
@@ -1093,6 +1095,232 @@ export async function runPauseLeg(options: OperatorCohortOptions = {}): Promise<
   }
 }
 
+/**
+ * The SVC-04 test-peer leg (D-17): prove the SOLO-REHEARSAL story end to end over the real gated
+ * route and the real participant transport.
+ *
+ * One operator, no second human: advertise a 3-seat cohort, add ONE test peer (the partial fill,
+ * UI-SPEC E11), then fill the remaining seats, and watch the peers seat, submit, and co-sign the
+ * cohort to completion exactly as strangers would. The two facts a unit spec cannot prove are
+ * asserted here: the peers really do reach `signing-complete` over the real HTTP transport, and
+ * every peer is torn down when the cohort settles, counted rather than inferred.
+ *
+ * Hermetic: no `live`, no `bitcoin`, no esplora - the fixture beacon-tx path, exactly like the
+ * other legs in this file. The peers are real participants either way; on a live service they
+ * would co-sign a real transaction, which is why the console's confirm says so before the act.
+ */
+export async function runTestPeersLeg(options: OperatorCohortOptions = {}): Promise<string[]> {
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const log = options.quiet ? () => {} : (msg: string) => console.log(msg);
+  const problems: string[] = [];
+  const fail = (problem: string): void => {
+    problems.push(problem);
+  };
+
+  /** Three seats, so ONE peer leaves the cohort genuinely partly filled before the rest arrive. */
+  const SEATS = 3;
+
+  const service = createService({
+    identity: createIdentity(),
+    config: buildCohortConfig(SEATS, 'CASBeacon'),
+    operatorPassword: OPERATOR_PASSWORD,
+    operatorCookieSecure: false,
+  });
+  service.runner.on('error', (err) => log(`[testpeers] service error: ${err.message}`));
+
+  let signedCohortId = '';
+  const signingComplete = new Promise<void>((resolve) => {
+    service.runner.on('signing-complete', (result) => {
+      signedCohortId = result.cohortId;
+      resolve();
+    });
+  });
+
+  const { baseUrl } = await service.start(options.port ?? 0);
+  log(`[testpeers] service listening on ${baseUrl}`);
+
+  try {
+    const loginRes = await fetch(`${baseUrl}/v1/operator/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: OPERATOR_PASSWORD }),
+    });
+    const setCookie = loginRes.headers.getSetCookie().find((c) => c.startsWith('operator_session='));
+    await loginRes.text();
+    if (loginRes.status !== 200 || !setCookie) {
+      fail(`[testpeers] operator login should be 200 with a session cookie, got ${loginRes.status}`);
+      return problems;
+    }
+    const cookie = setCookie.split(';')[0];
+
+    /* ---- The anonymous negative: the spawn route is gated BEFORE any cohort lookup. ---- */
+    const anonymous = await fetch(`${baseUrl}/v1/operator/cohorts/never-existed/test-peers`, {
+      method: 'POST',
+    });
+    await anonymous.text();
+    if (anonymous.status !== 401) {
+      fail(`[testpeers] an anonymous spawn must be 401 before any lookup, got ${anonymous.status}`);
+    }
+
+    /* ---- Advertise a 3-seat cohort. ---- */
+    const createRes = await fetch(`${baseUrl}/v1/operator/cohorts`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ beaconType: 'CASBeacon', size: SEATS, threshold: SEATS }),
+    });
+    if (createRes.status !== 201) {
+      fail(`[testpeers] create draft should be 201, got ${createRes.status}`);
+      return problems;
+    }
+    const draft = (await createRes.json()) as OperatorCohortDTO;
+    const advertiseRes = await fetch(`${baseUrl}/v1/operator/cohorts/${draft.draftId}/advertise`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+    if (advertiseRes.status !== 200) {
+      fail(`[testpeers] advertise should be 200, got ${advertiseRes.status}`);
+      return problems;
+    }
+    const cohortId = ((await advertiseRes.json()) as OperatorCohortDTO).draftId;
+    log(`[testpeers] advertised cohort ${cohortId} with ${SEATS} seats`);
+
+    const readDetail = async (): Promise<MonitorDetailDTO> => {
+      const res = await fetch(`${baseUrl}/v1/operator/cohorts/${cohortId}`, { headers: { cookie } });
+      return (await res.json()) as MonitorDetailDTO;
+    };
+
+    /* ---- Add ONE test peer: the cohort is left partly filled (UI-SPEC E11 partial). ---- */
+    const oneRes = await fetch(`${baseUrl}/v1/operator/cohorts/${cohortId}/test-peers`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ count: 1 }),
+    });
+    if (oneRes.status !== 200) {
+      fail(`[testpeers] adding one test peer should be 200, got ${oneRes.status}`);
+      return problems;
+    }
+    const oneBody = (await oneRes.json()) as { spawned?: number };
+    if (oneBody.spawned !== 1) {
+      fail(`[testpeers] the route should report exactly 1 spawned peer, got ${JSON.stringify(oneBody)}`);
+    }
+    try {
+      const partial = await withTimeout(
+        pollUntil(readDetail, (d) => d.seatsJoined >= 1, 15_000, '[testpeers] the first peer seats'),
+        timeoutMs,
+        '[testpeers] partial seat poll',
+      );
+      if (partial.seatsJoined !== 1) {
+        fail(`[testpeers] one added peer should leave 1 of ${SEATS} seats taken, got ${partial.seatsJoined}`);
+      }
+      if (partial.capacity !== SEATS) {
+        fail(`[testpeers] the served capacity should stay ${SEATS}, got ${partial.capacity}`);
+      }
+    } catch (err) {
+      fail(`[testpeers] the first test peer never seated: ${err instanceof Error ? err.message : String(err)}`);
+      return problems;
+    }
+    log(`[assert] test peers: one peer seated, cohort partly filled at 1/${SEATS}`);
+
+    /* ---- Fill the REMAINING seats with no body at all: the console's own request. ---- */
+    const restRes = await fetch(`${baseUrl}/v1/operator/cohorts/${cohortId}/test-peers`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+    if (restRes.status !== 200) {
+      fail(`[testpeers] filling the remaining seats should be 200, got ${restRes.status}`);
+      return problems;
+    }
+    const restBody = (await restRes.json()) as { spawned?: number };
+    if (restBody.spawned !== SEATS - 1) {
+      fail(
+        `[testpeers] an empty body should fill exactly the ${SEATS - 1} remaining seats, ` +
+          `got ${JSON.stringify(restBody)}`,
+      );
+    }
+
+    /* ---- The peers co-sign the cohort to completion, exactly as strangers would. ---- */
+    try {
+      await withTimeout(signingComplete, timeoutMs, '[testpeers] cohort signing');
+    } catch (err) {
+      fail(
+        `[testpeers] the operator's own test peers must co-sign the cohort to completion: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+      return problems;
+    }
+    if (signedCohortId !== cohortId) {
+      fail(`[testpeers] the cohort that signed (${signedCohortId}) is not the advertised one (${cohortId})`);
+    }
+    log(`[assert] test peers: the operator's own peers co-signed cohort ${cohortId} to completion`);
+
+    /* ---- Every seated member is BADGED as a test peer in the gated detail read. ---- */
+    const settled = await readDetail();
+    const seated = settled.members.filter((m) => m.status === 'seated');
+    if (seated.length !== SEATS) {
+      fail(`[testpeers] the detail read should show ${SEATS} seated members, got ${seated.length}`);
+    }
+    const badged = seated.filter((m) => m.testPeer === true);
+    if (badged.length !== seated.length) {
+      fail(
+        `[testpeers] every seated member of this cohort was added by the operator, so all ` +
+          `${seated.length} must read testPeer:true; only ${badged.length} did`,
+      );
+    }
+    log(`[assert] test peers: all ${badged.length} seated members are badged as test peers`);
+
+    /* ---- The list read settles the cohort into the anchored ended taxonomy. ---- */
+    try {
+      await withTimeout(
+        pollUntil(
+          async () => {
+            const res = await fetch(`${baseUrl}/v1/operator/cohorts`, { headers: { cookie } });
+            return (await res.json()) as OperatorListWithMonitoringDTO;
+          },
+          (body) => (body.monitoring?.rows ?? []).some((r) => r.cohortId === cohortId && r.chip === 'anchored'),
+          timeoutMs,
+          '[testpeers] summary chip settles to anchored',
+        ),
+        timeoutMs,
+        '[testpeers] anchored poll',
+      );
+    } catch (err) {
+      fail(
+        `[testpeers] the rehearsed cohort never settled as anchored: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    /* ---- NO peer outlives its cohort: counted, never inferred. ---- */
+    if (service.testPeers.activeCount !== 0) {
+      fail(
+        `[testpeers] every test peer must be torn down when its cohort settles, but ` +
+          `${service.testPeers.activeCount} are still running`,
+      );
+    }
+    log('[assert] test peers: zero peers still running after the cohort settled');
+
+    /* ---- A repeat spawn on a cohort with nothing left to fill is refused, never a silent 200. ---- */
+    const repeat = await fetch(`${baseUrl}/v1/operator/cohorts/${cohortId}/test-peers`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+    await repeat.text();
+    // 409 while the settled cohort is still in the session (full), 404 once it has left it. Both
+    // are honest refusals; a 200 would mean an operator could spawn peers into a finished cohort.
+    if (repeat.status !== 409 && repeat.status !== 404) {
+      fail(`[testpeers] a repeat spawn on a finished cohort should be refused, got ${repeat.status}`);
+    }
+
+    if (problems.length === 0) {
+      log('[ok] test peers: one operator rehearsed a whole cohort alone, and left no peer running');
+    }
+
+    return problems;
+  } finally {
+    await service.stop();
+  }
+}
+
 async function main(): Promise<number> {
   const quiet = process.argv.includes('--quiet');
   // `--monitor` runs ONLY the SVC-03 fixture monitoring leg (the `e2e:monitor` script); the
@@ -1105,19 +1333,25 @@ async function main(): Promise<number> {
   // `--pause` runs ONLY the SVC-04 drain-mode leg (the `e2e:pause` script); it also joins the
   // default suite so the extended `e2e:operator` gate covers advertising pause too.
   const pauseOnly = process.argv.includes('--pause');
+  // `--test-peers` runs ONLY the SVC-04 test-peer leg (the `e2e:testpeers` script); it also joins
+  // the default suite so the extended `e2e:operator` gate covers the solo-rehearsal path too.
+  const testPeersOnly = process.argv.includes('--test-peers');
   const problems = monitorOnly
     ? await runMonitorLeg({ quiet })
     : cancelOnly
       ? await runCancelLeg({ quiet })
       : pauseOnly
         ? await runPauseLeg({ quiet })
-        : [
-            ...(await runOperatorCohort({ quiet })),
-            ...(await runExpiryLeg({ quiet })),
-            ...(await runMonitorLeg({ quiet })),
-            ...(await runCancelLeg({ quiet })),
-            ...(await runPauseLeg({ quiet })),
-          ];
+        : testPeersOnly
+          ? await runTestPeersLeg({ quiet })
+          : [
+              ...(await runOperatorCohort({ quiet })),
+              ...(await runExpiryLeg({ quiet })),
+              ...(await runMonitorLeg({ quiet })),
+              ...(await runCancelLeg({ quiet })),
+              ...(await runPauseLeg({ quiet })),
+              ...(await runTestPeersLeg({ quiet })),
+            ];
   if (problems.length > 0) {
     console.error('\nE2E FAILED:');
     for (const problem of problems) {
@@ -1151,6 +1385,16 @@ async function main(): Promise<number> {
         'cohort advertised before the pause, a FRESHLY constructed participant still seated in ' +
         'it, a new advertise was refused with a 409 that left the draft intact, and resume ' +
         'restored both the public bit and the ability to advertise (SVC-04, D-06/D-07).',
+    );
+    return 0;
+  }
+  if (testPeersOnly) {
+    console.log(
+      '\nTEST PEERS E2E PASSED: one operator advertised a 3-seat cohort, added a single test ' +
+        'peer (leaving it partly filled), then filled the remaining seats from the gated route; ' +
+        'the peers seated, submitted, and co-signed the cohort to completion over the real HTTP ' +
+        'transport, every seated member read badged as a test peer in the gated detail read, and ' +
+        'zero peers were still running once the cohort settled (SVC-04, D-17).',
     );
     return 0;
   }

@@ -40,6 +40,12 @@ import {
   RESUMED_ADVERTISING_TEXT,
   type CohortMonitor,
 } from './monitor.js';
+import {
+  NO_SEATS_REASON,
+  TEST_PEERS_FAILED_REASON,
+  TEST_PEERS_UNAVAILABLE_REASON,
+  type TestPeerSpawner,
+} from './test-peers.js';
 import { mountStaticSite } from './static-site.js';
 import { mountArtifactRoutes, type ArtifactStore } from './store.js';
 import { resolveBtcr2, UnconfirmedSignalError } from './resolve.js';
@@ -259,6 +265,15 @@ export interface HonoAppOptions {
    * T-04-01-01). Absent, the route answers the non-oracle `{ exists: false }` default.
    */
   monitor?: CohortMonitor;
+  /**
+   * The gated add-test-peers action (SVC-04, D-17) backing
+   * `POST /v1/operator/cohorts/:id/test-peers`. The route is registered INSIDE the operatorAuth
+   * block after both prefix guards, so only an authenticated operator can spawn participants into
+   * a cohort on this service and an anonymous caller is rejected with 401 BEFORE any cohort
+   * lookup (T-05-09-01). Absent, no route mounts at all: a service booted without an operator
+   * password has no way to add anything.
+   */
+  testPeers?: TestPeerSpawner;
 }
 
 /**
@@ -288,6 +303,7 @@ export function createHonoApp(
     operatorCohorts,
     anchorState,
     monitor,
+    testPeers,
   } = opts;
   const app = new Hono<Env>();
 
@@ -586,6 +602,64 @@ export function createHonoApp(
         }
         return monitor.dismissEnded(id) ? c.json({ ok: true }) : c.json({ error: 'unknown ended cohort' }, 404);
       });
+    }
+
+    // Operator test peers (SVC-04, D-17). Registered inside the gated block after BOTH prefix
+    // guards, so an anonymous caller is rejected with 401 BEFORE any cohort lookup: spawning
+    // participants into a cohort is a mutating action on this service, and on a live cohort those
+    // participants co-sign a real transaction (T-05-09-01). The `:id` shape guard runs before the
+    // lookup, exactly as on cancel / finalize / dismiss.
+    //
+    // It carries a two-segment path, so it never collides with the single-segment detail read. The
+    // body is OPTIONAL: no body (or no `count`) means "fill every remaining seat", which is what
+    // the console's own control asks for. A supplied count is validated as a positive whole number
+    // here and CAPPED at the remaining seats by the action itself, so no request can grow the
+    // spawn beyond n (T-05-09-02).
+    //
+    // The verdict union maps straight through and no library throw can become a body: 404 for an
+    // unknown / never-advertised / already-settled cohort (one opaque answer, as on cancel), 409
+    // with the app-authored {@link NO_SEATS_REASON} for a full cohort (the SAME string the console
+    // renders beside its disabled control), and 200 with the count that actually took a seat.
+    if (testPeers) {
+      app.post(
+        '/v1/operator/cohorts/:id/test-peers',
+        // The same 4 KiB limit and 413 handler as every other gated write; the body is a tiny
+        // `{ count }` at most.
+        bodyLimit({ maxSize: 4 * 1024, onError: (c) => c.json({ error: 'request too large' }, 413) }),
+        async (c) => {
+          const id = c.req.param('id');
+          if (!/^[0-9a-zA-Z-]{1,64}$/.test(id)) {
+            return c.json({ error: 'invalid cohort id' }, 400);
+          }
+          // An ABSENT or unparsable body is the "fill every remaining seat" request, not an error:
+          // the console posts no body at all for it.
+          const body = (await c.req.json().catch(() => undefined)) as { count?: unknown } | undefined;
+          let requested: number | undefined;
+          if (body && typeof body === 'object' && body.count !== undefined) {
+            if (typeof body.count !== 'number' || !Number.isFinite(body.count) || body.count < 1) {
+              return c.json({ error: 'count must be a whole number of at least 1' }, 400);
+            }
+            requested = Math.floor(body.count);
+          }
+          const outcome = await testPeers.addTestPeers(id, requested);
+          if (outcome === 'unknown') {
+            // The SAME opaque body cancel and finalize use, so the three verbs stay consistent.
+            return c.json({ error: 'unknown cohort' }, 404);
+          }
+          if (outcome === 'no-seats') {
+            return c.json({ error: NO_SEATS_REASON }, 409);
+          }
+          if (outcome === 'unavailable') {
+            return c.json({ error: TEST_PEERS_UNAVAILABLE_REASON }, 503);
+          }
+          if (outcome === 'failed') {
+            return c.json({ error: TEST_PEERS_FAILED_REASON }, 502);
+          }
+          // The honest count: peers that actually opened their subscriptions, never the number asked
+          // for. The DIDs stay server-side; the console learns who joined from the next detail read.
+          return c.json({ spawned: outcome.spawned });
+        },
+      );
     }
 
     // On-demand cohort drafts (SVC-01). Registered AFTER the requireSameOrigin +

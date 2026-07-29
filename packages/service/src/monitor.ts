@@ -122,6 +122,8 @@ export const finalizedCohortText = (cohortId: string): string =>
 export const dismissedRecordText = (cohortId: string): string =>
   `Dismissed the record for cohort ${shortCohortId(cohortId)}.`;
 export const changedSettingText = (setting: string): string => `Changed ${setting}.`;
+export const addedTestPeersText = (count: number, cohortId: string): string =>
+  `Added ${count} test peers to cohort ${shortCohortId(cohortId)}.`;
 
 /**
  * The exact UI-SPEC activity-ring line for an operator cancel (E12/E13). Fixed contract copy
@@ -141,6 +143,28 @@ const CANCELED_ACTIVITY_TEXT = 'Operator canceled this cohort.';
  * unable to tell their own decision from the service's (T-05-03-04).
  */
 export const OPERATOR_FINALIZED_TEXT = 'Operator triggered the k-of-n fallback.';
+
+/**
+ * The per-cohort activity line for an operator test-peer spawn (SVC-04, D-17). Interpolated only
+ * with a small integer, so a spawn can never widen the rendered row. It names the ACTOR for the
+ * same reason {@link OPERATOR_FINALIZED_TEXT} does: nothing in the protocol distinguishes a test
+ * peer from a stranger who joined from the directory, so the record is the only place the
+ * distinction can honestly be made.
+ */
+export const operatorAddedTestPeersText = (count: number): string =>
+  `Operator added ${count} test peers.`;
+
+/**
+ * The honest live-mode note about a test peer's own DID registration (D-17, ADR 0007 open question
+ * 4). The peers co-sign the cohort for real, which IS the rehearsal value; what they do not get is
+ * their own first update reflected by a resolver, because a KEY first update needs its own funded
+ * singleton beacon address and a CONFIRMED registration. Demanding N extra funding steps from the
+ * operator would defeat the point of a solo rehearsal, and silently attempting the registration
+ * would fail in a way nobody would see, so the service says plainly that it is skipped.
+ */
+export const TEST_PEER_REGISTRATION_SKIPPED_TEXT =
+  'Test peers co-sign this cohort, but their own DID registrations are skipped: a first update ' +
+  'needs its own funded beacon address and a confirmed registration.';
 
 /** Whether a folded member has only opted in (`pending`) or been seated (`seated`). */
 export type MemberStatus = 'pending' | 'seated';
@@ -404,6 +428,16 @@ export interface CohortMemberDTO {
   participantPk?: string;
   /** The member's communication public key (hex), same expander-only disclosure as {@link participantPk} (D-28). */
   communicationPk?: string;
+  /**
+   * True for a member THIS service spawned as an operator test peer (SVC-04, D-17). Present only
+   * when true, so the wire shape is additive and an ordinary member is byte-identical to before.
+   *
+   * It is read from the per-service test-peer DID set written at spawn time
+   * ({@link file://./test-peers.ts}), never inferred from a protocol field: nothing in the advert
+   * or the opt-in distinguishes a test peer from a stranger, which is correct - they really are
+   * participants - and an inference could only ever mislabel a genuine one (T-05-09-05).
+   */
+  testPeer?: true;
 }
 
 /**
@@ -765,6 +799,10 @@ export function serialize(event: keyof AggregationServiceEvents, payload: unknow
  * The listeners are fire-and-forget (a thrown handler is caught and logged, never
  * rejected back to the runner), matching the persist/broadcast `.catch` discipline in
  * {@link file://./index.ts}: a monitoring failure must never disturb the protocol.
+ *
+ * `testPeerDids` is the per-service badge set from {@link file://./test-peers.ts} (SVC-04, D-17).
+ * It is held as the LIVE set instance rather than copied, so a peer spawned long after this
+ * monitor was constructed is badged on the very next read with nothing rebuilt.
  */
 export function createCohortMonitor(
   runner: AggregationServiceRunner,
@@ -772,6 +810,7 @@ export function createCohortMonitor(
   anchorState?: AnchorState,
   mode?: ServiceMode,
   settings?: RuntimeSettings,
+  testPeerDids?: ReadonlySet<string>,
 ): CohortMonitor {
   // The resolved broadcast mode (D-17), fixed at construction. When the caller does not supply
   // one, derive the honest binary from the wiring available here: a broadcaster present means
@@ -1255,6 +1294,9 @@ export function createCohortMonitor(
           round: m.round,
           ...(m.participantPk !== undefined ? { participantPk: m.participantPk } : {}),
           ...(m.communicationPk !== undefined ? { communicationPk: m.communicationPk } : {}),
+          // The operator's own test peers (D-17), from the per-service DID set written at spawn
+          // time. Spread so an ordinary member's DTO is byte-identical to before.
+          ...(testPeerDids?.has(m.did) ? { testPeer: true as const } : {}),
         }))
       : [];
 

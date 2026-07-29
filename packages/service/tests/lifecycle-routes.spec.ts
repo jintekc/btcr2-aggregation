@@ -2,8 +2,22 @@ import { AggregationServiceRunner, HttpServerTransport } from '@did-btcr2/aggreg
 import { resolveBtcr2SenderPk } from '@did-btcr2/method';
 import { createIdentity, FINALIZABLE_PHASES, resolveNetwork } from '@btcr2-aggregation/shared';
 import { describe, expect, it } from 'vitest';
+import type { Participant } from '@btcr2-aggregation/participant';
 import { createCohortIntents } from '../src/cohort-intent.js';
-import { canceledCohortText, createCohortMonitor, finalizedCohortText } from '../src/monitor.js';
+import {
+  addedTestPeersText,
+  canceledCohortText,
+  createCohortMonitor,
+  finalizedCohortText,
+  operatorAddedTestPeersText,
+} from '../src/monitor.js';
+import {
+  addTestPeersFor,
+  createTestPeers,
+  NO_SEATS_REASON,
+  type CohortSeats,
+  type TestPeerFactory,
+} from '../src/test-peers.js';
 import { createHonoApp } from '../src/hono-adapter.js';
 import { createLoginThrottle, createSessionStore, type OperatorAuthConfig } from '../src/operator-auth.js';
 import {
@@ -89,7 +103,29 @@ function lifecycleApp() {
     sessionTtlMs: 60_000,
   };
   const intents = createCohortIntents();
-  const monitor = createCohortMonitor(runner);
+  // The test-peer registry is built BEFORE the monitor, because `index.ts` hands the monitor its
+  // live badge set at construction; a registry built afterwards would badge nothing.
+  const spawnedPeerDids: string[] = [];
+  let peerSeq = 0;
+  const createPeer: TestPeerFactory = ({ identity }) =>
+    ({
+      start: async (): Promise<void> => {
+        spawnedPeerDids.push(identity.did);
+      },
+      stop: (): void => {},
+    }) as unknown as Participant;
+  const testPeerRegistry = createTestPeers({
+    baseUrl: () => 'http://127.0.0.1:9999',
+    createPeer,
+    createPeerIdentity: () => {
+      peerSeq += 1;
+      return {
+        did: `did:example:test-peer-${peerSeq}`,
+        keys: {} as ReturnType<typeof createIdentity>['keys'],
+      };
+    },
+  });
+  const monitor = createCohortMonitor(runner, undefined, undefined, undefined, undefined, testPeerRegistry.dids);
   // The runtime holder is wired exactly as `index.ts` wires it, so the settings routes below are
   // asserted against the real gated block rather than a bespoke app.
   const settings = createRuntimeSettings({ serviceName: 'Acme Aggregation', defaultSize: 2, defaultThreshold: 2 });
@@ -110,12 +146,45 @@ function lifecycleApp() {
       monitor.noteOperatorAction(finalizedCohortText(cohortId));
     },
   });
+  // The test-peer action, wired with the REAL verdict logic (`addTestPeersFor`) and the REAL
+  // registry built above, over a fake participant factory: the route matrix must assert the
+  // shipping arithmetic, not a re-typed copy of it, while staying free of ports and protocol.
+  //
+  // Seat facts come from the live session; `setSeats` stages a cohort's seats so the full-cohort
+  // 409 row does not need n real participants to reach it.
+  const stagedSeats = new Map<string, CohortSeats>();
+  const testPeers = {
+    addTestPeers: (cohortId: string, requested?: number) =>
+      addTestPeersFor(
+        {
+          seats: (id: string): CohortSeats | undefined => {
+            const forced = stagedSeats.get(id);
+            if (forced) {
+              return forced;
+            }
+            const cohort = runner.session.getCohort(id);
+            return cohort
+              ? { seatsJoined: cohort.participants.length, capacity: cohort.minParticipants }
+              : undefined;
+          },
+          registry: testPeerRegistry,
+          onSpawned: (id: string, spawned: number) => {
+            monitor.noteOperatorAction(id, operatorAddedTestPeersText(spawned));
+            monitor.noteOperatorAction(addedTestPeersText(spawned, id));
+          },
+        },
+        cohortId,
+        requested,
+      ),
+  };
+
   const app = createHonoApp(transport, {
     operatorAuth,
     operatorCohorts,
     monitor,
     runtimeSettings: settings,
     networkName: ACTIVE_NETWORK,
+    testPeers,
   });
   return {
     app,
@@ -124,7 +193,10 @@ function lifecycleApp() {
     operatorCohorts,
     settings,
     fallbackCalls,
+    testPeerRegistry,
+    spawnedPeerDids,
     setPhase: (cohortId: string, phase: string) => staged.set(cohortId, phase),
+    setSeats: (cohortId: string, seats: CohortSeats) => stagedSeats.set(cohortId, seats),
   };
 }
 
@@ -691,6 +763,178 @@ describe('the operator actions log rides the existing gated monitoring read (ADR
     // A save that re-sends the value the service already holds changed nothing, so it says nothing.
     await save({ serviceName: 'Acme (maintenance)' });
     expect(monitor.operatorActions()).toHaveLength(1);
+
+    runner.stop();
+  });
+});
+
+describe('POST /v1/operator/cohorts/:id/test-peers route semantics (05-09)', () => {
+  it('401s with no session cookie, BEFORE any cohort-id lookup', async () => {
+    const { app, runner, spawnedPeerDids } = lifecycleApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+
+    // An EXISTING id and a never-existed id must be indistinguishable to an anonymous caller: on a
+    // live cohort this route makes participants that co-sign real money (T-05-09-01).
+    const existing = await app.request(`/v1/operator/cohorts/${cohortId}/test-peers`, { method: 'POST' });
+    const missing = await app.request('/v1/operator/cohorts/never-existed/test-peers', { method: 'POST' });
+    expect(existing.status).toBe(401);
+    expect(missing.status).toBe(401);
+    expect(await existing.text()).toBe(await missing.text());
+    expect(spawnedPeerDids).toEqual([]);
+
+    runner.stop();
+  });
+
+  it('400s a malformed cohort id before any lookup', async () => {
+    const { app, runner, spawnedPeerDids } = lifecycleApp();
+    const cookie = await login(app);
+
+    const res = await app.request('/v1/operator/cohorts/bad_id/test-peers', {
+      method: 'POST',
+      headers: { cookie },
+    });
+    expect(res.status).toBe(400);
+    expect(spawnedPeerDids).toEqual([]);
+
+    runner.stop();
+  });
+
+  it('404s an unknown cohort id with the SAME opaque body cancel and finalize use', async () => {
+    const { app, runner } = lifecycleApp();
+    const cookie = await login(app);
+
+    const res = await app.request('/v1/operator/cohorts/never-existed/test-peers', {
+      method: 'POST',
+      headers: { cookie },
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'unknown cohort' });
+
+    runner.stop();
+  });
+
+  it('409s a cohort with no seats left, carrying the exact reason the console renders', async () => {
+    const { app, runner, spawnedPeerDids, setSeats } = lifecycleApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+    setSeats(cohortId, { seatsJoined: 2, capacity: 2 });
+
+    const res = await app.request(`/v1/operator/cohorts/${cohortId}/test-peers`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: NO_SEATS_REASON });
+    // Refused means refused: an operator-triggered spawn cannot grow past n (T-05-09-02).
+    expect(spawnedPeerDids).toEqual([]);
+
+    runner.stop();
+  });
+
+  it('200s with the spawned count and fills every remaining seat when no body is sent', async () => {
+    const { app, runner, spawnedPeerDids } = lifecycleApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie, 3);
+
+    const res = await app.request(`/v1/operator/cohorts/${cohortId}/test-peers`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ spawned: 3 });
+    expect(spawnedPeerDids).toHaveLength(3);
+
+    runner.stop();
+  });
+
+  it('honors a smaller requested count, leaving the cohort partly filled', async () => {
+    const { app, runner, spawnedPeerDids } = lifecycleApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie, 4);
+
+    const res = await app.request(`/v1/operator/cohorts/${cohortId}/test-peers`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ count: 2 }),
+    });
+    expect(await res.json()).toEqual({ spawned: 2 });
+    expect(spawnedPeerDids).toHaveLength(2);
+
+    runner.stop();
+  });
+
+  it('CAPS a request larger than the remaining seats rather than honoring it', async () => {
+    const { app, runner, spawnedPeerDids } = lifecycleApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie, 2);
+
+    const res = await app.request(`/v1/operator/cohorts/${cohortId}/test-peers`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ count: 10_000 }),
+    });
+    expect(await res.json()).toEqual({ spawned: 2 });
+    expect(spawnedPeerDids).toHaveLength(2);
+
+    runner.stop();
+  });
+
+  it('400s a count that is not a whole number of at least 1', async () => {
+    for (const count of [0, -1, 'two', null]) {
+      const { app, runner, spawnedPeerDids } = lifecycleApp();
+      const cookie = await login(app);
+      const cohortId = await createAndAdvertise(app, cookie);
+
+      const res = await app.request(`/v1/operator/cohorts/${cohortId}/test-peers`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie },
+        body: JSON.stringify({ count }),
+      });
+      expect(res.status).toBe(400);
+      expect(spawnedPeerDids).toEqual([]);
+
+      runner.stop();
+    }
+  });
+
+  it('records BOTH the per-cohort activity line and the service-level entry, once', async () => {
+    const { app, runner, monitor } = lifecycleApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie, 2);
+    const short = cohortId.slice(0, 8);
+
+    await app.request(`/v1/operator/cohorts/${cohortId}/test-peers`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+
+    expect(monitor.detail(cohortId).activity.map((a) => a.text)).toContain('Operator added 2 test peers.');
+    expect(monitor.operatorActions().map((e) => e.text)).toEqual([
+      `Added 2 test peers to cohort ${short}.`,
+    ]);
+
+    runner.stop();
+  });
+
+  it('badges exactly the spawned members in the gated detail read', async () => {
+    const { app, runner } = lifecycleApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie, 2);
+
+    await app.request(`/v1/operator/cohorts/${cohortId}/test-peers`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+    // The peers here are fakes, so seat them into the fold directly; the real seating path is
+    // proven end to end by `pnpm e2e:testpeers`.
+    runner.emit('participant-accepted', { cohortId, participantDid: 'did:example:test-peer-1' });
+    runner.emit('participant-accepted', { cohortId, participantDid: 'did:example:a-real-stranger' });
+
+    const res = await app.request(`/v1/operator/cohorts/${cohortId}`, { headers: { cookie } });
+    const members = ((await res.json()) as { members: { did: string; testPeer?: boolean }[] }).members;
+    expect(members.find((m) => m.did === 'did:example:test-peer-1')?.testPeer).toBe(true);
+    expect(members.find((m) => m.did === 'did:example:a-real-stranger')?.testPeer).toBeUndefined();
 
     runner.stop();
   });
