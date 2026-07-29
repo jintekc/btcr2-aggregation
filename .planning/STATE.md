@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
 Plan: 14 of 14
-Status: Phase complete, ready for verification
+Status: Built and gated green; AWAITING human UAT (05-UAT.md) with 8 confirmed audit defects open (05-AUDIT.md)
 Last activity: 2026-07-28 — Phase 05 execution started
 
 Progress: [██████████] 100%
@@ -194,6 +194,8 @@ All 7 pending todos (captured 2026-07-21/22 from Phase 3 UAT) were folded into P
 - Cohort state is single-process and in-memory; durability/crash-recovery is deferred to v2 (DUR-01). The boot-time auto-advertise loop that used to drive cohorts was removed in Phase 1 - cohorts now exist only on operator action.
 - ✓ [Phase 3 UAT] Live-path operability gaps found over a real regtest chain (Polar) are CLOSED by Phase 4 (LIVE-01): BROADCAST=1 boot enablement (04-05), the cohort-beacon funding stage (04-06), the participant awaiting-funding / stall-copy / unconfirmed-signal-resolve fixes (04-07), and the owner-approved live walkthrough (04-08). (The Phase 2 WR-02 mid-join-feedback concern was RESOLVED by Phase 3's D-24/D-25 states.)
 - [Phase 4 UAT] Six upstream defects are OPEN against the published libraries and shape how a live cohort must be run (single advert slot, no seat release, silent duplicate/surplus opt-in drop, ignored advertRepeatIntervalMs, 60s envelope-skew replay rejection, deepest-first coin selection with only a dust floor). Documented as known limits in 04-LIVE-UAT-CHECKLIST.md; issues still need to be FILED upstream against @did-btcr2/aggregation and @did-btcr2/method.
+- **[Phase 5 audit] EIGHT confirmed defects are OPEN and NOT fixed. Phase 5 is built and scores 7/7 on its ROADMAP criteria (05-VERIFICATION.md, zero gaps), but a 27-agent adversarial pass found defects the 969-test gate could not see. Every one survived two independent skeptics instructed to refute it. Full report in `05-AUDIT.md`; each is routed as a todo under `.planning/todos/pending/` dated 2026-07-29.** The two that touch real funds: `validateSignedPsbt` does not pin the sighash, so a SIGHASH_NONE-signed PSBT validates as ok and reaches broadcast (reproduced against the shipped library); and the broadcast kill switch does not stand down the funding watch, so the console asks the operator to fund a beacon the fixture path will never spend (reproduced end to end). Then: the anonymous terms-acceptance route grows the artifact store unbounded once terms are set; dismissing an ended cohort does not remove it (the Ended group is a union of two sources, only one is deleted); DEFAULT_DISCOVERY_WINDOW_MS bypasses the shorten-only ceiling the docs promise and then bricks every settings save; DEPLOY.md and docker-compose still document the dead FILLERS cohort model Phase 1 deleted, which is the first thing a self-hosting stranger reads. Two lower-severity: the Anchored chip is minted at signing-complete rather than at a confirmed anchor (this one likely PREDATES Phase 5 and belongs to the 04-02 monitor), and the type-to-confirm gate that ships is a duplicate of the tested predicate, so its seven assertions are not load-bearing.
+- [Phase 5] The web package has no DOM test harness (no jsdom, no testing-library), so NO Phase 5 console or participant surface is verified as rendered: only pure predicates, copy constants and routes. Every plan from 05-06 onward recorded this independently. It is why `05-UAT.md` carries nine human items and why the type-to-confirm gate above went unnoticed.
 
 ## Deferred Items
 
