@@ -4,16 +4,16 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
-status: executing
-stopped_at: Completed 05-13-PLAN.md
-last_updated: "2026-07-29T17:59:26.170Z"
+status: verifying
+stopped_at: Completed 05-14-PLAN.md
+last_updated: "2026-07-29T18:16:36.335Z"
 last_activity: 2026-07-28
 last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 5
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 44
-  completed_plans: 43
+  completed_plans: 44
 ---
 
 # Project State
@@ -29,10 +29,10 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
 Plan: 14 of 14
-Status: Ready to execute
+Status: Phase complete, ready for verification
 Last activity: 2026-07-28 — Phase 05 execution started
 
-Progress: [██████████] 98%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -104,6 +104,7 @@ Progress: [██████████] 98%
 | Phase 05 P11 | 35 min | 3 tasks | 8 files |
 | Phase 05 P12 | 40 min | 3 tasks | 12 files |
 | Phase 05 P13 | 35 min | 3 tasks | 12 files |
+| Phase 05 P14 | 25 min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -168,6 +169,8 @@ Recent decisions affecting current work (Phase 2):
 - [Phase 05]: [Phase 05] 05-13 (SVC-05, folded scoping build 3 of 3): the acceptance record is FROZEN before a single real one exists - TERMS_ACCEPTANCE_FIELDS is exported and pinned by KEY-SET EQUALITY (a presence check passes happily while an eighth field joins), the same list drives the per-field hash-sensitivity rows, and the server enforces the identical set on the wire so a caller cannot widen a stored artifact whose whole value is that its shape is known. There is exactly ONE canonicalization: the browser and the service both call the shared buildTermsAcceptance + termsAcceptanceSigningBytes, and the web spec rebuilds the record independently through the shared builder and verifies the browser's signature over the shared bytes rather than assuming the two agree. The signing input is the 32-byte canonical HASH (mirroring updateHashBytes for updates), so an unbounded terms document can never grow the signing operation, with @context + type providing domain separation. The record binds the terms HASH and the binding is proved BOTH ways: after an edit the stored record is byte-unchanged and still names the old hash, and a fresh acceptance of the OLD terms is refused.
 - [Phase 05]: [Phase 05] 05-13: NOTHING reaches the store until every check passes and every refusal row asserts an EMPTY store (the route is anonymous, so each refusal path is also a store-growth path); the order inside recordTermsAcceptance IS the security argument (terms set, frozen shape, this service, current terms hash, signature, then the write). Refusals are compared to EACH OTHER by deep equality across six differently-broken bodies, never one toEqual per reason, because a divergence in status or key set is what turns the route into a probe. A well-formed UNKNOWN cohort id is ACCEPTED on purpose, in a named test with the reasoning in its body: refusing it would build the enumeration oracle the uniform refusal exists to prevent, and neither the signature nor the terms binding depends on the cohort being recognized. An EXTERNAL (x1) participant carries its self-verifying genesis in-band (ADR 066) or resolveBtcr2SenderPk returns undefined and half the onboarding models are silently locked out. serviceDid rides GET /v1/config additively because the browser builds the record BEFORE it joins, so it cannot read the DID off an advert it has not seen.
 - [Phase 05]: [Phase 05] 05-13: the join gate lives inside the store's join(), not only in the surface that renders the checkbox, so a future second entry point or a component that forgets is refused BY CONSTRUCTION rather than seating someone with no acceptance on record; the recorded reference is COHORT-KEYED, which is why it can live outside INITIAL_OUTCOME safely (an acceptance for cohort A fails the id comparison for cohort B, so correctness is a property of the comparison rather than of remembering to clear a slice on every teardown path). The checkbox is LOCAL and the acceptance is SERVED: keeping them apart is what makes checked-but-not-yet-recorded a state the join button can show. Operator terms render as a plain React text child inside max-h-64 overflow-auto with whitespace-pre-wrap break-words, and the spec walks the component SOURCE for four dangerous HTML props plus any anchor or href, because the property being defended is that they do not EXIST in the file, which no rendered snapshot can prove. The app-level enforcement limit is stated on the step, in the route comment, and asserted in a test so it cannot be softened. No new package: the record reuses an existing canonicalizer, an already-bundled sha256, and the participant's existing key.
+- [Phase 05]: [Phase 05] 05-14 (phase capstone): ADR 0017 records the FIVE decisions a later phase would undo BY ACCIDENT, each led by the verified library fact that forced it - declare intent before stopCohort (which emits nothing and rejects through the SAME channel as a whole-runner shutdown, so classifying a terminal cause from error-message text is now a written PROHIBITION), repair the single advert slot after every settle (one slot, replay-only-current, cleared on dispose), env-seeds with runtime-overrides and NO persistence (recorded as a decision with its reason so a future settings file has to argue against a stated rationale, backed by the source pin in runtime-settings.spec.ts), the one-way broadcast switch (ADR 0010 layering: runtime power points only toward safety), and the shorten-only per-cohort discovery window (no timing value in aggregation@0.4.0 is per-cohort). ADR 0017 AMENDS ADR 0016 and states Supersedes nothing: the operator actions log rides the existing gated poll as an additive sibling key and NO new event-stream channel exists, which is the property a later phase most plausibly breaks by reaching for SSE again.
+- [Phase 05]: [Phase 05] 05-14: docs/UPSTREAM-LIMITS.md lifts the six Phase-4 live-UAT limits out of a phase artifact into one referenceable document and ADDS the seventh (the missing per-seat release API this phase re-parked), each with observed behavior, the pinned version, the effect on a running service, and the app-side workaround; it states at the TOP that filing is still QUEUED and not done by this phase, because a consolidated list otherwise reads like a filed batch. DEPLOY documents every runtime control in the order an operator meets them plus a dedicated 'What survives a restart' section, and the participant-facing features (chain-endpoint override with the CORS constraint named as the thing that will actually generate support questions and reported distinctly from unreachable, the wallet PSBT path, participation terms with the app-level enforcement boundary in its own paragraph). NO specific external wallet is named as compatible anywhere in docs/ (RESEARCH A1/A2 are search-derived, not tested here), and the PART-06 external-wallet leg is marked NON-BLOCKING in the checklist for the same reason. Six new env vars documented AND mirrored into docker-compose.yml with the same defaults; SERVICE_NAME's now-false 'no edit surface' row was corrected. New pnpm e2e:gate runs all thirteen hermetic e2e legs as one command (named e2e:gate, not e2e:hermetic, which would have claimed legs it omits). Full gate green with nothing weakened: 969 tests, lint, web build, thirteen legs individually and through the script. The owner's checklist pass is the remaining gate and was NOT run.
 
 ### Pending Todos
 
@@ -205,7 +208,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-29T17:58:32.133Z
-Stopped at: Completed 05-13-PLAN.md
+Last session: 2026-07-29T18:15:44.230Z
+Stopped at: Completed 05-14-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
