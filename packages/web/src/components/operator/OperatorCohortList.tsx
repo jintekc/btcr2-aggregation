@@ -8,7 +8,7 @@ import {
   type GroupKey,
   type RenderRow,
 } from '../../lib/operator-rows';
-import { useOperator } from '../../stores/operator';
+import { ADVERTISE_DISABLED_REASON, useOperator } from '../../stores/operator';
 import type { OperatorCohortDTO, ServiceMetricsDTO } from '../../lib/operator';
 
 /** Friendly beacon-type label (matches the create form's CAS/SMT options). */
@@ -114,6 +114,11 @@ function CohortRow({
   const readvertise = useOperator((s) => s.readvertise);
   const advertiseStatus = useOperator((s) => s.advertiseStatus);
   const advertisingId = useOperator((s) => s.advertisingId);
+  // The SERVED paused bit (SVC-04, D-06). Both advertise verbs are gated server-side and refuse
+  // with a 409, so the console disables them from the SAME fact rather than letting the operator
+  // discover the refusal by being refused. Every other row control stays enabled: pause is drain
+  // mode, and a paused service can still discard drafts, cancel, finalize, and be monitored.
+  const advertisingPaused = useOperator((s) => s.health?.paused === true);
   const [confirming, setConfirming] = useState(false);
 
   const { id, chip, cohort, row } = entry;
@@ -154,19 +159,34 @@ function CohortRow({
           ) : null}
         </div>
         {isDraft && !confirming ? (
-          <div className="flex flex-wrap gap-2">
-            <Button variant="primary" disabled={isAdvertising} onClick={() => void advertise(baseUrl, id)}>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="primary"
+              disabled={isAdvertising || advertisingPaused}
+              onClick={() => void advertise(baseUrl, id)}
+            >
               {isAdvertising ? 'Advertising…' : 'Advertise cohort'}
             </Button>
+            {/* The reason beside the disabled control: a disabled button with no explanation is
+                indistinguishable from a broken one. */}
+            {advertisingPaused ? <span className="text-sm text-muted">{ADVERTISE_DISABLED_REASON}</span> : null}
+            {/* Discard stays ENABLED while paused: pause gates advertising only (D-06). */}
             <Button variant="danger" onClick={() => setConfirming(true)}>
               Discard draft
             </Button>
           </div>
         ) : null}
         {isExpired ? (
-          <Button variant="primary" disabled={isAdvertising} onClick={() => void readvertise(baseUrl, id)}>
-            {isAdvertising ? 'Re-advertising…' : 'Re-advertise'}
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="primary"
+              disabled={isAdvertising || advertisingPaused}
+              onClick={() => void readvertise(baseUrl, id)}
+            >
+              {isAdvertising ? 'Re-advertising…' : 'Re-advertise'}
+            </Button>
+            {advertisingPaused ? <span className="text-sm text-muted">{ADVERTISE_DISABLED_REASON}</span> : null}
+          </div>
         ) : null}
         {canOpen && onOpen ? (
           <Button variant="ghost" onClick={() => onOpen(id)}>

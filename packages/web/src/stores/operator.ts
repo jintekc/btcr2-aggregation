@@ -9,6 +9,8 @@ import {
   discardDraft as apiDiscardDraft,
   downloadExport as apiDownloadExport,
   finalizeCohort as apiFinalizeCohort,
+  pauseAdvertising as apiPauseAdvertising,
+  resumeAdvertising as apiResumeAdvertising,
   fetchOperatorCohorts,
   fetchCohortDetail,
   sessionProbe,
@@ -69,6 +71,54 @@ export const ACTION_FAILED = "That action didn't go through. Nothing about this 
 export function actionFailedWith(reason?: string): string {
   return reason ? `That action didn't go through: ${reason}. Nothing about this cohort changed.` : ACTION_FAILED;
 }
+
+/**
+ * The advertising DRAIN-MODE copy set (SVC-04, 05-UI-SPEC E4, D-06 through D-09). Every string
+ * below is exact contract copy and is asserted verbatim by
+ * `packages/web/tests/service-controls.spec.ts`, because these are the sentences that stop a pause
+ * from being misunderstood. All are free of the long dash per house style.
+ */
+
+/**
+ * The paused state line. Its second clause is the load-bearing half: pause is DRAIN MODE, not a
+ * kill switch, so an operator reading it must not conclude that their open cohorts just died.
+ */
+export const ADVERTISING_PAUSED_LINE =
+  'New cohorts are not being advertised. Cohorts already advertised keep filling, and everything else on this service keeps running.';
+
+/** The running state line, rendered only once the service has actually reported not-paused. */
+export const ADVERTISING_RUNNING_LINE = 'New cohorts are being advertised normally.';
+
+/** Transient good-tone confirmation after a successful pause. */
+export const PAUSED_OK = 'Advertising paused.';
+
+/** Transient good-tone confirmation after a successful resume. */
+export const RESUMED_OK = 'Advertising resumed.';
+
+/**
+ * The reason rendered beside the disabled `Advertise cohort` / `Re-advertise` buttons while
+ * paused. A disabled control with no reason is indistinguishable from a broken one, and the
+ * server would refuse the click with a 409 anyway (D-06), so the console states the same fact up
+ * front rather than letting the operator discover it by being refused.
+ */
+export const ADVERTISE_DISABLED_REASON = 'Advertising is paused.';
+
+/**
+ * The restart-honesty line (D-08/D-12). Runtime settings are deliberately non-persistent
+ * (`packages/service/src/runtime-settings.ts` has no write path of any kind, and a spec pins that
+ * absence), so this sentence is true only while that stays true. Durable state across a restart
+ * is DUR-01, a v2 requirement.
+ */
+export const RESTART_HONESTY_LINE =
+  'Pause, broadcast, and settings changes live in memory for this session. A restart returns this service to its boot environment.';
+
+/**
+ * The full-quiesce guidance (D-06). Pause never RETRACTS: a cohort advertised before the pause
+ * stays in the public directory, stays joinable, and stays counted. An operator who wants the
+ * service genuinely quiet needs pause PLUS a cancel each, and this is where they are told so.
+ */
+export const FULL_QUIESCE_GUIDANCE =
+  'Pausing does not end cohorts that are already open. Cancel each one if you need this service fully quiet.';
 
 /** The in-flight confirm label for a cancel (the shipped ellipsis character, no invented spinner). */
 export const CANCEL_BUSY = 'Canceling…';
@@ -135,6 +185,27 @@ interface OperatorState {
    * which is exactly why a failed export used to produce no feedback at all.
    */
   actionError?: string;
+  /**
+   * True while a pause or resume toggle is in flight (SVC-04, D-06), so both service controls
+   * disable and the card renders its in-flight posture. Deliberately NOT a paused value: the
+   * rendered state comes only from the served bit, so a toggle can never paint its own outcome.
+   */
+  pauseBusy: boolean;
+  /**
+   * Transient good-tone confirmation after a successful pause or resume, cleared by the same
+   * guarded `setTimeout` idiom as {@link OperatorState.advertiseMessage}. It is its own field
+   * because it renders on the `Service controls` card, which is on screen at the same time as the
+   * cohort list where `advertiseMessage` renders.
+   */
+  pauseMessage?: string;
+  /**
+   * Bad-tone message for a pause or resume that did NOT take. Separate from `actionError` for the
+   * same reason `pauseMessage` is separate from `advertiseMessage`: the controls card and the
+   * cohort list are visible simultaneously, so sharing one field would render the same failure
+   * twice on one screen. The 05-02 rule stands - a one-shot action error belongs to the surface
+   * that raised it. The copy is the shared {@link ACTION_FAILED} line.
+   */
+  pauseError?: string;
   /** SPA-internal drill-down view (D-03): the cohort list, or one open cohort detail. */
   view: OperatorView;
   /**
@@ -212,6 +283,20 @@ interface OperatorState {
    * read, never from an optimistic local edit.
    */
   finalizeCohort: (baseUrl: string, id: string) => Promise<void>;
+  /**
+   * Pause advertising service-wide (SVC-04, D-06): new cohorts stop being offered while every
+   * cohort already advertised keeps filling. Branches like {@link discard}: `unauthorized` takes
+   * the ONE shared session-expiry path (D-16), and any other failure raises the action-error copy
+   * with the previous state line untouched.
+   *
+   * On success it re-reads the list rather than setting the paused bit locally, so the card, the
+   * health-strip chip and the disabled advertise controls all render from the SERVED snapshot -
+   * the same derivation the server's advertise gate enforces. There is no optimistic set anywhere
+   * on this path (T-05-05-01).
+   */
+  pauseAdvertising: (baseUrl: string) => Promise<void>;
+  /** Resume advertising; the exact mirror of {@link pauseAdvertising}, and equally non-optimistic. */
+  resumeAdvertising: (baseUrl: string) => Promise<void>;
   /** Open a cohort's drill-down (D-03): set the detail view and clear any stale prior detail. */
   openCohort: (id: string) => void;
   /** Close the drill-down: return to the cohort list and clear the detail slice. */
@@ -224,6 +309,51 @@ interface OperatorState {
    * `lastUpdated`. No-op when no drill-down is open.
    */
   pollDetail: (baseUrl: string) => Promise<void>;
+}
+
+/**
+ * The shared body of {@link OperatorState.pauseAdvertising} and
+ * {@link OperatorState.resumeAdvertising} (SVC-04, D-06). Both toggles have identical mechanics
+ * and differ only in which route they call and which confirmation they show, so they share one
+ * implementation: two copies of a non-optimistic update path is two places for an optimistic set
+ * to creep back in.
+ *
+ * The ordering here is the honesty contract. `pauseBusy` goes up FIRST (both controls disable),
+ * the served result comes back, and only then does `refreshCohorts` re-read the list so the state
+ * line, the health-strip chip and the disabled advertise controls all change together from ONE
+ * served snapshot. Neither failure branch writes a paused value, so a failed toggle leaves the
+ * previous state line exactly where it was (T-05-05-01, UI-SPEC E4 error).
+ */
+async function runAdvertisingToggle(
+  set: (partial: Partial<OperatorState>) => void,
+  get: () => OperatorState,
+  baseUrl: string,
+  verb: 'pause' | 'resume',
+): Promise<void> {
+  set({ pauseBusy: true, pauseError: undefined, pauseMessage: undefined });
+  const result = verb === 'pause' ? await apiPauseAdvertising(baseUrl) : await apiResumeAdvertising(baseUrl);
+  if (result.kind === 'unauthorized') {
+    // The ONE shared session-expiry path (D-16); `expireSession` clears `pauseBusy` itself.
+    get().expireSession();
+    return;
+  }
+  if (result.kind === 'unreachable') {
+    // Nothing changed on the service, so nothing changes on screen except this line.
+    set({ pauseBusy: false, pauseError: ACTION_FAILED });
+    return;
+  }
+  const message = result.value ? PAUSED_OK : RESUMED_OK;
+  set({ pauseBusy: false, pauseMessage: message });
+  // Re-read so the rendered state comes from the SERVED snapshot, never from `result.value`
+  // written into local state: the console must show what the list read reports.
+  await get().refreshCohorts(baseUrl);
+  // Clear the transient confirmation after a few seconds, but only if it is still the same
+  // message (a later toggle may have replaced it) - the shipped guarded-timeout idiom.
+  setTimeout(() => {
+    if (get().pauseMessage === message) {
+      set({ pauseMessage: undefined });
+    }
+  }, 4000);
 }
 
 export const useOperator = create<OperatorState>((set, get) => ({
@@ -240,6 +370,9 @@ export const useOperator = create<OperatorState>((set, get) => ({
   advertisingId: undefined,
   advertiseMessage: undefined,
   actionError: undefined,
+  pauseBusy: false,
+  pauseMessage: undefined,
+  pauseError: undefined,
   view: { kind: 'list' },
   cancelling: undefined,
   finalizing: undefined,
@@ -301,6 +434,11 @@ export const useOperator = create<OperatorState>((set, get) => ({
         advertisingId: undefined,
         advertiseMessage: undefined,
         actionError: undefined,
+        // Drop the pause slice with the rest of the gated state: the next session must re-read the
+        // served bit rather than render a claim about a service that may have been restarted.
+        pauseBusy: false,
+        pauseMessage: undefined,
+        pauseError: undefined,
         view: { kind: 'list' },
         cancelling: undefined,
         finalizing: undefined,
@@ -321,6 +459,9 @@ export const useOperator = create<OperatorState>((set, get) => ({
       health: undefined,
       listStale: false,
       actionError: undefined,
+      pauseBusy: false,
+      pauseMessage: undefined,
+      pauseError: undefined,
       view: { kind: 'list' },
       // Drop any in-flight action marker: the next sign-in must start with no control claiming
       // to be mid-cancel.
@@ -505,6 +646,14 @@ export const useOperator = create<OperatorState>((set, get) => ({
     // projection rather than from an optimistic local edit.
     set({ finalizing: undefined });
     await get().pollDetail(baseUrl);
+  },
+
+  async pauseAdvertising(baseUrl) {
+    await runAdvertisingToggle(set, get, baseUrl, 'pause');
+  },
+
+  async resumeAdvertising(baseUrl) {
+    await runAdvertisingToggle(set, get, baseUrl, 'resume');
   },
 
   openCohort(id) {

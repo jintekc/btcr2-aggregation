@@ -608,6 +608,61 @@ export async function finalizeCohort(baseUrl: string, id: string): Promise<Final
 }
 
 /**
+ * POST `/v1/operator/advertising/pause` (SVC-04, Phase 5 D-06). Gated + same-origin, and
+ * discriminated exactly like {@link discardDraft} so a 401 takes the one honest re-login path
+ * while a transient fault leaves the console's claim untouched.
+ *
+ * It returns the RESULTING paused state the service reported, not a bare success flag. That is
+ * the whole point: the console renders what the SERVICE says, never what the browser assumed, so
+ * a toggle that half-landed cannot leave the card claiming a state the gate is not enforcing. The
+ * route is idempotent (the operator asks for an END STATE, not a flip), so a double-click or a
+ * retried request resolves to the same value.
+ */
+export async function pauseAdvertising(baseUrl: string): Promise<FetchResult<boolean>> {
+  return advertisingToggle(baseUrl, 'pause');
+}
+
+/** POST `/v1/operator/advertising/resume`; the exact mirror of {@link pauseAdvertising}. */
+export async function resumeAdvertising(baseUrl: string): Promise<FetchResult<boolean>> {
+  return advertisingToggle(baseUrl, 'resume');
+}
+
+/**
+ * The shared body of the two advertising toggles. Both routes take no request body and answer
+ * `{ paused: boolean }`; a body that somehow carries no boolean is treated as `unreachable`
+ * rather than being coerced, because guessing here would reintroduce exactly the client-side
+ * claim the served bit exists to eliminate.
+ */
+async function advertisingToggle(baseUrl: string, verb: 'pause' | 'resume'): Promise<FetchResult<boolean>> {
+  let res: Response;
+  try {
+    res = await fetch(endpoint(baseUrl, `/v1/operator/advertising/${verb}`), {
+      method: 'POST',
+      headers: { accept: 'application/json' },
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+  } catch {
+    return { kind: 'unreachable' };
+  }
+  if (res.status === 401) {
+    return { kind: 'unauthorized' };
+  }
+  if (!res.ok) {
+    return { kind: 'unreachable' };
+  }
+  try {
+    const body = (await res.json()) as { paused?: unknown };
+    if (typeof body.paused !== 'boolean') {
+      return { kind: 'unreachable' };
+    }
+    return { kind: 'ok', value: body.paused };
+  } catch {
+    return { kind: 'unreachable' };
+  }
+}
+
+/**
  * POST the advertise action for a draft (SVC-02). Gated + same-origin (the session cookie rides
  * `credentials: 'same-origin'`). Returns the LIVE cohort id on success, or `null` when the server
  * did not accept it (so the store can surface the transient success message and land the operator

@@ -6,6 +6,7 @@ import { CreateCohortForm } from './CreateCohortForm';
 import { OperatorCohortList } from './OperatorCohortList';
 import { CohortDetail } from './CohortDetail';
 import { HealthStrip } from './HealthStrip';
+import { ServiceControls } from './ServiceControls';
 
 /** List poll cadence (matches the drill-down detail poll): keeps chips/metrics/freshness live. */
 const LIST_POLL_MS = 4000;
@@ -83,6 +84,7 @@ export function OperatorConsole({ baseUrl }: { baseUrl: string }) {
     return (
       <div className="space-y-6">
         <HealthStrip />
+        <ServiceControls baseUrl={baseUrl} />
         <CohortDetail baseUrl={baseUrl} cohortId={view.cohortId} />
       </div>
     );
@@ -91,6 +93,9 @@ export function OperatorConsole({ baseUrl }: { baseUrl: string }) {
   return (
     <div className="space-y-6">
       <HealthStrip />
+      {/* Service-level controls sit directly under the strip and above BOTH views (D-06): pause is
+          a service fact, not a cohort fact, so it must not be reachable only from the list. */}
+      <ServiceControls baseUrl={baseUrl} />
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-3xl font-bold tracking-tight text-ink">Operator console</h1>

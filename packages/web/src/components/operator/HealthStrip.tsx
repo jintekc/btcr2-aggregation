@@ -52,6 +52,10 @@ export function HealthStrip() {
   // Esplora reachability is meaningful only on a live mode; the hermetic path serves `'n/a'`
   // (no esplora is ever contacted), and the chip below is hidden there anyway (D-43).
   const esploraReachable = health?.esploraReachable === true;
+  // Advertising drain mode (SVC-04, D-07), read from the SERVED health bit only. `=== true` is
+  // deliberate: an absent bit means the service has not reported yet, and an unreported state must
+  // never render as a paused claim (T-05-05-01).
+  const paused = health?.paused === true;
   const stale = listStale || detailStale;
   const net = resolveNetwork(network);
   const ipfsOn = ipfsInfo?.enabled === true;
@@ -96,6 +100,12 @@ export function HealthStrip() {
           {esploraReachable ? 'Esplora reachable' : 'Esplora unreachable'}
         </Badge>
       ) : null}
+
+      {/* The paused chip rides BESIDE the mode chip, never instead of it (D-07): pause says
+          whether this service is offering new cohorts, where the mode says how it signs and
+          broadcasts. `warn` because a drain is deliberate but non-default - something a returning
+          operator must notice, not an error. */}
+      {paused ? <Badge tone="warn">Advertising paused</Badge> : null}
 
       <Badge tone="neutral">{ipfsOn ? 'IPFS on' : 'IPFS off'}</Badge>
 
