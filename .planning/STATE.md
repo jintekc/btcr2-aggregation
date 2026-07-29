@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Completed 05-12-PLAN.md
-last_updated: "2026-07-29T17:33:08.530Z"
+stopped_at: Completed 05-13-PLAN.md
+last_updated: "2026-07-29T17:59:26.170Z"
 last_activity: 2026-07-28
 last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 44
-  completed_plans: 42
+  completed_plans: 43
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 13 of 14
+Plan: 14 of 14
 Status: Ready to execute
 Last activity: 2026-07-28 — Phase 05 execution started
 
-Progress: [██████████] 95%
+Progress: [██████████] 98%
 
 ## Performance Metrics
 
@@ -103,6 +103,7 @@ Progress: [██████████] 95%
 | Phase 05 P10 | 25 min | 2 tasks | 9 files |
 | Phase 05 P11 | 35 min | 3 tasks | 8 files |
 | Phase 05 P12 | 40 min | 3 tasks | 12 files |
+| Phase 05 P13 | 35 min | 3 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -164,6 +165,9 @@ Recent decisions affecting current work (Phase 2):
 - [Phase 05]: [Phase 05] 05-11: the participant's esplora endpoint is a PARAMETER on the single shipped register() path (one ChainEndpoint value built once by the exported pure chainEndpointFor, threaded into the ONE fetchUtxos and the ONE broadcastTx call), never a second flow - which is what makes the ADR 0010 real-funds acknowledgment, the re-entrancy guard and the funding check keep firing by construction rather than by discipline (RESEARCH Pitfall 8). The four failure verdicts come from ORDERING (parse/scheme-check with no request, then probe, then compare), never from parsing an opaque fetch TypeError, because a browser genuinely cannot tell a CORS rejection from a DNS failure; browser-rejected is best-effort with unreachable as the documented fallback and the switch-back button offered with both. A refused endpoint is never activated, no catch block retries through the service (pinned by brace-matched source walk), broadcast is a second opt-in that cannot be raised without an endpoint and is dropped when the endpoint is cleared, and the anchor poll still reads the service's cohort-keyed model with the endpoint only confirming a txid the service named. — Gate parity is behavioral for the mainnet acknowledgment and the re-entrancy guard (same scenario run twice); the funding check and the call-site shape are source pins, because reaching the funding check needs module-private artifacts only a real cohort round produces.
 - [Phase 05]: [Phase 05] 05-12 (PART-06, folded scoping build 2 of 3): an externally-signed transaction has an IDENTICAL transaction id and DIFFERENT raw hex, because BIP340 auxiliary randomness lands in the WITNESS and the txid is taken over the witness-free serialization. So the returned PSBT is compared on tx.unsignedTx, never on raw hex (a raw-hex comparison rejects every legitimately signed PSBT), and Transaction.id is never requested before finalize() (it throws). Both halves are ASSERTED in packages/shared/tests/psbt.spec.ts rather than described. The same fact made the plan's "same raw hex" before-and-after assertion impossible to write truthfully - two runs of the UNMODIFIED builder over one fixed key and UTXO already differ - so the golden pin covers txid, fee, change and the witness-free body and carries a paragraph naming the value it cannot pin and why. Check order is parse, template match, signature presence, fee band, finalize, each step being what makes the next one legal.
 - [Phase 05]: [Phase 05] 05-12: register() forks as LATE as possible - the re-entrancy guard, the ADR 0010 mainnet acknowledgment, the identity/inclusion guards, the PART-05 chain-source parameter, the UTXO read and the funding minimum are all shared, and both paths converge on the SAME broadcastTx call (still one async register, one fetchUtxos, one broadcastTx inside it). The wallet branch takes NO rawHex parameter: it re-reads the verdict from the store and refuses unless ok, so there is no channel at all through which unvalidated bytes could reach a broadcast. Ephemerality is a PLACEMENT decision, not discipline: the whole PSBT slice lives in INITIAL_OUTCOME, so every teardown the store already had clears it, and a repo grep for the three browser storage APIs over the validator, the panel and the store returns nothing. No new package entered the repo (Transaction IS a PSBT; base64 comes from multiformats, already a shared dep); packages/web merely DECLARES @scure/btc-signer and @noble/hashes, both already in the browser bundle via shared - lockfile +6 lines, downloaded 0, added 0.
+- [Phase 05]: [Phase 05] 05-13 (SVC-05, folded scoping build 3 of 3): the acceptance record is FROZEN before a single real one exists - TERMS_ACCEPTANCE_FIELDS is exported and pinned by KEY-SET EQUALITY (a presence check passes happily while an eighth field joins), the same list drives the per-field hash-sensitivity rows, and the server enforces the identical set on the wire so a caller cannot widen a stored artifact whose whole value is that its shape is known. There is exactly ONE canonicalization: the browser and the service both call the shared buildTermsAcceptance + termsAcceptanceSigningBytes, and the web spec rebuilds the record independently through the shared builder and verifies the browser's signature over the shared bytes rather than assuming the two agree. The signing input is the 32-byte canonical HASH (mirroring updateHashBytes for updates), so an unbounded terms document can never grow the signing operation, with @context + type providing domain separation. The record binds the terms HASH and the binding is proved BOTH ways: after an edit the stored record is byte-unchanged and still names the old hash, and a fresh acceptance of the OLD terms is refused.
+- [Phase 05]: [Phase 05] 05-13: NOTHING reaches the store until every check passes and every refusal row asserts an EMPTY store (the route is anonymous, so each refusal path is also a store-growth path); the order inside recordTermsAcceptance IS the security argument (terms set, frozen shape, this service, current terms hash, signature, then the write). Refusals are compared to EACH OTHER by deep equality across six differently-broken bodies, never one toEqual per reason, because a divergence in status or key set is what turns the route into a probe. A well-formed UNKNOWN cohort id is ACCEPTED on purpose, in a named test with the reasoning in its body: refusing it would build the enumeration oracle the uniform refusal exists to prevent, and neither the signature nor the terms binding depends on the cohort being recognized. An EXTERNAL (x1) participant carries its self-verifying genesis in-band (ADR 066) or resolveBtcr2SenderPk returns undefined and half the onboarding models are silently locked out. serviceDid rides GET /v1/config additively because the browser builds the record BEFORE it joins, so it cannot read the DID off an advert it has not seen.
+- [Phase 05]: [Phase 05] 05-13: the join gate lives inside the store's join(), not only in the surface that renders the checkbox, so a future second entry point or a component that forgets is refused BY CONSTRUCTION rather than seating someone with no acceptance on record; the recorded reference is COHORT-KEYED, which is why it can live outside INITIAL_OUTCOME safely (an acceptance for cohort A fails the id comparison for cohort B, so correctness is a property of the comparison rather than of remembering to clear a slice on every teardown path). The checkbox is LOCAL and the acceptance is SERVED: keeping them apart is what makes checked-but-not-yet-recorded a state the join button can show. Operator terms render as a plain React text child inside max-h-64 overflow-auto with whitespace-pre-wrap break-words, and the spec walks the component SOURCE for four dangerous HTML props plus any anchor or href, because the property being defended is that they do not EXIST in the file, which no rendered snapshot can prove. The app-level enforcement limit is stated on the step, in the route comment, and asserted in a test so it cannot be softened. No new package: the record reuses an existing canonicalizer, an already-bundled sha256, and the participant's existing key.
 
 ### Pending Todos
 
@@ -201,7 +205,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-29T17:32:17.332Z
-Stopped at: Completed 05-12-PLAN.md
+Last session: 2026-07-29T17:58:32.133Z
+Stopped at: Completed 05-13-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
