@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Completed 05-05-PLAN.md
-last_updated: "2026-07-29T14:14:50.383Z"
+stopped_at: Completed 05-06-PLAN.md
+last_updated: "2026-07-29T14:56:29.366Z"
 last_activity: 2026-07-28
 last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 44
-  completed_plans: 35
+  completed_plans: 36
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 6 of 14
+Plan: 7 of 14
 Status: Ready to execute
 Last activity: 2026-07-28 — Phase 05 execution started
 
-Progress: [████████░░] 80%
+Progress: [████████░░] 82%
 
 ## Performance Metrics
 
@@ -96,6 +96,7 @@ Progress: [████████░░] 80%
 | Phase 05 P03 | 20 min | 2 tasks | 16 files |
 | Phase 05 P04 | 12 min | 2 tasks | 14 files |
 | Phase 05 P05 | 13 min | 2 tasks | 15 files |
+| Phase 05 P06 | 35 min | 3 tasks | 14 files |
 
 ## Accumulated Context
 
@@ -142,6 +143,9 @@ Recent decisions affecting current work (Phase 2):
 - [Phase 05]: [Phase 05] 05-04: createRuntimeSettings is the per-service (never module-singleton) env-seeds / runtime-overrides holder every remaining Phase 5 control reads - env seeds the boot value, the console edits the in-memory value, a restart returns every value to its environment default, and each SettingField carries value + envDefault with `changed` DERIVED per read rather than tracked (so setting a field back to its boot value restores the honest 'env default' caption). There is deliberately NO persistence path of any kind and runtime-settings.spec.ts PINS that absence at the source, because the console's honest restart copy is only true while the module stays free of the filesystem and the store - durability is DUR-01 (v2), and a quiet write path would change the product's stated state model without anyone deciding to. applySettings saves as a SET (validate every supplied field, apply none if any is invalid, k judged against the n in the SAME patch), the full field set is declared now while only the paused mutation is wired so 05-07/05-08/05-09 add consumers rather than reopening the contract, and numericKnob MOVED out of demo-server.ts into this module so one WR-04 NaN guard serves both seeding paths. GET /v1/config now reads the service name from the holder PER REQUEST (D-16): a boot constant captured into the app closure would have served the old name forever while the console claimed the rename applied.
 - [Phase 05]: [Phase 05] 05-05 (SVC-04 drain-mode UI, both sides): the Service controls card renders through ONE pure predicate (serviceControlsView), so an absent paused bit is a THIRD state (unknown) rather than a defaulted false - no state line, no toggle, no claim, mirroring the health strip's Checking mode posture. Defaulting to "running" would tell a returning operator that new cohorts are being offered by a service that may in fact be draining (T-05-05-01). Neither toggle writes a paused value locally: pauseBusy goes up, the served result comes back, and only then does refreshCohorts re-read so the state line, the health chip and the disabled advertise controls move together from one served snapshot - which is what makes a failed toggle safe (nothing was painted, so nothing rolls back). Pause and resume take NO confirmation and are ghost (reversible-actions rule): spending friction on a reversible act would dilute the ladder Cancel cohort depends on, and grep ConfirmPanel on the file is an acceptance criterion. The restart-honesty line renders always (a fact about how the service stores state), but the full-quiesce guidance waits for a SERVED state, because guidance about what pausing does not do reads as an implicit pause claim against an unknown one.
 - [Phase 05]: [Phase 05] 05-05: the public paused notice is chosen by directoryNotice, a pure fail-closed selector whose two honesty branches come first - an unreachable directory returns 'unreachable' even while holding a paused bit from an earlier read, and an undefined paused returns 'none' regardless of row count. That second branch is the whole reason 05-04 put a paused bit on the wire instead of letting the client infer one: a paused service and an idle service both show zero open cohorts, so an empty list can NEVER be evidence of a pause. With rows the notice sits above the Open cohorts heading and the list keeps rendering (pause does not retract, so suppressing rows would hide joinable cohorts); with no rows the empty state keeps its heading but takes a different body from the inherited idle one, which is the only thing distinguishing an operator's choice from a service with nothing on. The public status poll MOVED out of ServiceIdentityHeader's local state into the participant store driven by BrowseView, so the header's open count and the directory's notice are one snapshot: two polls of the same endpoint are two snapshots that can visibly disagree on the same screen. e2e:pause proves the drain-versus-kill distinction from the OUTSIDE (paused:true with openCohorts 1, a FRESHLY constructed participant still seating in the pre-pause cohort, a 409 advertise that leaves the draft intact, resume restoring both), because a pause that took the public directory down with it would look identical from the gated side.
+- [Phase ?]: [Phase 05] 05-06 (SVC-04 criterion 3, per-cohort half): createDraft and updateDraft share exactly ONE validateDraft, and the parity test drives the SAME invalid body through both verbs comparing the thrown messages rather than re-typing a literal, because a re-typed string would still pass against a subtly different second validator. The PATCH route (the repo's first) runs the LOOKUP BEFORE the validation, so a non-draft id is a 404 rather than a validation verdict about a cohort the caller may not edit; next-cohort-only is enforced, with the served shape asserted unchanged after each refusal.
+- [Phase ?]: [Phase 05] 05-06: the per-draft discovery window can only SHORTEN. No timing value in aggregation@0.4.0 is per-cohort (cohortTtlMs/phaseTimeoutMs/advertRepeatIntervalMs are per-RUNNER, advertTtlMs per-transport), and the library arms its TTL at advertise and never resets it, so a longer window is refused at SAVE with the real service maximum named rather than silently overruled. Only a SUPPLIED window is measured against the ceiling. Enforcement is an app-side timer that DECLARES window-expired into the 05-01 intent registry and only THEN calls stopCohort (which emits nothing), making this the first consumer of the member 05-01 declared but left unused; the timer is unref'd, bounded, stop-signal-aborted and cleared on all three settle paths so it can never fire against a reused id. The funding window IS genuinely per-cohort and still obeys the 04 D-38 clamp untouched.
+- [Phase ?]: [Phase 05] 05-06: lib/cohort-form is the ONE pure module both cohort forms delegate every rule and every string to, because two copies of a rule is exactly how create/edit drift happens; it is React-free so the copy contract and minute-to-ms conversions are unit-asserted (23 tests) rather than eyeballed. An empty timing field is 'unset' and OMITS the wire key, never a 0 (which would mean no-window-at-all). The client deliberately does NOT judge the shorten-only ceiling: it depends on a runner TTL the browser is never told, so guessing would either block a legal value or promise one the service cannot keep. The gated list read gained an additive defaults key read PER REQUEST (D-16 lesson) so the create form's help names a REAL number; the edit form instead reads the DRAFT's captured defaults, because a draft keeps the shape it was made with.
 
 ### Pending Todos
 
@@ -179,7 +183,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-29T14:14:23.839Z
-Stopped at: Completed 05-05-PLAN.md
+Last session: 2026-07-29T14:56:12.412Z
+Stopped at: Completed 05-06-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
