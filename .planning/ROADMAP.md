@@ -196,7 +196,7 @@ Plans:
 
 **Slip order** (CONTEXT D-22, three tiers): CORE never slips - SVC-04 lifecycle control (plans 01 through 07 and 10). SECOND - the four absorbed parked items (plans 08 and 09). SLIP-FIRST - the three folded scoping one-pagers (plans 11, 12, and 13), which re-park cleanly to Phase 6 or the next milestone if the phase runs long.
 
-**Plans**: 10/14 plans executed
+**Plans**: 11/14 plans executed
 Plans:
 **Wave 1**
 
@@ -240,7 +240,7 @@ Plans:
 
 **Wave 11** *(blocked on Wave 10)*
 
-- [ ] 05-11-PLAN.md - Participant chain-endpoint override (PART-05, Wave 11)
+- [x] 05-11-PLAN.md - Participant chain-endpoint override (PART-05, Wave 11)
 
 **Wave 12** *(blocked on Wave 11)*
 
@@ -281,5 +281,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 2. Participant Discovery + Browse-and-Pick Join | 9/9 | Complete    | 2026-07-16 |
 | 3. Participant Submit, Co-Sign, Track, and Resolve | 9/9 | Complete    | 2026-07-22 |
 | 4. Operator Cohort Monitoring | 8/8 | Complete    | 2026-07-27 |
-| 5. Operator Cohort Lifecycle Control | 10/14 | In Progress|  |
+| 5. Operator Cohort Lifecycle Control | 11/14 | In Progress|  |
 | 6. Two-Stranger End-to-End + Real-Aggregator Framing | 0/TBD | Not started | - |

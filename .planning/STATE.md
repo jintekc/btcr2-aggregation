@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Completed 05-10-PLAN.md
-last_updated: "2026-07-29T16:41:34.174Z"
+stopped_at: Completed 05-11-PLAN.md
+last_updated: "2026-07-29T17:02:48.885Z"
 last_activity: 2026-07-28
 last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 44
-  completed_plans: 40
+  completed_plans: 41
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 11 of 14
+Plan: 12 of 14
 Status: Ready to execute
 Last activity: 2026-07-28 — Phase 05 execution started
 
-Progress: [█████████░] 91%
+Progress: [█████████░] 93%
 
 ## Performance Metrics
 
@@ -101,6 +101,7 @@ Progress: [█████████░] 91%
 | Phase 05 P08 | 35 min | 3 tasks | 16 files |
 | Phase 05 P09 | 30 min | 2 tasks | 12 files |
 | Phase 05 P10 | 25 min | 2 tasks | 9 files |
+| Phase 05 P11 | 35 min | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -158,6 +159,8 @@ Recent decisions affecting current work (Phase 2):
 - [Phase 05]: [Phase 05] 05-09: addTestPeersFor is exported from test-peers.ts and used by BOTH createService and the route-semantics matrix, so lifecycle-routes.spec.ts asserts the SHIPPING arithmetic over a real registry rather than a re-typed copy (only the participant factory is faked) - the matrix now covers three verbs in one shape (401 before any lookup, 400 malformed, 404 opaque unknown, 409 app-authored reason, 200 result). A peer whose start() rejects is stopped and excluded from the count so a partial failure reports what actually took a seat, and a spawn where every peer failed is a 502 rather than a 200 claiming zero. On a live cohort the rung-2 confirm states BEFORE the act that peers co-sign for real and their DIDs are anchored on the named network, and the service logs + appends an honest note that each peer's own DID registration is SKIPPED (a KEY first update needs its own funded singleton beacon address and a confirmed registration, ADR 0007) rather than attempting it where nobody would look. The member badge and row line are authored in CohortDetail.tsx beside the other member-row labels (the 05-08 HealthStrip precedent), and the surface owns its own testPeerError field because the drill-down already renders the shared actionError on two other cards.
 - [Phase 05]: [Phase 05] 05-10 (SVC-04, participant cancel narration): the aggregation protocol has NO message that could carry an operator's cancel to a seated participant (stopCohort emits nothing), so the attribution rides a narrow anonymous read, GET /v1/cohort-fate/:id, called ONCE after the post-seat gone streak has ALREADY landed the terminal state. The streak's two-consecutive-reads constant is untouched and pinned by a source assertion, because it exists to win the race against cohort-complete (03-07 CR-01) and shortening it to deliver cancel news faster would trade a real success for a faster failure. cohortFate is one expression over the retained record's OWN fate, so an expiry can never read as a cancel and no branch exists that could answer anything but the single boolean; the route mounts in the PUBLIC block ABOVE the operatorAuth gate and answers even on a fail-closed boot, because a route that existed only on an operator-enabled service would itself leak how the service was booted. Non-oracle is asserted by DEEP EQUALITY across unknown, evicted (a real cancel aged out of the 24-record retention), and never-existed, never case by case, and the route never answers 404 so the status code is not an oracle either.
 - [Phase 05]: [Phase 05] 05-10: the cancel fact reaches terminalReason as a REQUIRED boolean checked FIRST, above the stall branch, never as another alternative in the message-text chain. The shipped classifier's first branch fires on submitted-but-unsigned + no validation-requested + unexplained, which is exactly what a mid-round cancel looks like, so any other ordering would have narrated an operator's deliberate act as the stall copy the 04 D-45 fix exists to prevent; the first spec row is constructed to be that exact input and the second is the same input with the fact false. REQUIRED rather than optional so a forgotten call site is a compile error rather than a wrong sentence shown to a participant (cost: five mechanical canceled:false additions in the shipped D-45 spec, assertions unchanged). fetchCohortFate never throws and accepts only a real boolean true, so an unreachable read or a malformed body falls back to the honest 03 D-25 line and can never fabricate an accusation against an operator (T-05-10-04). A source-order pin plus a walk of every regex literal in the file keeps the technique from creeping back one alternative at a time.
+- [Phase 05]: [Phase 05] 05-11 (PART-05, folded scoping build 1 of 3): block zero is NOT a chain identity and the DEFAULT network is where it breaks - mutinynet and plain signet share their genesis hash (a signet's genesis is built from fixed constants; the challenge that actually separates them never enters the hash), confirmed live against both esplora deployments. So packages/shared/src/networks.ts carries genesisHash PLUS an optional distinguishingBlock at height 1 for the signet family, and chainFingerprint over the PAIR; the spec asserts fingerprint distinctness, the collision itself, and the rule that a marker exists exactly where the genesis is shared. A block-zero-only guard would have waved a plain-signet endpoint through to a mutinynet participant (T-05-11-03) on the network this product runs on by default. An endpoint whose required second marker could not be read is REFUSED (unreachable), because cannot-verify is not verified (RESEARCH A3). — The plan's acceptance criterion ("every registered network has a distinct genesis hash") was factually false; correcting it was Rule 1, not a scope change.
+- [Phase 05]: [Phase 05] 05-11: the participant's esplora endpoint is a PARAMETER on the single shipped register() path (one ChainEndpoint value built once by the exported pure chainEndpointFor, threaded into the ONE fetchUtxos and the ONE broadcastTx call), never a second flow - which is what makes the ADR 0010 real-funds acknowledgment, the re-entrancy guard and the funding check keep firing by construction rather than by discipline (RESEARCH Pitfall 8). The four failure verdicts come from ORDERING (parse/scheme-check with no request, then probe, then compare), never from parsing an opaque fetch TypeError, because a browser genuinely cannot tell a CORS rejection from a DNS failure; browser-rejected is best-effort with unreachable as the documented fallback and the switch-back button offered with both. A refused endpoint is never activated, no catch block retries through the service (pinned by brace-matched source walk), broadcast is a second opt-in that cannot be raised without an endpoint and is dropped when the endpoint is cleared, and the anchor poll still reads the service's cohort-keyed model with the endpoint only confirming a txid the service named. — Gate parity is behavioral for the mainnet acknowledgment and the re-entrancy guard (same scenario run twice); the funding check and the call-site shape are source pins, because reaching the funding check needs module-private artifacts only a real cohort round produces.
 
 ### Pending Todos
 
@@ -195,7 +198,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-29T16:41:02.668Z
-Stopped at: Completed 05-10-PLAN.md
+Last session: 2026-07-29T17:02:16.707Z
+Stopped at: Completed 05-11-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
