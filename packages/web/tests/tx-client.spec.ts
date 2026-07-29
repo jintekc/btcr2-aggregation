@@ -403,15 +403,32 @@ describe('esplora - confirmTxAt is an ADDITIONAL check on a known txid', () => {
  * service. The 05-10 source-order pin is the precedent.
  */
 
-/** The `register()` body, isolated so a pin cannot accidentally match elsewhere. */
+/**
+ * The `register()` body, isolated so a pin cannot accidentally match elsewhere.
+ *
+ * Located by BRACE MATCHING rather than by slicing up to the next known method: an extractor
+ * anchored on whatever happens to be declared after `register()` silently widens the moment
+ * anything is added between the two, and then reports a neighbour's call site as a second call
+ * site inside `register()` (which is exactly what happened when 05-12 added the PSBT actions).
+ * A pin that fails for the wrong reason is worse than no pin, because the next reader disarms it.
+ */
 function registerBody(): string {
   const path = fileURLToPath(new URL('../src/stores/participant.ts', import.meta.url));
   const source = readFileSync(path, 'utf8');
   const start = source.indexOf('async register(');
-  const end = source.indexOf('async resolve(', start);
   expect(start).toBeGreaterThan(0);
-  expect(end).toBeGreaterThan(start);
-  return source.slice(start, end);
+  let depth = 0;
+  for (let i = source.indexOf('{', start); i < source.length; i += 1) {
+    if (source[i] === '{') {
+      depth += 1;
+    } else if (source[i] === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return source.slice(start, i + 1);
+      }
+    }
+  }
+  throw new Error('register() body not found: unbalanced braces');
 }
 
 /** Count non-overlapping matches of `re` (which must be global) in `text`. */
@@ -475,6 +492,10 @@ describe('participant store - the endpoint is a parameter, so no guard rail move
     expect(count(readFileSync(path, 'utf8'), /async register\(/g)).toBe(1);
     expect(count(body, /fetchUtxos\(/g)).toBe(1);
     expect(count(body, /broadcastTx\(/g)).toBe(1);
+    // The extractor really did stop at register()'s own closing brace: a widened slice would pull
+    // in the neighbouring PSBT export, whose funding read is a different call site entirely.
+    expect(body).not.toContain('async exportPsbt(');
+    expect(body.trimEnd().endsWith('}')).toBe(true);
   });
 
   it('passes the endpoint INTO those two call sites rather than branching around them', () => {
