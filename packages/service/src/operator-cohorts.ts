@@ -13,6 +13,15 @@
  * advertises nothing until the operator acts, and a cohort only ever comes into
  * existence on an explicit operator action.
  *
+ * A draft is also EDITABLE IN PLACE (SVC-04 criterion 3, D-10): {@link OperatorCohorts.updateDraft}
+ * reshapes one under its own id, so tuning a cohort no longer means discarding and recreating it
+ * (nor editing an env var and restarting). Create and edit share exactly ONE validator
+ * ({@link validateDraft}) and exactly one {@link buildCohortConfig} call, so no rule can be
+ * enforced on one path and skipped on the other. Immutability after advertise (D-13) is enforced
+ * HERE rather than merely documented: `updateDraft` refuses anything that is not a draft, because
+ * an advertised cohort's advert is already public and its seats may already be filling, so
+ * reshaping it would bind participants to terms they never chose.
+ *
  * That standing proof is also what makes the ADVERTISING PAUSE gate complete (SVC-04, D-06).
  * Drain mode is enforced by checking `settings.paused` at those two call sites and NOWHERE else:
  * because they are the only two paths by which a new cohort can come into existence, there is no
@@ -358,6 +367,24 @@ export interface OperatorCohorts {
   /** Validate + store a draft; throws a user-facing `Error` on invalid input. */
   createDraft(input: DraftInput): OperatorCohortDTO;
   /**
+   * Reshape an existing DRAFT in place (SVC-04 criterion 3, D-10/D-13), under the SAME draft id
+   * so the console row does not re-key. The whole point is that the only way to change a draft
+   * used to be discard-and-recreate.
+   *
+   * It runs the SAME {@link validateDraft} the create path runs and rebuilds the config through
+   * the same {@link buildCohortConfig} call, so a rule can never be enforced on create and
+   * skipped on edit; an invalid body throws the byte-identical user-facing `Error`, which the
+   * route surfaces verbatim as its 400 body.
+   *
+   * Returns `undefined` for anything that is NOT a draft - unknown, advertised, in flight, or
+   * terminal - so the route answers 404. That is next-cohort-only enforced rather than merely
+   * stated (D-13): once a cohort is advertised its advert is public and its seats may already be
+   * filling, so reshaping it would bind participants to terms they did not choose. The lookup
+   * runs BEFORE validation, so an unknown id is a 404 even when the body would not have
+   * validated: the two refusals stay distinguishable.
+   */
+  updateDraft(draftId: string, input: DraftInput): OperatorCohortDTO | undefined;
+  /**
    * Advertise a draft: the SOLE caller of `runner.advertiseCohort` (D-17). Moves the
    * draft out of the drafts map into the live/advertised set and returns the advertised
    * DTO. Returns `undefined` for an unknown draft id (route 404), or the
@@ -696,6 +723,38 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
       };
       drafts.set(draftId, { config, dto });
       console.log(`[operator] created draft ${draftId} (${beaconType} ${k}-of-${size})`);
+      return dto;
+    },
+
+    updateDraft(draftId: string, input: DraftInput): OperatorCohortDTO | undefined {
+      // LOOKUP FIRST, validation second (D-13). An id that is not a draft - unknown, advertised,
+      // in flight, or terminal - is refused with `undefined` regardless of the body, so the route
+      // answers 404 rather than leaking a validation verdict about a cohort the caller may not
+      // edit, and an unknown id stays distinguishable from an invalid body.
+      if (!drafts.has(draftId)) {
+        return undefined;
+      }
+      // The SAME validator the create path runs (there is exactly one), so the two paths refuse
+      // the same input in the same words and a rule added to either is added to both.
+      const { beaconType, size, threshold: k } = validateDraft(input, autoFallbackOnStall);
+      // ...and the SAME config build, including the pinned `maxParticipants` (min === max === n,
+      // T-KOFN-04) and the EXPLICIT fifth fallback-threshold argument, so an edited draft and a
+      // freshly created one with identical numbers produce identical configs.
+      const config = buildCohortConfig(size, beaconType, activeNetwork, recoveryKey, k);
+      config.maxParticipants = size;
+      const dto: OperatorCohortDTO = {
+        draftId,
+        beaconType,
+        network: activeNetwork,
+        threshold: k,
+        capacity: size,
+        joined: 0,
+        state: 'draft',
+      };
+      // Replace under the SAME key: the draft id is stable across an edit, so the operator watches
+      // their own row change rather than one row vanish and another appear.
+      drafts.set(draftId, { config, dto });
+      console.log(`[operator] updated draft ${draftId} (${beaconType} ${k}-of-${size})`);
       return dto;
     },
 

@@ -475,6 +475,40 @@ export function createHonoApp(
             : undefined,
         }),
       );
+      // Edit a DRAFT in place (SVC-04 criterion 3, D-10/D-13). The repository's FIRST PATCH route,
+      // mounted with the same shape as the create POST above: the 4 KiB `bodyLimit` with its 413
+      // handler (T-05-06-03) and the JSON-parse guard, both inside the gated block so the
+      // requireSameOrigin CSRF check and the requireOperator session gate reject an anonymous
+      // caller with 401 BEFORE any draft lookup (T-05-06-01).
+      //
+      // The `:id` shape guard runs before the lookup, exactly as on cancel/finalize. Then the
+      // verdicts map straight through: `undefined` (not a draft: unknown, advertised, in flight,
+      // or terminal) is 404, a thrown validation `Error` is 400 with its message as the body (the
+      // same app-authored UI-SPEC copy the create route returns for the same input, never a raw
+      // library string, T-05-06-02), and success is 200 with the updated DTO.
+      app.patch(
+        '/v1/operator/cohorts/:id',
+        bodyLimit({ maxSize: 4 * 1024, onError: (c) => c.json({ error: 'request too large' }, 413) }),
+        async (c) => {
+          const id = c.req.param('id');
+          if (!/^[0-9a-zA-Z-]{1,64}$/.test(id)) {
+            return c.json({ error: 'invalid cohort id' }, 400);
+          }
+          let body: unknown;
+          try {
+            body = await c.req.json();
+          } catch {
+            return c.json({ error: 'expected a JSON body { beaconType, size, threshold }' }, 400);
+          }
+          try {
+            const dto = operatorCohorts.updateDraft(id, body as DraftInput);
+            return dto ? c.json(dto) : c.json({ error: 'unknown draft' }, 404);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            return c.json({ error: message }, 400);
+          }
+        },
+      );
       app.delete('/v1/operator/cohorts/:id', (c) => {
         const ok = operatorCohorts.discardDraft(c.req.param('id'));
         return ok ? c.json({ ok: true }) : c.json({ error: 'unknown draft' }, 404);
