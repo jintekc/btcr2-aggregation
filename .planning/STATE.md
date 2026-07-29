@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Completed 05-07-PLAN.md
-last_updated: "2026-07-29T15:23:08.933Z"
+stopped_at: Completed 05-08-PLAN.md
+last_updated: "2026-07-29T15:54:04.978Z"
 last_activity: 2026-07-28
 last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 44
-  completed_plans: 37
+  completed_plans: 38
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 8 of 14
+Plan: 9 of 14
 Status: Ready to execute
 Last activity: 2026-07-28 — Phase 05 execution started
 
-Progress: [████████░░] 84%
+Progress: [█████████░] 86%
 
 ## Performance Metrics
 
@@ -98,6 +98,7 @@ Progress: [████████░░] 84%
 | Phase 05 P05 | 13 min | 2 tasks | 15 files |
 | Phase 05 P06 | 35 min | 3 tasks | 14 files |
 | Phase 05 P07 | 30 min | 3 tasks | 18 files |
+| Phase 05 P08 | 35 min | 3 tasks | 16 files |
 
 ## Accumulated Context
 
@@ -149,6 +150,8 @@ Recent decisions affecting current work (Phase 2):
 - [Phase ?]: [Phase 05] 05-06: lib/cohort-form is the ONE pure module both cohort forms delegate every rule and every string to, because two copies of a rule is exactly how create/edit drift happens; it is React-free so the copy contract and minute-to-ms conversions are unit-asserted (23 tests) rather than eyeballed. An empty timing field is 'unset' and OMITS the wire key, never a 0 (which would mean no-window-at-all). The client deliberately does NOT judge the shorten-only ceiling: it depends on a runner TTL the browser is never told, so guessing would either block a legal value or promise one the service cannot keep. The gated list read gained an additive defaults key read PER REQUEST (D-16 lesson) so the create form's help names a REAL number; the edit form instead reads the DRAFT's captured defaults, because a draft keeps the shape it was made with.
 - [Phase 05]: [Phase 05] 05-07 (SVC-04 criterion 3 service half + SVC-05 operator half): the settings surface labels every value by its SERVED source (changed is a bit the service reports, never a comparison the browser makes against a boot value it was never told), states the env-seeds / runtime-overrides model in words under the heading, and saves as a SET so a rejected field applies nothing. createDraft resolves absent shape fields from the holder EXACTLY ONCE into that draft's own config, with n and k resolved as a PAIR (a default k taken against an operator-supplied n would turn a 5-seat request into 2-of-5). applySettings inherited the 05-06 shorten-only ceiling, because a DEFAULT above the runner TTL hands an unenforceable window to every draft that inherits it. termsText rides GET /v1/config additively with an ABSENT key meaning no terms step at all. Validation delegates to lib/cohort-form rather than growing a third copy.
 - [Phase 05]: [Phase 05] 05-07: a cleared window default sends an explicit null (an absent key already means leave-it-alone, so omitting it would silently discard the operator's edit); the create form's TIMING fields stay EMPTY rather than pre-filled, because empty means inherit and a pre-filled default would submit that number explicitly and freeze the cohort's window at today's value; the settings snapshot is loaded ONCE by the console shell so the create form and the settings view render from one snapshot rather than two reads of one holder that can visibly disagree (the 05-05 status-poll lesson); and a source comment must not spell the name of the token a guard greps for, or the comment defeats the guard.
+- [Phase 05]: [Phase 05] 05-08 (SVC-04, three parked items closed): the broadcast kill switch is ONE pure rule (cohortKeepsLiveWiring) consulted at BOTH beacon-tx handoffs - the data handoff choosing the real builder or the fixture, and the broadcast handoff - comparing each cohort's advertise stamp against the moment the switch engaged, so a killed cohort is genuinely created on the fixture path (never waits for funding, never reads a UTXO) rather than merely unpublished. attachBeaconBroadcast gained a shouldBroadcast gate consulted BEFORE serialization, because a fixture tx throws on extract() and would have flipped a healthy cohort's ended chip to failed. The engage stamp is taken once and never moved (a second click would slide the pivot and silently re-enable cohorts advertised in between), and the gate FAILS CLOSED on a cohort with no advertise stamp. The one-way guarantee is SEARCHED for, not documented: the spec enumerates the holder's own surface and the app's registered routes and pins both, so a future enableBroadcast fails the suite the moment it is written. The cached boot mode is never re-derived - broadcastDisabled is a SECOND bit and a SECOND warn chip beside it, because the service really did boot live and its chain reads really are still live.
+- [Phase 05]: [Phase 05] 05-08: dismissEnded removes exactly one ended record plus its retained activity and funding view, refuses an unknown id and a still-live cohort, calls no runner verb, and appends its OWN service-level log entry from inside the method so the one action whose purpose is to remove evidence cannot be the one that goes unrecorded. The bounded (100, oldest-first) service-level operatorActions ring rides the EXISTING gated monitoring poll as an additive sibling key (ADR 0016: no new SSE channel), all entries info-toned because they are the operator's own deliberate acts. A settings change is recorded by comparing two SERVED snapshots, so a save that re-sends held values records nothing, and the values themselves are never logged (an operator-authored string would widen the row without bound). Pause/resume/settings entries live in hono-adapter where the seam actually is (the routes mutate the holder directly, so index.ts never learns), while cancel/finalize stay on the index.ts hooks. An empty log BEFORE a read is not an empty log: operatorLogState keys the loading posture on the freshness stamp, never on the array.
 
 ### Pending Todos
 
@@ -186,7 +189,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-29T15:22:30.434Z
-Stopped at: Completed 05-07-PLAN.md
+Last session: 2026-07-29T15:54:04.952Z
+Stopped at: Completed 05-08-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
