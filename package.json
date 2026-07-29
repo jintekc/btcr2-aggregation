@@ -33,6 +33,7 @@
     "e2e:live:mock": "tsc -b && tsx e2e/live-mock-cohort.ts",
     "e2e:live:broadcast": "tsc -b && tsx e2e/live-broadcast-cohort.ts",
     "e2e:live:regtest": "tsc -b && LIVE=1 LIVE_NETWORK=regtest tsx e2e/resolve-cohort.ts",
+    "e2e:gate": "pnpm e2e:operator && pnpm e2e:monitor && pnpm e2e:cancel && pnpm e2e:pause && pnpm e2e:testpeers && pnpm e2e:fallback && pnpm e2e:fallback:operator && pnpm e2e:browse && pnpm e2e:kofn && pnpm e2e:live:mock && pnpm e2e:resolve && pnpm e2e:config && pnpm e2e:persist",
     "uat:live": "pnpm -r build && tsx e2e/live-uat.ts",
     "e2e:browser": "pnpm -r build && tsx e2e/browser-cohort.ts",
     "e2e:browser:prod": "pnpm -r build && tsx e2e/browser-prod-cohort.ts",
