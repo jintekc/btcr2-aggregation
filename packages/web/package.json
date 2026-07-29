@@ -21,6 +21,8 @@
     "@libp2p/interface": "2.11.0",
     "@libp2p/websockets": "9.2.19",
     "@multiformats/multiaddr": "12.5.1",
+    "@noble/hashes": "^1.8.0",
+    "@scure/btc-signer": "^1.8.1",
     "blockstore-core": "5.0.4",
     "datastore-core": "10.0.4",
     "libp2p": "2.10.0",
