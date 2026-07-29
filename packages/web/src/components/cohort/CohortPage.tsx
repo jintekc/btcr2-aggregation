@@ -6,6 +6,7 @@ import { Badge, Button, Card, CopyField, SectionTitle } from '../../ui/primitive
 import { StageTimeline } from './StageTimeline';
 import { SubmitPanel } from './SubmitPanel';
 import { CompletionSummary } from './CompletionSummary';
+import { ChainEndpointPanel } from './ChainEndpointPanel';
 
 /**
  * The next step offered under EITHER terminal narration (SVC-04, D-02, UI-SPEC E14): the
@@ -240,6 +241,11 @@ export function CohortPage({ baseUrl: _baseUrl, onBrowse }: { baseUrl: string; o
           Keep this tab open. Refreshing loses your seat, and this service does not save your session yet.
         </p>
       ) : null}
+
+      {/* The participant's own chain-truth source (PART-05, D-20). An advanced disclosure
+          beside the technical detail, because reading the chain through this service is
+          the default and needs no setup; this is an addition, never a replacement. */}
+      <ChainEndpointPanel />
 
       <Expander title="Technical detail">
         <div className="space-y-3">
