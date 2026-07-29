@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import type { IdType } from '@btcr2-aggregation/shared';
-import { preSeatFitWarning, useParticipant } from '../../stores/participant';
+import { preSeatFitWarning, termsAcceptedFor, useParticipant } from '../../stores/participant';
 import { Button, CopyField, SectionTitle } from '../../ui/primitives';
 import { statusLabel, type DirectoryCohortDTO } from '../../lib/directory';
+import { TERMS_COPY, TermsStep, termsStepVisible } from './TermsStep';
 
 /**
  * The inline identity step revealed when a participant clicks Join on an open directory row
@@ -37,8 +38,18 @@ export function JoinIdentityStep({
   const generate = useParticipant((s) => s.generate);
   const importSecret = useParticipant((s) => s.importSecret);
   const join = useParticipant((s) => s.join);
+  // Participation terms (SVC-05, D-19). All four are absent-safe: on a service that set no
+  // terms, `termsText` is null, `termsRequired` is false, and every branch below is inert.
+  const termsText = useParticipant((s) => s.termsText);
+  const termsAcceptance = useParticipant((s) => s.termsAcceptance);
+  const termsAccepting = useParticipant((s) => s.termsAccepting);
+  const acceptTerms = useParticipant((s) => s.acceptTerms);
 
   const [kind, setKind] = useState<IdType>('KEY');
+  // The checkbox is LOCAL: it records that this participant ticked the box, which is not the
+  // same fact as an acceptance existing on the service. Keeping the two apart is what makes
+  // checked-but-not-yet-recorded a state the button can show (UI-SPEC E15 partial).
+  const [termsChecked, setTermsChecked] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [importValue, setImportValue] = useState('');
   const [importError, setImportError] = useState<string | null>(null);
@@ -62,6 +73,32 @@ export function JoinIdentityStep({
   // D-19: an informed, non-blocking fit warning for the current identity against this cohort.
   const fitWarning = preSeatFitWarning(identity, row, network);
 
+  // SVC-05: terms exist -> they must be accepted for THIS cohort before the join proceeds. The
+  // recorded fact is cohort-keyed, so an acceptance made for another cohort does not unlock this
+  // one; the store enforces the same rule independently inside join().
+  const termsRequired = termsStepVisible(termsText);
+  const termsRecorded = termsAcceptedFor(termsAcceptance, cohortId);
+  const termsBlocking = termsRequired && !termsRecorded && !termsChecked;
+  // The in-flight label covers BOTH legs of a join that has terms: signing and recording the
+  // acceptance, then opting in. Checked but not yet recorded therefore reads as "Joining…", not
+  // as a still-clickable button.
+  const joinBusy = joining || termsAccepting;
+
+  /**
+   * Record the acceptance first when terms are set, and STOP if it fails: a participant is never
+   * seated with an unrecorded acceptance, and a failed acceptance leaves the documented failure
+   * line on the step above rather than quietly joining anyway.
+   */
+  async function doJoin() {
+    if (termsRequired && !termsRecorded) {
+      const recorded = await acceptTerms(baseUrl, cohortId);
+      if (!recorded) {
+        return;
+      }
+    }
+    await join(baseUrl, cohortId, { threshold: row.threshold, capacity: row.capacity });
+  }
+
   // Show the choose/generate controls when there is no identity, or the user explicitly asked
   // for a different one. Otherwise the current identity is the default (D-18).
   const showChooser = !did || wantDifferent;
@@ -78,6 +115,12 @@ export function JoinIdentityStep({
 
   return (
     <div className="space-y-4">
+      {/* The participation-terms step sits AHEAD of the identity step (SVC-05, D-19): a
+          participant reads what they are agreeing to before choosing which DID agrees to it.
+          Renders nothing at all on a service that set no terms, so the join flow below is
+          byte-unchanged for every service that never asked for any. */}
+      <TermsStep checked={termsChecked} onCheckedChange={setTermsChecked} />
+
       <SectionTitle>Choose an identity to join</SectionTitle>
       <p className="text-sm text-muted">
         Joining cohort {shortCohortId} - {joined}/{capacity} seats, {label}.
@@ -180,16 +223,16 @@ export function JoinIdentityStep({
             </p>
           )}
           <div className="flex flex-wrap items-center gap-2 pt-1">
-            <Button
-              onClick={() => join(baseUrl, cohortId, { threshold: row.threshold, capacity: row.capacity })}
-              disabled={joining}
-            >
-              {joining ? 'Joining…' : 'Join cohort'}
+            <Button onClick={doJoin} disabled={joinBusy || termsBlocking}>
+              {joinBusy ? 'Joining…' : 'Join cohort'}
             </Button>
-            <Button variant="ghost" onClick={() => setWantDifferent(true)} disabled={joining}>
+            {/* The reason sits BESIDE the disabled control, so the participant is never left
+                looking at a dead button with no explanation (UI-SPEC E15). */}
+            {termsBlocking && <span className="text-xs text-faint">{TERMS_COPY.joinDisabledReason}</span>}
+            <Button variant="ghost" onClick={() => setWantDifferent(true)} disabled={joinBusy}>
               Use a different identity
             </Button>
-            <Button variant="ghost" onClick={onCancel} disabled={joining}>
+            <Button variant="ghost" onClick={onCancel} disabled={joinBusy}>
               Cancel
             </Button>
           </div>

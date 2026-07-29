@@ -22,6 +22,9 @@ import {
   psbtBytesToBase64,
   REGISTRATION_FEE_SATS,
   resolveNetwork,
+  buildTermsAcceptance,
+  termsAcceptanceSigningBytes,
+  termsHashHex,
   updateHashBytes,
   updateHashHex,
   type Identity,
@@ -29,12 +32,13 @@ import {
   type NetworkName,
   type PublishableArtifactKind,
 } from '@btcr2-aggregation/shared';
+import { bytesToHex } from '@noble/hashes/utils';
 import { fetchStatus, type ServiceStatus } from '../lib/directory';
 import { fetchAnchor, type AnchorDTO } from '../lib/anchor';
 import { fetchFunding } from '../lib/funding';
 import { fetchCohortFate } from '../lib/cohort-fate';
 import { elapsed } from '../lib/clock';
-import { fetchNetworkConfig } from '../lib/config';
+import { fetchNetworkConfig, postTermsAcceptance, type TermsAcceptanceEnvelope } from '../lib/config';
 import { fetchDirectory, type DirectoryCohortDTO } from '../lib/operator';
 import { fetchIpfsInfo, requestPin, type IpfsInfoDTO } from '../lib/ipfs';
 import type { BrowserIpfsNode } from '../lib/ipfs-node';
@@ -142,6 +146,37 @@ interface ParticipantState {
    * operator console health strip and the public directory header; there is no edit surface.
    */
   serviceName: string | null;
+  /**
+   * This service's own DID (SVC-05, D-19), read from `GET /v1/config`. Null until the config
+   * lands or on a service that does not report one. It is one of the fields a participation-terms
+   * acceptance names, which is why the browser needs it BEFORE it joins anything.
+   */
+  serviceDid: string | null;
+  /**
+   * The operator's participation terms (SVC-05, D-19), read from `GET /v1/config`. Null means
+   * this operator set NO terms, and the entire join-flow terms step is absent - no empty card, no
+   * placeholder (UI-SPEC E15 empty). Rendered as plain auto-escaped text content only.
+   */
+  termsText: string | null;
+  /**
+   * The recorded acceptance for ONE cohort, or null before any has been recorded.
+   *
+   * Keyed by `cohortId` on purpose, and that key is the whole reason this slice does not live in
+   * {@link INITIAL_OUTCOME} with the other per-round facts. An acceptance names the cohort it was
+   * made for, so a reference held for cohort A can never satisfy the join gate for cohort B: the
+   * gate compares the id rather than merely checking that SOMETHING was accepted once. That makes
+   * correctness a property of the comparison instead of a property of remembering to clear this
+   * on every teardown path.
+   */
+  termsAcceptance: { cohortId: string; hash: string; acceptedAt: string } | null;
+  /**
+   * True while an acceptance is being signed and recorded. This is what makes
+   * checked-but-not-yet-recorded a DISTINCT visible state (UI-SPEC E15 partial): the join control
+   * holds its in-flight label for as long as this is true.
+   */
+  termsAccepting: boolean;
+  /** The documented failure sentence once an acceptance could not be recorded, else null. */
+  termsError: string | null;
   /**
    * The last SERVED public service status (`GET /v1/status`), or `undefined` when no read has
    * landed yet AND after a failed read (SVC-04, Phase 5 D-07). It carries the open-cohort count
@@ -380,6 +415,17 @@ interface ParticipantState {
    * Anonymous by construction (`credentials: 'omit'`).
    */
   pollPublicStatus(baseUrl: string): Promise<void>;
+  /**
+   * Sign this service's participation terms for `cohortId` and record the acceptance (SVC-05,
+   * D-19). Returns true only when the service has stored a VERIFIED acceptance and returned its
+   * hash reference.
+   *
+   * The signing happens here, in the browser, with the participant's own key: only the record and
+   * its signature are posted, and the private key never leaves this tab. A false return means the
+   * join must not proceed - {@link join} enforces that independently, so a caller that forgets is
+   * refused rather than seated with an unrecorded acceptance.
+   */
+  acceptTerms(baseUrl: string, cohortId: string): Promise<boolean>;
   /**
    * Generate a fresh did:btcr2 identity in-browser: a KEY (`k1`) DID, or an EXTERNAL
    * (`x1`) DID with a self-verifying genesis document (default KEY).
@@ -832,6 +878,72 @@ export function seatLineCopy(awaitingSeats: { joined: number; capacity: number }
     return `All ${awaitingSeats.capacity} seats are filled; checking whether this browser got a seat.`;
   }
   return `Waiting for the cohort to fill (${awaitingSeats.joined}/${awaitingSeats.capacity} seats).`;
+}
+
+/**
+ * The ONE sentence shown when an acceptance could not be recorded (UI-SPEC E15 error).
+ *
+ * Authored here rather than beside the rest of the terms copy in `TermsStep.tsx` because this is
+ * the module that SETS it, and a message set in one file and authored in another is how the two
+ * come to disagree. Every failure path lands on this one sentence deliberately: the service
+ * answers every refusal with a single identical body (it is anonymous, so a per-reason answer
+ * would be a probe), and the participant's next action is the same in every case.
+ */
+export const TERMS_ACCEPTANCE_FAILED =
+  "Your acceptance couldn't be recorded, so this join stopped. Try again.";
+
+/**
+ * Build the exact envelope `POST /v1/terms/acceptance` is sent: the canonical acceptance record,
+ * the participant's signature over its canonical signing bytes, and (for an EXTERNAL x1
+ * identity) the self-verifying genesis document the service needs to resolve the signing key.
+ *
+ * Pure, exported, and separate from the action for one reason: it is the ONE place in the
+ * browser where the bytes a participant signs are decided, and those bytes have to be the bytes
+ * the service independently rebuilds and verifies. Both sides call the SAME shared builder and
+ * the SAME shared signing-bytes function ({@link buildTermsAcceptance},
+ * {@link termsAcceptanceSigningBytes}), so there is no browser-side serializer that could drift
+ * from the server-side one; the spec asserts that equivalence rather than assuming it.
+ *
+ * The private key is used here and goes nowhere: only `acceptance`, `signature` and the (public)
+ * genesis document are returned, and those three are the entire request body.
+ */
+export function buildTermsEnvelope(input: {
+  identity: Identity;
+  serviceDid: string;
+  cohortId: string;
+  termsText: string;
+  /** Supplied by specs so an envelope can be rebuilt byte-identically; defaults to now. */
+  acceptedAt?: string;
+}): TermsAcceptanceEnvelope {
+  const acceptance = buildTermsAcceptance({
+    serviceDid: input.serviceDid,
+    cohortId: input.cohortId,
+    termsHash: termsHashHex(input.termsText),
+    participantDid: input.identity.did,
+    acceptedAt: input.acceptedAt,
+  });
+  const signature = bytesToHex(
+    input.identity.keys.secretKey.sign(termsAcceptanceSigningBytes(acceptance), { scheme: 'schnorr' }),
+  );
+  return {
+    acceptance: acceptance as unknown as Record<string, unknown>,
+    signature,
+    ...(input.identity.genesisDocument ? { genesisDocument: input.identity.genesisDocument } : {}),
+  };
+}
+
+/**
+ * True when this participant already holds a recorded acceptance FOR `cohortId`.
+ *
+ * The comparison is on the cohort id, never on mere presence: an acceptance made for another
+ * cohort is not an acceptance for this one, and treating it as one would seat a participant on
+ * terms they agreed to somewhere else.
+ */
+export function termsAcceptedFor(
+  acceptance: { cohortId: string } | null,
+  cohortId: string,
+): boolean {
+  return acceptance?.cohortId === cohortId;
 }
 
 /**
@@ -1367,6 +1479,13 @@ export const useParticipant = create<ParticipantState>((set, get) => {
     did: null,
     network: DEFAULT_NETWORK,
     serviceName: null,
+    serviceDid: null,
+    termsText: null,
+    // Cohort-keyed (see the field docs), so it needs no teardown path: an acceptance for a
+    // different cohort simply fails the gate's id comparison.
+    termsAcceptance: null,
+    termsAccepting: false,
+    termsError: null,
     publicStatus: undefined,
     // The chain-endpoint choice is a per-browser preference, not per-round state, so it
     // deliberately does NOT live in INITIAL_OUTCOME: a participant who set an endpoint
@@ -1415,7 +1534,17 @@ export const useParticipant = create<ParticipantState>((set, get) => {
       try {
         const dto = await fetchNetworkConfig(baseUrl);
         // Adopt the optional service display name (D-51) alongside the network; absent -> null.
-        set({ network: dto.network, serviceName: dto.serviceName ?? null, configStatus: 'ready' });
+        // The service DID and the participation terms (SVC-05, D-19) ride the same read and the
+        // same absent -> null rule. Null terms mean the join flow has NO terms step at all, which
+        // is why a missing key must never become an empty string here: an empty string would be
+        // "terms that say nothing", a claim this operator never made.
+        set({
+          network: dto.network,
+          serviceName: dto.serviceName ?? null,
+          serviceDid: dto.serviceDid ?? null,
+          termsText: dto.termsText ?? null,
+          configStatus: 'ready',
+        });
         append('info', `coordinator network: ${dto.label} (${dto.network})`);
       } catch (err) {
         // Degrade gracefully: keep the default network and unblock generation. An
@@ -1426,6 +1555,47 @@ export const useParticipant = create<ParticipantState>((set, get) => {
         append('warn', `could not load coordinator network (${msg}); using default ${get().network}`);
       }
       await ipfsProbe;
+    },
+
+    async acceptTerms(baseUrl, cohortId) {
+      const { identity, serviceDid, termsText, termsAccepting } = get();
+      if (termsAccepting) {
+        // Re-entrancy guard, same posture as register(): a double-click must not sign and post
+        // twice. Two acceptances differ only in their timestamp, so both would verify and both
+        // would be stored, leaving two references for one agreement.
+        return false;
+      }
+      if (!identity || !serviceDid || !termsText) {
+        // Nothing to sign, nobody to address it to, or nobody to sign it. Report the same
+        // documented failure the participant would see for a refused POST: from where they are
+        // standing the outcome is identical, and inventing a second sentence for a state they
+        // cannot act on differently would not help them.
+        set({ termsError: TERMS_ACCEPTANCE_FAILED });
+        return false;
+      }
+      set({ termsAccepting: true, termsError: null });
+      try {
+        const envelope = buildTermsEnvelope({ identity, serviceDid, cohortId, termsText });
+        const hash = await postTermsAcceptance(baseUrl, envelope);
+        set({
+          termsAccepting: false,
+          termsAcceptance: {
+            cohortId,
+            hash,
+            // The timestamp shown is the one INSIDE the signed record, never a fresh clock read:
+            // the line says when the participant accepted, and that instant is part of what they
+            // signed.
+            acceptedAt: String(envelope.acceptance.acceptedAt),
+          },
+        });
+        append('good', `recorded participation-terms acceptance ${hash}`);
+        return true;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        set({ termsAccepting: false, termsError: TERMS_ACCEPTANCE_FAILED });
+        append('warn', `could not record the participation-terms acceptance (${msg})`);
+        return false;
+      }
     },
 
     generate(kind = 'KEY') {
@@ -1452,8 +1622,20 @@ export const useParticipant = create<ParticipantState>((set, get) => {
     },
 
     async join(baseUrl, cohortId, sizing) {
-      const { identity, status } = get();
+      const { identity, status, termsText, termsAcceptance } = get();
       if (!identity || status === 'connecting' || status === 'live') {
+        return;
+      }
+
+      // The participation-terms gate (SVC-05, D-19). It lives HERE, in the one method that
+      // actually opts a participant into a cohort, rather than only in the surface that renders
+      // the checkbox: a component that forgot to check, or a future second entry point, is
+      // refused by construction instead of seating someone with no acceptance on record. The
+      // comparison is on the cohort id (see {@link termsAcceptedFor}), so an acceptance made for
+      // a different cohort cannot stand in for this one.
+      if (termsText && !termsAcceptedFor(termsAcceptance, cohortId)) {
+        set({ termsError: TERMS_ACCEPTANCE_FAILED });
+        append('warn', 'join stopped: this service requires accepting its participation terms first');
         return;
       }
 
