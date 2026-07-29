@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { HttpServerTransport } from '@did-btcr2/aggregation/service';
+import { AggregationServiceRunner, HttpServerTransport } from '@did-btcr2/aggregation/service';
 import { resolveBtcr2SenderPk } from '@did-btcr2/method';
+import { createIdentity, resolveNetwork } from '@btcr2-aggregation/shared';
+import { createCohortIntents } from '../src/cohort-intent.js';
 import { createHonoApp } from '../src/hono-adapter.js';
-import { createRuntimeSettings } from '../src/runtime-settings.js';
+import { createOperatorCohorts } from '../src/operator-cohorts.js';
+import { createRuntimeSettings, type RuntimeSettingsSeed } from '../src/runtime-settings.js';
 
 /**
  * Hermetic coverage of the per-service runtime settings holder (SVC-04, D-08/D-12/D-16): the
@@ -258,5 +261,194 @@ describe('GET /v1/config reads the service name from the holder per request (D-1
     runtimeSettings.applySettings({ serviceName: '' });
     const body = (await (await app.request('/v1/config')).json()) as Record<string, unknown>;
     expect(Object.keys(body).sort()).toEqual(['isMainnet', 'label', 'network']);
+  });
+
+  it('carries the participation terms ADDITIVELY once they are set (D-19)', async () => {
+    // The terms are the operator half of SVC-05: the participant's join flow needs them from a
+    // route it can read with no session, and `GET /v1/config` is the one such read the browser
+    // already makes on load. It rides the SAME per-request holder read the name does.
+    const { app, runtimeSettings } = settingsApp('Acme Aggregation');
+    expect(runtimeSettings.applySettings({ termsText: 'Be excellent to each other.' })).toBeUndefined();
+    const body = (await (await app.request('/v1/config')).json()) as Record<string, unknown>;
+    expect(body).toEqual({
+      network: 'mutinynet',
+      label: 'Mutinynet (signet)',
+      isMainnet: false,
+      serviceName: 'Acme Aggregation',
+      termsText: 'Be excellent to each other.',
+    });
+  });
+
+  it('omits the terms key entirely when they are empty or whitespace-only (SVC-05, D-19)', async () => {
+    // Empty terms mean the feature is ABSENT, not an empty step: the participant flow must be able
+    // to tell "this operator set no terms" from "this operator set terms that say nothing", and an
+    // empty string on the wire would collapse the two.
+    const { app, runtimeSettings } = settingsApp();
+    expect(runtimeSettings.applySettings({ termsText: '   ' })).toBeUndefined();
+    const body = (await (await app.request('/v1/config')).json()) as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual(['isMainnet', 'label', 'network']);
+  });
+});
+
+describe('snapshot(): the whole field set with its source, for the console caption (D-12)', () => {
+  it('reports every declared field with its value, its env default, and whether it changed', () => {
+    const settings = createRuntimeSettings({
+      serviceName: 'Acme Aggregation',
+      defaultBeaconType: 'CASBeacon',
+      defaultSize: 3,
+      defaultThreshold: 2,
+      defaultDiscoveryWindowMs: 30 * 60_000,
+      defaultFundingWindowMs: 10 * 60_000,
+      termsText: 'Original terms.',
+    });
+    const snap = settings.snapshot();
+    // The console renders `env default` or `changed this session (environment default: {value})`
+    // from SERVED data rather than guessing, so every field must carry all three facts.
+    expect(Object.keys(snap).sort()).toEqual(
+      [
+        'defaultBeaconType',
+        'defaultDiscoveryWindowMs',
+        'defaultFundingWindowMs',
+        'defaultSize',
+        'defaultThreshold',
+        'serviceName',
+        'termsText',
+      ].sort(),
+    );
+    for (const field of Object.values(snap)) {
+      expect(field).toHaveProperty('envDefault');
+      expect(field.changed).toBe(false);
+    }
+    expect(snap.defaultSize.value).toBe(3);
+    expect(snap.termsText.value).toBe('Original terms.');
+  });
+
+  it('marks only the fields that actually moved, keeping their boot value alongside', () => {
+    const settings = createRuntimeSettings({ serviceName: 'Acme', defaultSize: 2, defaultThreshold: 2 });
+    expect(settings.applySettings({ defaultSize: 5, defaultThreshold: 5 })).toBeUndefined();
+    const snap = settings.snapshot();
+    expect(snap.defaultSize.changed).toBe(true);
+    expect(snap.defaultSize.envDefault).toBe(2);
+    expect(snap.serviceName.changed).toBe(false);
+  });
+
+  it('returns a FRESH projection per call, so a caller cannot write settings through it', () => {
+    const settings = createRuntimeSettings({ defaultSize: 2 });
+    const first = settings.snapshot();
+    (first.defaultSize as { value: number }).value = 99;
+    expect(settings.snapshot().defaultSize.value).toBe(2);
+    expect(settings.defaultSize.value).toBe(2);
+  });
+});
+
+describe('applySettings refuses a discovery-window default this service cannot honor', () => {
+  it('names the real service maximum rather than accepting a value the library overrules', () => {
+    // The same shorten-only ceiling `validateDraft` enforces per draft (05-06, RESEARCH Pitfall 7).
+    // The library arms its cohort TTL at advertise and never resets it, so a DEFAULT above that TTL
+    // is a promise this service cannot keep for the drafts that inherit it. Refusing here is the
+    // difference between a setting surface and a wish list.
+    const settings = createRuntimeSettings({
+      defaultDiscoveryWindowMs: 30 * 60_000,
+      discoveryWindowCeilingMs: 30 * 60_000,
+    });
+    const error = settings.applySettings({ defaultDiscoveryWindowMs: 45 * 60_000 });
+    expect(error).toMatch(/30 min/);
+    expect(settings.defaultDiscoveryWindowMs.value).toBe(30 * 60_000);
+  });
+
+  it('accepts a default at or below the ceiling', () => {
+    const settings = createRuntimeSettings({
+      defaultDiscoveryWindowMs: 30 * 60_000,
+      discoveryWindowCeilingMs: 30 * 60_000,
+    });
+    expect(settings.applySettings({ defaultDiscoveryWindowMs: 5 * 60_000 })).toBeUndefined();
+    expect(settings.defaultDiscoveryWindowMs.value).toBe(5 * 60_000);
+  });
+});
+
+/**
+ * A real runner + operator cohort surface wired to a real settings holder, so the read-once rule
+ * (D-13) is asserted against the SAME `createDraft` the gated route calls rather than a stand-in.
+ */
+function draftDefaultsApp(seed: RuntimeSettingsSeed = {}) {
+  const identity = createIdentity(resolveNetwork('signet'));
+  const transport = new HttpServerTransport({ resolveSenderPk: resolveBtcr2SenderPk, heartbeatIntervalMs: 0 });
+  transport.registerActor(identity.did, identity.keys);
+  const runner = new AggregationServiceRunner({
+    transport,
+    did: identity.did,
+    keys: identity.keys,
+    onProvideTxData: async () => {
+      throw new Error('signing not exercised in this spec');
+    },
+  });
+  transport.start();
+  const settings = createRuntimeSettings(seed);
+  const operatorCohorts = createOperatorCohorts({
+    activeNetwork: 'signet',
+    runner,
+    autoFallbackOnStall: true,
+    intents: createCohortIntents(),
+    settings,
+  });
+  return { runner, operatorCohorts, settings };
+}
+
+describe('service defaults are read ONCE at createDraft time and never re-read (D-13)', () => {
+  it('seeds a draft that supplies no shape from the holder', () => {
+    const { runner, operatorCohorts } = draftDefaultsApp({
+      defaultBeaconType: 'SMTBeacon',
+      defaultSize: 4,
+      defaultThreshold: 3,
+    });
+    const draft = operatorCohorts.createDraft({});
+    expect(draft.beaconType).toBe('SMTBeacon');
+    expect(draft.capacity).toBe(4);
+    expect(draft.threshold).toBe(3);
+    runner.stop();
+  });
+
+  it('leaves an EXISTING draft untouched when the service default changes afterwards', () => {
+    const { runner, operatorCohorts, settings } = draftDefaultsApp({ defaultSize: 2, defaultThreshold: 2 });
+    const draft = operatorCohorts.createDraft({});
+    expect(settings.applySettings({ defaultSize: 6, defaultThreshold: 6 })).toBeUndefined();
+
+    // The draft keeps the shape it was made with: a settings change is about the NEXT cohort.
+    const row = operatorCohorts.listCohorts().find((c) => c.draftId === draft.draftId);
+    expect(row?.capacity).toBe(2);
+    expect(row?.threshold).toBe(2);
+    runner.stop();
+  });
+
+  it('leaves an ADVERTISED cohort untouched when the service default changes afterwards', () => {
+    const { runner, operatorCohorts, settings } = draftDefaultsApp({ defaultSize: 2, defaultThreshold: 2 });
+    const draft = operatorCohorts.createDraft({});
+    const advertised = operatorCohorts.advertiseDraft(draft.draftId);
+    expect(advertised && 'draftId' in advertised).toBe(true);
+    expect(settings.applySettings({ defaultSize: 6, defaultThreshold: 6 })).toBeUndefined();
+
+    const rows = operatorCohorts.listCohorts().filter((c) => c.state === 'advertised');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].capacity).toBe(2);
+    expect(rows[0].threshold).toBe(2);
+    runner.stop();
+  });
+
+  it('still honors an EXPLICIT shape over the service default', () => {
+    const { runner, operatorCohorts } = draftDefaultsApp({ defaultBeaconType: 'SMTBeacon', defaultSize: 4 });
+    const draft = operatorCohorts.createDraft({ beaconType: 'CASBeacon', size: 2, threshold: 2 });
+    expect(draft.beaconType).toBe('CASBeacon');
+    expect(draft.capacity).toBe(2);
+    runner.stop();
+  });
+
+  it('keeps k = n for a body that supplies n but no k (the shipped default is not overridden)', () => {
+    // k is only meaningful relative to n. Taking a DEFAULT k against an operator-supplied n would
+    // silently reshape a cohort they described: a 5-seat cohort would quietly become 2-of-5.
+    const { runner, operatorCohorts } = draftDefaultsApp({ defaultSize: 2, defaultThreshold: 2 });
+    const draft = operatorCohorts.createDraft({ beaconType: 'CASBeacon', size: 5 });
+    expect(draft.capacity).toBe(5);
+    expect(draft.threshold).toBe(5);
+    runner.stop();
   });
 });

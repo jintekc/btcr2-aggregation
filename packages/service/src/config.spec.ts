@@ -118,4 +118,29 @@ describe('GET /v1/config route', () => {
     const cleared = (await (await app.request('/v1/config')).json()) as Record<string, unknown>;
     expect(Object.keys(cleared).sort()).toEqual(['isMainnet', 'label', 'network']);
   });
+
+  it('grows ADDITIVELY with the participation terms, network fields still byte-identical (SVC-05)', async () => {
+    // The terms are the second operator-authored string this public read carries (D-19). The pin
+    // that matters is the one below: the three frozen network fields keep the EXACT values the
+    // unnamed default serves, so a participant client that only parses the network can never be
+    // broken by an operator setting terms.
+    const { app, runtimeSettings } = holderApp();
+    expect(runtimeSettings.applySettings({ termsText: 'Be excellent to each other.' })).toBeUndefined();
+    const body = (await (await app.request('/v1/config')).json()) as Record<string, unknown>;
+    expect(body).toEqual({
+      network: 'mutinynet',
+      label: 'Mutinynet (signet)',
+      isMainnet: false,
+      termsText: 'Be excellent to each other.',
+    });
+    expect(body.network).toBe('mutinynet');
+    expect(body.label).toBe('Mutinynet (signet)');
+    expect(body.isMainnet).toBe(false);
+
+    // Cleared, the key disappears entirely: empty terms mean the join flow has NO terms step,
+    // which is a different fact from terms that say nothing.
+    expect(runtimeSettings.applySettings({ termsText: '  ' })).toBeUndefined();
+    const cleared = (await (await app.request('/v1/config')).json()) as Record<string, unknown>;
+    expect(Object.keys(cleared).sort()).toEqual(['isMainnet', 'label', 'network']);
+  });
 });

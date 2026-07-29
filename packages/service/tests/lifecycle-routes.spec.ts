@@ -11,6 +11,7 @@ import {
   NOT_SIGNING_REASON,
   type OperatorCohortDTO,
 } from '../src/operator-cohorts.js';
+import { createRuntimeSettings } from '../src/runtime-settings.js';
 
 /**
  * The single home for the ROUTE-SEMANTICS matrix of every gated cohort-lifecycle route this
@@ -89,11 +90,15 @@ function lifecycleApp() {
   };
   const intents = createCohortIntents();
   const monitor = createCohortMonitor(runner);
+  // The runtime holder is wired exactly as `index.ts` wires it, so the settings routes below are
+  // asserted against the real gated block rather than a bespoke app.
+  const settings = createRuntimeSettings({ serviceName: 'Acme Aggregation', defaultSize: 2, defaultThreshold: 2 });
   const operatorCohorts = createOperatorCohorts({
     activeNetwork: ACTIVE_NETWORK,
     runner,
     autoFallbackOnStall: true,
     intents,
+    settings,
     onCancel: (cohortId: string) => monitor.noteCanceled(cohortId),
     onFinalize: (cohortId: string) => monitor.noteOperatorAction(cohortId, FINALIZE_ACTIVITY_TEXT),
   });
@@ -101,6 +106,7 @@ function lifecycleApp() {
     operatorAuth,
     operatorCohorts,
     monitor,
+    runtimeSettings: settings,
     networkName: ACTIVE_NETWORK,
   });
   return {
@@ -108,6 +114,7 @@ function lifecycleApp() {
     runner,
     monitor,
     operatorCohorts,
+    settings,
     fallbackCalls,
     setPhase: (cohortId: string, phase: string) => staged.set(cohortId, phase),
   };
@@ -426,6 +433,110 @@ describe('POST /v1/operator/cohorts/:id/cancel route semantics (05-01, pinned he
       headers: { cookie },
     });
     expect(second.status).toBe(404);
+
+    runner.stop();
+  });
+});
+
+describe('GET and PUT /v1/operator/settings route semantics (05-07, ADR 0015)', () => {
+  /** PUT a settings body through the real gated route. */
+  function putSettings(
+    app: ReturnType<typeof lifecycleApp>['app'],
+    cookie: string,
+    body: unknown,
+    raw = false,
+  ): Promise<Response> {
+    return app.request('/v1/operator/settings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) },
+      body: raw ? (body as string) : JSON.stringify(body),
+    });
+  }
+
+  it('401s BOTH verbs for an anonymous caller (the gate runs before any handler)', async () => {
+    const { app, runner, settings } = lifecycleApp();
+
+    const read = await app.request('/v1/operator/settings');
+    const write = await putSettings(app, '', { serviceName: 'Pwned' });
+    expect(read.status).toBe(401);
+    expect(write.status).toBe(401);
+    // Nothing was applied: the refused write never reached `applySettings`.
+    expect(settings.serviceName.value).toBe('Acme Aggregation');
+
+    runner.stop();
+  });
+
+  it('serves the full field set with sources for an operator session', async () => {
+    const { app, runner } = lifecycleApp();
+    const cookie = await login(app);
+
+    const res = await app.request('/v1/operator/settings', { headers: { cookie } });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, { value?: unknown; changed: boolean }>;
+    expect(Object.keys(body).sort()).toEqual(
+      [
+        'defaultBeaconType',
+        'defaultDiscoveryWindowMs',
+        'defaultFundingWindowMs',
+        'defaultSize',
+        'defaultThreshold',
+        'serviceName',
+        'termsText',
+      ].sort(),
+    );
+    expect(body.serviceName.value).toBe('Acme Aggregation');
+    expect(body.serviceName.changed).toBe(false);
+
+    runner.stop();
+  });
+
+  it('413s a body over the 4 KiB limit before it is parsed', async () => {
+    const { app, runner, settings } = lifecycleApp();
+    const cookie = await login(app);
+
+    const res = await putSettings(app, cookie, JSON.stringify({ termsText: 'x'.repeat(8 * 1024) }), true);
+    expect(res.status).toBe(413);
+    expect(settings.termsText.value).toBeUndefined();
+
+    runner.stop();
+  });
+
+  it('400s a non-JSON body and an invalid field, carrying the user-facing message', async () => {
+    const { app, runner, settings } = lifecycleApp();
+    const cookie = await login(app);
+
+    const notJson = await putSettings(app, cookie, 'not json at all', true);
+    expect(notJson.status).toBe(400);
+
+    const invalid = await putSettings(app, cookie, { serviceName: 'Renamed', defaultSize: 0 });
+    expect(invalid.status).toBe(400);
+    expect((await invalid.json()) as { error: string }).toEqual({
+      error: 'Cohort size must be at least 1 signer.',
+    });
+    // All-or-nothing: the VALID sibling field in the same body was not applied either.
+    expect(settings.serviceName.value).toBe('Acme Aggregation');
+    expect(settings.defaultSize.value).toBe(2);
+
+    runner.stop();
+  });
+
+  it('200s a valid save and answers with the NEW snapshot', async () => {
+    const { app, runner, settings } = lifecycleApp();
+    const cookie = await login(app);
+
+    const res = await putSettings(app, cookie, {
+      serviceName: 'Acme (maintenance)',
+      defaultSize: 4,
+      defaultThreshold: 3,
+      termsText: 'Be excellent to each other.',
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, { value?: unknown; envDefault?: unknown; changed: boolean }>;
+    expect(body.serviceName.value).toBe('Acme (maintenance)');
+    expect(body.serviceName.envDefault).toBe('Acme Aggregation');
+    expect(body.serviceName.changed).toBe(true);
+    expect(body.defaultSize.value).toBe(4);
+    expect(settings.termsText.value).toBe('Be excellent to each other.');
 
     runner.stop();
   });
