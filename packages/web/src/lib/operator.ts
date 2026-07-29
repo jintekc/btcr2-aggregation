@@ -87,6 +87,22 @@ export interface OperatorCohortDTO {
   state: 'draft' | 'advertised' | 'expired' | 'canceled';
   /** Short human-readable reason, present on `'expired'` and `'canceled'` rows. */
   reason?: string;
+  /**
+   * The operator's EXPLICIT per-draft discovery window in ms (Phase 5 D-11), present only on a
+   * draft row and only when they set one. ABSENT means "this draft uses the service default",
+   * which is exactly what an empty field in the edit form means, so the two agree without a
+   * sentinel value and an empty box is never mistaken for "no window at all".
+   */
+  discoveryWindowMs?: number;
+  /** The operator's explicit per-draft funding window in ms; absent means the service default. */
+  fundingWindowMs?: number;
+  /**
+   * This service's OWN discovery-window default in ms as it stood when the draft was created, so
+   * the `Leave it empty to use this service's default of {n} min.` help can name a real number.
+   */
+  defaultDiscoveryWindowMs?: number;
+  /** This service's own funding-window default in ms at draft time; see {@link defaultDiscoveryWindowMs}. */
+  defaultFundingWindowMs?: number;
 }
 
 /** One open cohort in the public directory (GET /v1/directory, SVC-02/D-14). */
@@ -124,6 +140,28 @@ export interface DraftInput {
   beaconType: OperatorBeaconType;
   size: number;
   threshold: number;
+  /**
+   * OPTIONAL per-cohort discovery window in MILLISECONDS (Phase 5 D-11). The console field is in
+   * minutes and converts on the way out; omitting the key means "use this service's default",
+   * never "no window", which is why an empty field sends nothing rather than a 0.
+   */
+  discoveryWindowMs?: number;
+  /** OPTIONAL per-cohort funding window in ms; omitted means this service's default. */
+  fundingWindowMs?: number;
+}
+
+/**
+ * This service's CURRENT cohort-timing defaults (Phase 5 D-11), served additively on the gated
+ * list read. A DRAFT row carries its own captured defaults (what that draft will actually use);
+ * this is what a cohort created RIGHT NOW would inherit, which is the only honest source for the
+ * create form's `Leave it empty to use this service's default of {n} min.` help.
+ *
+ * Both keys are optional: a service that sets no window default serves neither, and the help then
+ * omits the number rather than inventing one.
+ */
+export interface CohortDefaultsDTO {
+  discoveryWindowMs?: number;
+  fundingWindowMs?: number;
 }
 
 /** Discriminated create result so the store can surface a 400's specific message. */
@@ -146,6 +184,59 @@ export async function createDraft(baseUrl: string, input: DraftInput): Promise<C
     return { ok: true, dto: (await res.json()) as OperatorCohortDTO };
   }
   let error = 'Could not create the cohort. Try again.';
+  try {
+    const body = (await res.json()) as { error?: string };
+    if (typeof body.error === 'string' && body.error) {
+      error = body.error;
+    }
+  } catch {
+    // Non-JSON body (e.g. a 413 text) falls back to the generic message above.
+  }
+  return { ok: false, error };
+}
+
+/**
+ * The result of editing a draft in place (SVC-04 criterion 3, Phase 5 D-10). It mirrors
+ * {@link CreateDraftResult} exactly, for the same reason: the server's own validation copy is the
+ * backstop the inline error slot renders VERBATIM, so a rule the client does not mirror yet still
+ * reaches the operator in the service's words rather than as a generic "that didn't work".
+ *
+ * It carries `unauthorized` as a third member, which the create result does not need: an edit is
+ * reachable from a console the operator may have left open past their session, so a 401 must take
+ * the one honest re-login path rather than being rendered as a validation failure.
+ */
+export type UpdateDraftResult =
+  | { ok: true; dto: OperatorCohortDTO }
+  | { ok: false; error: string }
+  | { ok: false; unauthorized: true };
+
+/**
+ * PATCH a draft's shape in place. On 200 returns the updated DTO; on a 400 surfaces the server's
+ * specific message verbatim; on a 401 reports the session expiry; on anything else (notably the
+ * 404 a non-draft id earns, D-13) falls back to the generic message.
+ */
+export async function updateDraft(
+  baseUrl: string,
+  id: string,
+  input: DraftInput,
+): Promise<UpdateDraftResult> {
+  // Deliberately NOT try/caught here, exactly like {@link createDraft}: a network-level failure
+  // throws and the store's own catch renders its single shared unreachable line, so that copy has
+  // one definition rather than one per client function.
+  const res = await fetch(endpoint(baseUrl, `/v1/operator/cohorts/${encodeURIComponent(id)}`), {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify(input),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+  if (res.status === 401) {
+    return { ok: false, unauthorized: true };
+  }
+  if (res.ok) {
+    return { ok: true, dto: (await res.json()) as OperatorCohortDTO };
+  }
+  let error = 'Could not save the changes. Try again.';
   try {
     const body = (await res.json()) as { error?: string };
     if (typeof body.error === 'string' && body.error) {
@@ -428,6 +519,12 @@ export interface ServiceHealthDTO {
 export interface OperatorCohortsDTO {
   cohorts: OperatorCohortDTO[];
   monitoring?: { rows: CohortSummaryDTO[]; metrics: ServiceMetricsDTO; health?: ServiceHealthDTO };
+  /**
+   * This service's current cohort-timing defaults (D-11). Optional on the wire for the same reason
+   * `monitoring.health` is: a service built before the key existed serves the read without it, and
+   * the create form must then omit the default figure rather than presume one.
+   */
+  defaults?: CohortDefaultsDTO;
 }
 
 /**

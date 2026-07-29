@@ -2,17 +2,9 @@ import { useState } from 'react';
 import { Badge, Button, Card, Field, Input, Select, SectionTitle } from '../../ui/primitives';
 import { useOperator } from '../../stores/operator';
 import { useParticipant } from '../../stores/participant';
+import { AdvancedTiming, BEACON_OPTIONS } from './DraftEditForm';
+import { parseWindow, validateCohortForm, windowKeys } from '../../lib/cohort-form';
 import type { OperatorBeaconType } from '../../lib/operator';
-
-/** Exact UI-SPEC validation string; the server returns the same copy on its 400. */
-const SIZE_ERROR = 'Cohort size must be at least 1 signer.';
-/** Exact signing-threshold validation string (byte-identical to the server, Decision 3). */
-const THRESHOLD_ERROR = 'Signing threshold must be a whole number between 1 and the cohort size.';
-
-const BEACON_OPTIONS: { value: OperatorBeaconType; label: string }[] = [
-  { value: 'CASBeacon', label: 'CAS' },
-  { value: 'SMTBeacon', label: 'SMT' },
-];
 
 /**
  * Create-a-cohort form (SVC-01, UI-SPEC, G-02-1). An authenticated operator picks a beacon
@@ -23,36 +15,47 @@ const BEACON_OPTIONS: { value: OperatorBeaconType; label: string }[] = [
  * validation surfaces the exact UI-SPEC strings before the round-trip; the server's 400
  * message (identical copy) is rendered as the `formError` banner as a backstop. The Create
  * button is a non-destructive ghost - accent stays reserved for Advertise.
+ *
+ * Phase 5 (D-11) adds the optional `Advanced timing` expander, shared verbatim with the draft-edit
+ * form. Its two windows are optional: an empty field means "use this service's default", so the
+ * common case is unchanged and an operator who never opens the expander creates exactly the cohort
+ * they always did.
  */
 export function CreateCohortForm({ baseUrl }: { baseUrl: string }) {
   const activeNetwork = useParticipant((s) => s.network);
   const createStatus = useOperator((s) => s.createStatus);
   const formError = useOperator((s) => s.formError);
   const submitDraft = useOperator((s) => s.submitDraft);
+  const mode = useOperator((s) => s.health?.mode);
+  // This service's CURRENT defaults (D-11). A cohort that does not exist yet has no captured
+  // defaults of its own, so the help names what a draft created right now would inherit.
+  const defaults = useOperator((s) => s.defaults);
 
   const [beaconType, setBeaconType] = useState<OperatorBeaconType>('CASBeacon');
   const [sizeText, setSizeText] = useState('2');
   // The signing threshold k defaults to the size (k = n, unanimous) until the operator lowers it.
   const [thresholdText, setThresholdText] = useState('2');
+  // Both timing fields start EMPTY, which is what "use this service's default" looks like.
+  const [discoveryText, setDiscoveryText] = useState('');
+  const [fundingText, setFundingText] = useState('');
   const [clientError, setClientError] = useState<string | undefined>(undefined);
 
   const creating = createStatus === 'creating';
 
   function submit() {
+    const discovery = parseWindow(discoveryText);
+    const funding = parseWindow(fundingText);
     const size = Number(sizeText);
-    // n = seats = min === max === n on the server, so the client only guards the floor.
-    if (!Number.isInteger(size) || size < 1) {
-      setClientError(SIZE_ERROR);
-      return;
-    }
-    // k = the signing threshold, a whole number in [1, size]; mirror the server guard exactly.
     const threshold = Number(thresholdText);
-    if (!Number.isInteger(threshold) || threshold < 1 || threshold > size) {
-      setClientError(THRESHOLD_ERROR);
+    // ONE shared validator with the draft-edit form (D-10): a rule enforced on create but not on
+    // edit is exactly the drift this plan exists to prevent, and two copies is how it happens.
+    const problem = validateCohortForm({ size, threshold, discovery, funding });
+    if (problem) {
+      setClientError(problem);
       return;
     }
     setClientError(undefined);
-    void submitDraft(baseUrl, { beaconType, size, threshold });
+    void submitDraft(baseUrl, { beaconType, size, threshold, ...windowKeys(discovery, funding) });
   }
 
   // Show the client validation message if present, else the server's 400 message.
@@ -110,6 +113,18 @@ export function CreateCohortForm({ baseUrl }: { baseUrl: string }) {
             cohort starts only once every seat is filled.
           </p>
         </Field>
+
+        <AdvancedTiming
+          discoveryText={discoveryText}
+          onDiscoveryText={setDiscoveryText}
+          fundingText={fundingText}
+          onFundingText={setFundingText}
+          defaultDiscoveryWindowMs={defaults?.discoveryWindowMs}
+          defaultFundingWindowMs={defaults?.fundingWindowMs}
+          mode={mode}
+          disabled={creating}
+          idPrefix="create"
+        />
 
         {shownError ? (
           <p className="rounded-lg border border-bad/40 bg-bad/10 px-3 py-2 text-sm text-bad">{shownError}</p>

@@ -467,11 +467,35 @@ export function createHonoApp(
       // even on a service broadcasting real Bitcoin transactions. It rides the read the console
       // already polls rather than a second route, so the mode chip refreshes on the same tick as
       // the rows/metrics and no new gated surface is introduced.
+      //
+      // `defaults` is a second ADDITIVE key (Phase 5 D-11): this service's CURRENT cohort-timing
+      // defaults, so the create form's `Leave it empty to use this service's default of {n} min.`
+      // help can name a real number. A draft row carries its OWN captured defaults (the values as
+      // they stood when it was created, which is what that draft will actually use), but a cohort
+      // that does not exist yet has no row to read, and inventing the number or borrowing another
+      // draft's stale capture would both be claims this service has not made.
+      //
+      // Read from the holder PER REQUEST, never captured into this closure: that is the D-16
+      // lesson the service name learned the hard way, and 05-07 makes these values editable at
+      // runtime, so a boot-time capture would serve the old number forever.
       app.get('/v1/operator/cohorts', (c) =>
         c.json({
           cohorts: operatorCohorts.listCohorts(),
           monitoring: monitor
             ? { rows: monitor.summary(), metrics: monitor.serviceMetrics(), health: monitor.serviceHealth() }
+            : undefined,
+          defaults: runtimeSettings
+            ? {
+                // Spread so an unset default is an ABSENT key rather than an explicit undefined,
+                // keeping the wire shape additive and letting the client tell "no default" apart
+                // from "a default of nothing".
+                ...(runtimeSettings.defaultDiscoveryWindowMs.value !== undefined
+                  ? { discoveryWindowMs: runtimeSettings.defaultDiscoveryWindowMs.value }
+                  : {}),
+                ...(runtimeSettings.defaultFundingWindowMs.value !== undefined
+                  ? { fundingWindowMs: runtimeSettings.defaultFundingWindowMs.value }
+                  : {}),
+              }
             : undefined,
         }),
       );

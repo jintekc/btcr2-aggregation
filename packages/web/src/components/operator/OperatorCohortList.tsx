@@ -8,7 +8,8 @@ import {
   type GroupKey,
   type RenderRow,
 } from '../../lib/operator-rows';
-import { ADVERTISE_DISABLED_REASON, useOperator } from '../../stores/operator';
+import { ADVERTISE_DISABLED_REASON, EDIT_UNAVAILABLE_REASON, useOperator } from '../../stores/operator';
+import { DraftEditForm } from './DraftEditForm';
 import type { OperatorCohortDTO, ServiceMetricsDTO } from '../../lib/operator';
 
 /** Friendly beacon-type label (matches the create form's CAS/SMT options). */
@@ -119,10 +120,15 @@ function CohortRow({
   // discover the refusal by being refused. Every other row control stays enabled: pause is drain
   // mode, and a paused service can still discard drafts, cancel, finalize, and be monitored.
   const advertisingPaused = useOperator((s) => s.health?.paused === true);
+  const beginEdit = useOperator((s) => s.beginEdit);
+  const editingDraftId = useOperator((s) => s.editingDraftId);
   const [confirming, setConfirming] = useState(false);
 
   const { id, chip, cohort, row } = entry;
   const isDraft = cohort?.state === 'draft';
+  // Exactly this row is in edit mode. While it is, the row's action group is replaced by the form
+  // so the operator cannot advertise or discard the very draft they are mid-way through reshaping.
+  const isEditing = editingDraftId === id;
   const isExpired = cohort?.state === 'expired';
   const isCanceled = chip === 'canceled';
   const isAdvertised = cohort?.state === 'advertised';
@@ -158,7 +164,7 @@ function CohortRow({
             <span className="text-xs text-faint">{cosignCaption(cohort)}</span>
           ) : null}
         </div>
-        {isDraft && !confirming ? (
+        {isDraft && !confirming && !isEditing ? (
           <div className="flex flex-wrap items-center gap-2">
             <Button
               variant="primary"
@@ -170,12 +176,24 @@ function CohortRow({
             {/* The reason beside the disabled control: a disabled button with no explanation is
                 indistinguishable from a broken one. */}
             {advertisingPaused ? <span className="text-sm text-muted">{ADVERTISE_DISABLED_REASON}</span> : null}
+            {/* Edit stays ENABLED while paused, like Discard: pause gates advertising only (D-06),
+                and reshaping a draft that is not being offered to anyone is the one moment when
+                editing is unambiguously safe. Ghost, never accent: accent stays with Advertise. */}
+            <Button variant="ghost" onClick={() => beginEdit(id)}>
+              Edit draft
+            </Button>
             {/* Discard stays ENABLED while paused: pause gates advertising only (D-06). */}
             <Button variant="danger" onClick={() => setConfirming(true)}>
               Discard draft
             </Button>
           </div>
         ) : null}
+        {/* The next-cohort-only rule stated where the operator looks for the control (D-13), rather
+            than leaving them to wonder whether Edit is missing because of a bug or a permission.
+            Rendered on ADVERTISED rows only, where the sentence is literally true: an expired or
+            canceled cohort is not "already advertised" in the present tense, and its own state chip
+            plus reason line already say why it is settled. */}
+        {isAdvertised ? <span className="text-sm text-muted">{EDIT_UNAVAILABLE_REASON}</span> : null}
         {isExpired ? (
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -205,6 +223,11 @@ function CohortRow({
       ) : null}
 
       <CopyField label={isDraft ? 'draft id' : 'cohort id'} value={id} />
+
+      {/* The edit form mounts INSIDE the row it is reshaping (UI-SPEC E6), so the chip, the seats
+          and the draft id stay on screen while the operator changes them. `cohort` is non-undefined
+          whenever `isDraft` holds, but the guard keeps the prop honest for a monitoring-only row. */}
+      {isEditing && isDraft && cohort ? <DraftEditForm baseUrl={baseUrl} draft={cohort} /> : null}
 
       {confirming ? (
         <div className="space-y-2 rounded-lg border border-bad/40 bg-bad/10 px-3 py-2 text-sm text-bad">

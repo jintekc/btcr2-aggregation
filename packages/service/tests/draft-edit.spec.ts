@@ -4,7 +4,7 @@ import { createIdentity, resolveNetwork } from '@btcr2-aggregation/shared';
 import { describe, expect, it } from 'vitest';
 import { createCohortIntents } from '../src/cohort-intent.js';
 import { createHonoApp } from '../src/hono-adapter.js';
-import { createRuntimeSettings } from '../src/runtime-settings.js';
+import { createRuntimeSettings, type RuntimeSettingsSeed } from '../src/runtime-settings.js';
 import { createLoginThrottle, createSessionStore, type OperatorAuthConfig } from '../src/operator-auth.js';
 import {
   createOperatorCohorts,
@@ -41,7 +41,7 @@ const ACTIVE_NETWORK = 'signet';
  * (comparing thrown Errors is only possible below the HTTP boundary, where a thrown message has
  * already been flattened into a 400 body).
  */
-function draftEditApp(autoFallbackOnStall = true) {
+function draftEditApp(autoFallbackOnStall = true, seed: RuntimeSettingsSeed = {}) {
   const identity = createIdentity(resolveNetwork(ACTIVE_NETWORK));
   const transport = new HttpServerTransport({ resolveSenderPk: resolveBtcr2SenderPk, heartbeatIntervalMs: 0 });
   transport.registerActor(identity.did, identity.keys);
@@ -62,7 +62,7 @@ function draftEditApp(autoFallbackOnStall = true) {
     cookieSecure: false,
     sessionTtlMs: 60_000,
   };
-  const settings = createRuntimeSettings({});
+  const settings = createRuntimeSettings(seed);
   const operatorCohorts = createOperatorCohorts({
     activeNetwork: ACTIVE_NETWORK,
     runner,
@@ -76,7 +76,7 @@ function draftEditApp(autoFallbackOnStall = true) {
     runtimeSettings: settings,
     networkName: ACTIVE_NETWORK,
   });
-  return { app, runner, operatorCohorts };
+  return { app, runner, operatorCohorts, settings };
 }
 
 /** POST a login and return the bare `operator_session=<id>` cookie for gated requests. */
@@ -354,6 +354,62 @@ describe('PATCH /v1/operator/cohorts/:id', () => {
     const oversized = { beaconType: 'CASBeacon', size: 2, padding: 'x'.repeat(5 * 1024) };
     const res = await patchDraft(app, cookie, draft.draftId, oversized);
     expect(res.status).toBe(413);
+    runner.stop();
+  });
+});
+
+/**
+ * The service's OWN current window defaults, served additively on the gated list read (D-11).
+ *
+ * A DRAFT row carries the defaults it captured at creation, which is what that draft will really
+ * use. But the CREATE form shapes a cohort that does not exist yet, so it has no row to read, and
+ * its `Leave it empty to use this service's default of {n} min.` help would otherwise have to
+ * invent a number or borrow another draft's stale capture. Both would be claims this service never
+ * made, so the service states its current values instead.
+ */
+describe('GET /v1/operator/cohorts serves this service current window defaults', () => {
+  it('reports both defaults when the service was seeded with them', async () => {
+    const { app, runner } = draftEditApp(true, {
+      defaultDiscoveryWindowMs: 30 * 60_000,
+      defaultFundingWindowMs: 20 * 60_000,
+    });
+    const cookie = await login(app);
+    const res = await app.request('/v1/operator/cohorts', { headers: { cookie } });
+    const body = (await res.json()) as { defaults?: { discoveryWindowMs?: number; fundingWindowMs?: number } };
+    expect(body.defaults).toEqual({ discoveryWindowMs: 30 * 60_000, fundingWindowMs: 20 * 60_000 });
+    runner.stop();
+  });
+
+  it('OMITS a default the service does not have, rather than serving a zero or a null', () => {
+    // An absent key is what lets the console tell "no default" apart from "a default of nothing",
+    // so the help omits the figure instead of promising a 0 min window.
+    const { app, runner } = draftEditApp(true, { defaultDiscoveryWindowMs: 30 * 60_000 });
+    return login(app)
+      .then((cookie) => app.request('/v1/operator/cohorts', { headers: { cookie } }))
+      .then(async (res) => {
+        const body = (await res.json()) as { defaults?: Record<string, number> };
+        expect(body.defaults).toEqual({ discoveryWindowMs: 30 * 60_000 });
+        expect(body.defaults && 'fundingWindowMs' in body.defaults).toBe(false);
+        runner.stop();
+      });
+  });
+
+  it('reads the holder PER REQUEST, so a runtime change is reflected on the very next read (D-16)', async () => {
+    // The service-name lesson generalized: a value captured into the app closure at construction
+    // would serve the boot number forever, and 05-07 makes these editable at runtime. Asserting
+    // this needs TWO reads with a real mutation between them; a single read would pass just as
+    // happily against a boot-time capture, which is the bug under test.
+    const { app, runner, settings } = draftEditApp(true, { defaultDiscoveryWindowMs: 30 * 60_000 });
+    const cookie = await login(app);
+    const read = async () =>
+      ((await (await app.request('/v1/operator/cohorts', { headers: { cookie } })).json()) as {
+        defaults?: { discoveryWindowMs?: number };
+      }).defaults?.discoveryWindowMs;
+
+    expect(await read()).toBe(30 * 60_000);
+    expect(settings.applySettings({ defaultDiscoveryWindowMs: 45 * 60_000 })).toBeUndefined();
+    expect(await read()).toBe(45 * 60_000);
+
     runner.stop();
   });
 });

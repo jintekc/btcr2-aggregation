@@ -6,6 +6,7 @@ import {
   readvertise as apiReadvertise,
   cancelCohort as apiCancelCohort,
   createDraft as apiCreateDraft,
+  updateDraft as apiUpdateDraft,
   discardDraft as apiDiscardDraft,
   downloadExport as apiDownloadExport,
   finalizeCohort as apiFinalizeCohort,
@@ -18,6 +19,7 @@ import {
   type CohortSummaryDTO,
   type DraftInput,
   type OperatorCohortDTO,
+  type CohortDefaultsDTO,
   type ServiceHealthDTO,
   type ServiceMetricsDTO,
 } from '../lib/operator';
@@ -40,6 +42,25 @@ export type CreateStatus = 'idle' | 'creating' | 'error';
 
 /** Advertise-action lifecycle (per draft row). */
 export type AdvertiseStatus = 'idle' | 'advertising' | 'error';
+
+/** Draft-edit lifecycle; mirrors {@link CreateStatus} because the two forms behave identically. */
+export type EditStatus = 'idle' | 'saving' | 'error';
+
+/**
+ * The next-cohort-only line (D-13), rendered on the draft-edit form. It is the human half of a
+ * rule the SERVER enforces (`updateDraft` refuses anything that is not a draft): the operator is
+ * told up front that an advertised cohort keeps its shape, rather than discovering it by being
+ * refused. 05-UI-SPEC verbatim, em-dash-free.
+ */
+export const NEXT_COHORT_ONLY_LINE =
+  'Applies to new cohorts only. A cohort that is already advertised keeps the shape it was advertised with.';
+
+/**
+ * The reason a NON-draft row states in place of an edit action (05-UI-SPEC). Stating it beats
+ * hiding the action silently: an operator who edited one row and cannot find the control on the
+ * next needs to know it is the cohort's state, not a bug or a missing permission.
+ */
+export const EDIT_UNAVAILABLE_REASON = 'Only a draft can be edited. This cohort is already advertised.';
 
 /** Transient advertise success copy (UI-SPEC verbatim, em-dash-free). */
 const ADVERTISED_OK = 'Advertised. Now joinable in the directory.';
@@ -172,6 +193,26 @@ interface OperatorState {
   createStatus: CreateStatus;
   /** Server (or client) validation message for the create form, when present. */
   formError?: string;
+  /**
+   * The draft id currently being EDITED in place (SVC-04 criterion 3, D-10), or undefined when no
+   * row is in edit mode. Exactly one row can be editing at a time: two open forms would let the
+   * operator save one shape while looking at another.
+   */
+  editingDraftId?: string;
+  /** Draft-edit submit status; drives the `Saving…` label and disables the form's fields. */
+  editStatus: EditStatus;
+  /**
+   * This service's current cohort-timing defaults (D-11), from the gated list read. Undefined
+   * until a read lands (or on a service that serves none), in which case the create form's timing
+   * help omits the default figure instead of claiming one.
+   */
+  defaults?: CohortDefaultsDTO;
+  /**
+   * Server (or client) validation message for the draft-edit form. Separate from
+   * {@link OperatorState.formError} for the 05-02 reason: the create form and an open edit form are
+   * on screen at the same time, so one shared field would render the same message under both.
+   */
+  editError?: string;
   /** Advertise-action status; drives the row's `Advertising…` label. */
   advertiseStatus: AdvertiseStatus;
   /** The draft id currently being advertised, so only that row shows the spinner. */
@@ -247,6 +288,24 @@ interface OperatorState {
    * unchanged - size = n seats, threshold = k the signing floor (G-02-1).
    */
   submitDraft: (baseUrl: string, input: DraftInput) => Promise<void>;
+  /**
+   * Open the in-place edit form for one draft, clearing any stale message from a previous edit so
+   * a fresh form never opens carrying someone else's error.
+   */
+  beginEdit: (id: string) => void;
+  /**
+   * Close the edit form, discarding the unsaved edit. It NEVER deletes anything: discarding a
+   * draft stays the shipped `Discard draft` danger action, and conflating the two would put a
+   * destructive outcome behind a button whose word is `Cancel`.
+   */
+  cancelEdit: () => void;
+  /**
+   * Save an in-place draft edit (D-10). Follows the `submitDraft` idiom: a 401 takes the one
+   * shared session-expiry path, the server's own 400 message lands in {@link editError} so the
+   * inline slot renders the service's words verbatim, and success closes the form and re-reads the
+   * list so the row renders what the SERVICE now holds rather than what the browser sent.
+   */
+  saveDraftEdit: (baseUrl: string, id: string, input: DraftInput) => Promise<void>;
   /** Advertise a draft; on success show the transient confirmation and refresh the list. */
   advertise: (baseUrl: string, id: string) => Promise<void>;
   /** Re-advertise an expired cohort; on success show the confirmation and refresh the list. */
@@ -366,6 +425,10 @@ export const useOperator = create<OperatorState>((set, get) => ({
   listStale: false,
   createStatus: 'idle',
   formError: undefined,
+  editingDraftId: undefined,
+  editStatus: 'idle',
+  editError: undefined,
+  defaults: undefined,
   advertiseStatus: 'idle',
   advertisingId: undefined,
   advertiseMessage: undefined,
@@ -427,9 +490,17 @@ export const useOperator = create<OperatorState>((set, get) => ({
         // Drop the served mode on sign-out: the next session must re-read it rather than render
         // a stale mode claim against a service that may have been restarted into another mode.
         health: undefined,
+        // Same reasoning for the timing defaults: they are this service's current values, and the
+        // service may be restarted into different ones before the next sign-in.
+        defaults: undefined,
         listStale: false,
         formError: undefined,
         createStatus: 'idle',
+        // Close any open edit form with the rest of the gated state: an unsaved edit belongs to
+        // the session that opened it, and the next sign-in must start from what the service holds.
+        editingDraftId: undefined,
+        editStatus: 'idle',
+        editError: undefined,
         advertiseStatus: 'idle',
         advertisingId: undefined,
         advertiseMessage: undefined,
@@ -457,8 +528,12 @@ export const useOperator = create<OperatorState>((set, get) => ({
       rows: [],
       metrics: undefined,
       health: undefined,
+      defaults: undefined,
       listStale: false,
       actionError: undefined,
+      editingDraftId: undefined,
+      editStatus: 'idle',
+      editError: undefined,
       pauseBusy: false,
       pauseMessage: undefined,
       pauseError: undefined,
@@ -498,6 +573,10 @@ export const useOperator = create<OperatorState>((set, get) => ({
       // service serves no health (fail-closed boot / an older service): the strip then says
       // "Checking mode" instead of claiming a mode the service never reported.
       health: result.value.monitoring?.health,
+      // This service's CURRENT window defaults (D-11), for the create form's help. Left undefined
+      // when the service serves none: the caption then omits the figure rather than naming one
+      // this service never reported.
+      defaults: result.value.defaults,
       listStale: false,
       lastUpdated: Date.now(),
     });
@@ -515,6 +594,40 @@ export const useOperator = create<OperatorState>((set, get) => ({
       }
     } catch {
       set({ createStatus: 'error', formError: UNREACHABLE });
+    }
+  },
+
+  beginEdit(id) {
+    set({ editingDraftId: id, editStatus: 'idle', editError: undefined });
+  },
+
+  cancelEdit() {
+    // Nothing is deleted and nothing is sent: the draft on the service is untouched, so closing
+    // the form is the whole action (UI-SPEC E6 partial).
+    set({ editingDraftId: undefined, editStatus: 'idle', editError: undefined });
+  },
+
+  async saveDraftEdit(baseUrl, id, input) {
+    set({ editStatus: 'saving', editError: undefined });
+    try {
+      const result = await apiUpdateDraft(baseUrl, id, input);
+      if (result.ok) {
+        // Close the form and RE-READ: the row must render what the service now holds, not what
+        // this browser sent, so a value the server normalized is never displayed as the operator
+        // typed it.
+        set({ editingDraftId: undefined, editStatus: 'idle', editError: undefined });
+        await get().refreshCohorts(baseUrl);
+        return;
+      }
+      if ('unauthorized' in result) {
+        // The ONE shared session-expiry path (D-16); it clears the edit slice itself.
+        get().expireSession();
+        return;
+      }
+      // The service's own message, rendered verbatim in the inline slot the create form uses.
+      set({ editStatus: 'error', editError: result.error });
+    } catch {
+      set({ editStatus: 'error', editError: UNREACHABLE });
     }
   },
 
