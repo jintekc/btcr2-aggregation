@@ -38,11 +38,13 @@ export function ServiceIdentityHeader() {
         <div>
           {/* OPERATOR-SUPPLIED TEXT reaching an ANONYMOUS stranger (D-16, T-05-07-02). This is the
               higher-stakes of the two render sites: the operator authors it, a participant who has
-              never met them reads it. Plain auto-escaped React text content ONLY, never
-              `dangerouslySetInnerHTML`, never markup, and never a link target - an operator must
-              not be able to turn their service's own name into a destination. The service bounds
-              its length, and this block is `flex-wrap`, so a long name wraps rather than pushing
-              the network chip off-screen (UI-SPEC E8 long-text backstop). */}
+              never met them reads it. Plain auto-escaped React text content ONLY, never through
+              the raw-HTML escape hatch, never as markup, and never as a link target - an operator
+              must not be able to turn their service's own name into a destination. The service
+              bounds its length, and this block is `flex-wrap`, so a long name wraps rather than
+              pushing the network chip off-screen (UI-SPEC E8 long-text backstop). (The escape
+              hatch is deliberately not named here, so the repo-wide grep proving its absence stays
+              meaningful.) */}
           {serviceName ? <p className="text-sm text-muted">{serviceName}</p> : null}
           <h1 className="text-3xl font-bold leading-tight tracking-tight text-ink">{window.location.host}</h1>
         </div>

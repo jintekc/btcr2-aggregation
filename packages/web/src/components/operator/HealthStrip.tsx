@@ -81,11 +81,13 @@ export function HealthStrip() {
       <Badge tone="neutral">{mode ? MODE_LABEL[mode] : 'Checking mode'}</Badge>
 
       {/* OPERATOR-SUPPLIED TEXT (D-16/D-51, T-05-07-02). Rendered as plain auto-escaped React text
-          content ONLY: never `dangerouslySetInnerHTML`, never markup, and never a link target or
-          any other attribute an operator-authored string could steer. It is now runtime-EDITABLE
-          from the settings view, so this constraint matters more than it did when the value was a
-          boot constant: the same string also renders to anonymous participants on the public
-          directory header, under the identical rule. */}
+          content ONLY: never through the raw-HTML escape hatch, never as markup, and never as a
+          link target or any other attribute an operator-authored string could steer. It is now
+          runtime-EDITABLE from the settings view, so this constraint matters more than it did when
+          the value was a boot constant: the same string also renders to anonymous participants on
+          the public directory header, under the identical rule. (This comment deliberately does
+          not spell the escape hatch's name, so the repo-wide grep that proves its absence stays
+          meaningful.) */}
       {serviceName ? <span className="text-sm text-ink">{serviceName}</span> : null}
 
       <span
