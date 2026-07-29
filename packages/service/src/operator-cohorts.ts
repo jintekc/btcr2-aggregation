@@ -222,8 +222,15 @@ export const ADVERTISING_PAUSED_REASON = 'advertising is paused on this service'
  * (Decision 1). Capacity is never a separate field: it always equals n.
  */
 export interface DraftInput {
-  beaconType: string;
-  size: number;
+  /**
+   * OPTIONAL on the CREATE path only: an absent beacon type takes this service's current default
+   * (D-13, read once at draft creation). Still required in substance on the EDIT path, where an
+   * absent value is refused by {@link validateDraft} exactly as it always was, because an edit
+   * reshapes a draft that already has a shape rather than inheriting a fresh one.
+   */
+  beaconType?: string;
+  /** OPTIONAL on the CREATE path only; see {@link beaconType}. */
+  size?: number;
   threshold?: number;
   /**
    * OPTIONAL per-draft discovery window in ms (D-11): how long this cohort stays advertised before
@@ -604,7 +611,11 @@ function validateDraft(
   if (typeof beaconType !== 'string' || !KNOWN_BEACON_TYPES.has(beaconType)) {
     throw new Error(`operator: unknown beacon type "${String(beaconType)}" (expected CASBeacon or SMTBeacon)`);
   }
-  if (!Number.isInteger(size) || size < 1) {
+  // `typeof size !== 'number'` first so the ABSENT case (a create body that supplied no shape and
+  // reached here without the service defaults filled in, or any untrusted body) is refused by the
+  // same guard and narrows the type for everything below. `Number.isInteger` alone already refused
+  // a string at runtime; it just does not narrow.
+  if (typeof size !== 'number' || !Number.isInteger(size) || size < 1) {
     throw new Error(SIZE_ERROR);
   }
   // k defaults to n: an omitted OR explicit-null threshold means the honest n-of-n default.
@@ -995,6 +1006,40 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
    * draft's shape stable: an operator who changes the service default later has changed what the
    * NEXT draft starts from, not what an existing draft or an advertised cohort will do.
    */
+  /**
+   * Fill a CREATE body's absent shape fields from this service's current defaults, reading the
+   * holder EXACTLY ONCE per call and never again (D-13, RESEARCH Pattern 5). Everything the
+   * operator actually supplied is passed through untouched, so an explicit shape always wins.
+   *
+   * This is the whole read-once rule in one place. The resolved values go straight into the draft's
+   * OWN {@link CohortConfig} and DTO below, and nothing downstream ever consults the holder again:
+   * not at advertise, not during the cohort's life. That is what makes a settings change safe. An
+   * operator who raises the default size has changed what the NEXT cohort starts from, not the
+   * shape of a draft they already reviewed or a cohort strangers have already joined.
+   *
+   * n and k are resolved as a PAIR, never independently. k is only meaningful relative to n, so a
+   * default k taken against an operator-SUPPLIED n would silently reshape a cohort they described:
+   * a service defaulting to 2-of-2 would quietly turn their 5-seat request into 2-of-5. When n is
+   * supplied and k is not, k therefore stays at the shipped `k = n` default (Decision 1) rather
+   * than borrowing the service's.
+   *
+   * Deliberately NOT applied on the edit path: `updateDraft` reshapes a draft that already has a
+   * shape, so an absent field there is a malformed body, not an invitation to inherit.
+   */
+  function withServiceDefaults(input: DraftInput): DraftInput {
+    const settings = opts.settings;
+    if (!settings) {
+      return input;
+    }
+    const sizeSupplied = input.size !== undefined && input.size !== null;
+    return {
+      ...input,
+      beaconType: input.beaconType ?? settings.defaultBeaconType.value,
+      size: sizeSupplied ? input.size : settings.defaultSize.value,
+      threshold: input.threshold ?? (sizeSupplied ? undefined : settings.defaultThreshold.value),
+    };
+  }
+
   function currentDefaults(): CohortWindows {
     const discoveryWindowMs = opts.settings?.defaultDiscoveryWindowMs.value;
     const fundingWindowMs = opts.settings?.defaultFundingWindowMs.value;
@@ -1012,7 +1057,10 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
         threshold: k,
         discoveryWindowMs,
         fundingWindowMs,
-      } = validateDraft(input, autoFallbackOnStall, opts.cohortTtlMs);
+        // The ONE read of this service's shape defaults (D-13). See `withServiceDefaults`: the
+        // resolved values land in this draft's own config below and the holder is never consulted
+        // for this cohort again.
+      } = validateDraft(withServiceDefaults(input), autoFallbackOnStall, opts.cohortTtlMs);
       // Build on the SERVICE active network (D-10). `minParticipants` is the n-of-n seat
       // count; pin `maxParticipants` = the SAME size so min === max === n VERBATIM (T-KOFN-04,
       // no unfillable seat, the cohort locks at n). Pass k as the 5th `buildCohortConfig` arg

@@ -401,6 +401,38 @@ export interface CreateServiceOptions {
    */
   serviceName?: string;
   /**
+   * Boot seeds for this service's runtime SETTINGS holder (SVC-04 criterion 3 / SVC-05,
+   * D-10/D-12/D-19), each resolved from its own environment variable in
+   * {@link file://./demo-server.ts}: `DEFAULT_BEACON_TYPE`, `DEFAULT_SIZE`, `DEFAULT_THRESHOLD`,
+   * `DEFAULT_DISCOVERY_WINDOW_MS`, `DEFAULT_FUNDING_WINDOW_MS`, `TERMS_TEXT`.
+   *
+   * Each is an explicit OVERRIDE of the value the holder would otherwise derive from this call's
+   * cohort config and timing options, which stays the fallback so every existing caller is
+   * unchanged. They exist because the console now edits these at runtime: an operator who wants a
+   * different starting shape needs somewhere to say so at boot that is not "reshape the runner's
+   * default cohort config", which means something else entirely.
+   *
+   * None of them is ever re-read once a draft exists (D-13): `createDraft` reads the holder once,
+   * into that draft's own config, and nothing consults it again for that cohort.
+   */
+  defaultBeaconType?: BeaconType;
+  /** Cohort size n a new draft starts from; falls back to `config.minParticipants`. */
+  defaultSize?: number;
+  /** Signing threshold k a new draft starts from; falls back to `config.fallbackThreshold`. */
+  defaultThreshold?: number;
+  /** Discovery window a new draft starts from, in ms; falls back to {@link cohortTtlMs}. */
+  defaultDiscoveryWindowMs?: number;
+  /** Funding window a new draft starts from, in ms; falls back to {@link fundingWindowMs}. */
+  defaultFundingWindowMs?: number;
+  /**
+   * Participation terms a participant is asked to accept before joining (SVC-05, D-19; env
+   * `TERMS_TEXT`). Empty or unset means the join flow has NO terms step at all, rather than an
+   * empty one. Served additively on the anonymous `GET /v1/config` because the participant who
+   * must accept them has no session; rendered as plain auto-escaped text, never markup and never
+   * a link target (T-05-07-02).
+   */
+  termsText?: string;
+  /**
    * Operator console password (HOST-01, ADR 0015). When set, this service mounts the
    * operator surface: `POST /v1/operator/login`, the session guard on
    * `/v1/operator/*`, `POST /v1/operator/logout`, `GET /v1/operator/session`, and the
@@ -545,13 +577,21 @@ export function createService(opts: CreateServiceOptions): Service {
   // environment - so there is no second env-resolution path and no new env var here. It backs
   // the advertising pause gate, the `paused` bit on the public status read, and the per-request
   // service name on `GET /v1/config`; later plans populate the remaining fields' consumers.
+  // Each shape/timing seed takes its OWN option when the operator set one (the `DEFAULT_*` env
+  // vars resolved in demo-server.ts), else falls back to the value derived from this call's cohort
+  // config and timing options, so every existing caller boots byte-identically.
   const runtimeSettings = createRuntimeSettings({
     serviceName: opts.serviceName,
-    defaultBeaconType: opts.config.beaconType as BeaconType,
-    defaultSize: opts.config.minParticipants,
-    defaultThreshold: opts.config.fallbackThreshold,
-    defaultDiscoveryWindowMs: opts.cohortTtlMs,
-    defaultFundingWindowMs: opts.fundingWindowMs,
+    defaultBeaconType: opts.defaultBeaconType ?? (opts.config.beaconType as BeaconType),
+    defaultSize: opts.defaultSize ?? opts.config.minParticipants,
+    defaultThreshold: opts.defaultThreshold ?? opts.config.fallbackThreshold,
+    defaultDiscoveryWindowMs: opts.defaultDiscoveryWindowMs ?? opts.cohortTtlMs,
+    defaultFundingWindowMs: opts.defaultFundingWindowMs ?? opts.fundingWindowMs,
+    termsText: opts.termsText,
+    // The runner's own cohort TTL is the shorten-only ceiling on the discovery-window DEFAULT, for
+    // the same reason it bounds a per-draft window (05-06): the library arms it at advertise and
+    // never resets it, so a longer default is a promise this service cannot keep.
+    discoveryWindowCeilingMs: opts.cohortTtlMs,
   });
 
   // Operator authentication (HOST-01, ADR 0015), constructed per-createService like the

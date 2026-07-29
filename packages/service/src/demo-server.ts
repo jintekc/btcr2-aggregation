@@ -395,6 +395,42 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
   // undefined so the config DTO stays byte-identical (no serviceName key) rather than an empty one.
   const serviceName = (opts.serviceName ?? process.env.SERVICE_NAME)?.trim() || undefined;
 
+  // Boot seeds for the runtime SETTINGS holder (SVC-04 criterion 3 / SVC-05, D-10/D-12/D-19): what
+  // a NEW cohort starts from, and the participation terms. Each rides an existing idiom rather than
+  // a new one - the NaN-guarded `numericKnob` for the numbers (review WR-04), the RECOVERY_KEY/
+  // SERVICE_NAME trim-to-undefined for the strings - so a malformed value warns and falls back
+  // instead of poisoning a comparison or storing an empty string that reads as "set to nothing".
+  //
+  // Every one of these is a SEED, never a lock: the console edits the in-memory value behind the
+  // gated settings routes, and a restart returns each to the environment value below. They also
+  // never reach a cohort that already exists: `createDraft` reads the holder once at creation and
+  // nothing re-reads it afterwards (D-13).
+  const defaultBeaconTypeRaw = process.env.DEFAULT_BEACON_TYPE?.trim() || undefined;
+  const defaultBeaconType =
+    defaultBeaconTypeRaw === 'CASBeacon' || defaultBeaconTypeRaw === 'SMTBeacon'
+      ? defaultBeaconTypeRaw
+      : undefined;
+  if (defaultBeaconTypeRaw && !defaultBeaconType) {
+    log(`ignoring malformed DEFAULT_BEACON_TYPE="${defaultBeaconTypeRaw}"; expected CASBeacon or SMTBeacon`);
+  }
+  const defaultSize = numericKnob('DEFAULT_SIZE', process.env.DEFAULT_SIZE, undefined, log);
+  const defaultThreshold = numericKnob('DEFAULT_THRESHOLD', process.env.DEFAULT_THRESHOLD, undefined, log);
+  const defaultDiscoveryWindowMs = numericKnob(
+    'DEFAULT_DISCOVERY_WINDOW_MS',
+    process.env.DEFAULT_DISCOVERY_WINDOW_MS,
+    undefined,
+    log,
+  );
+  const defaultFundingWindowMs = numericKnob(
+    'DEFAULT_FUNDING_WINDOW_MS',
+    process.env.DEFAULT_FUNDING_WINDOW_MS,
+    undefined,
+    log,
+  );
+  // Trimmed to undefined so an empty TERMS_TEXT means the join flow has NO terms step, which is a
+  // different fact from terms that say nothing (SVC-05, D-19).
+  const termsText = process.env.TERMS_TEXT?.trim() || undefined;
+
   const operatorPassword = opts.operatorPassword ?? process.env.OPERATOR_PASSWORD;
   // Guarded (review WR-04): a NaN TTL made `Date.now() > expiresAt` always false, so operator
   // sessions NEVER expired, and `Math.floor(NaN / 1000)` emitted an invalid `Max-Age=NaN` cookie
@@ -477,6 +513,15 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
     ipfs,
     // Optional service display name surfaced on GET /v1/config (D-51).
     serviceName,
+    // Runtime-settings boot seeds (SVC-04 criterion 3 / SVC-05). Each is undefined unless its env
+    // var was set, in which case createService keeps its existing derivation, so a service booted
+    // without any of these behaves exactly as it did before.
+    defaultBeaconType,
+    defaultSize,
+    defaultThreshold,
+    defaultDiscoveryWindowMs,
+    defaultFundingWindowMs,
+    termsText,
     // Operator auth (possibly undefined => fail-closed, operator surface unmounted).
     operatorPassword,
     operatorSessionTtlMs,

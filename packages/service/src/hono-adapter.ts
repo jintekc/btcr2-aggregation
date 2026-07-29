@@ -31,7 +31,7 @@ import {
   type DraftInput,
   type OperatorCohorts,
 } from './operator-cohorts.js';
-import type { RuntimeSettings } from './runtime-settings.js';
+import type { RuntimeSettings, SettingsPatch } from './runtime-settings.js';
 import type { AnchorState } from './anchor-state.js';
 import type { CohortMonitor } from './monitor.js';
 import { mountStaticSite } from './static-site.js';
@@ -277,9 +277,23 @@ export function createHonoApp(
   // runtime-editable, and a value captured into this construction closure would serve the boot
   // name forever while the console claimed the rename had applied. Without a holder this falls
   // back to the static boot option, so the pre-Phase-5 behavior is unchanged.
+  //
+  // The participation terms (SVC-05, D-19) ride the SAME per-request read as a SECOND additive
+  // key. They belong here rather than on a new route because the participant who must accept them
+  // is anonymous and already fetches this on load, and because the operator publishing terms is
+  // publishing them: there is nothing gated about the text a stranger is asked to agree to. Unset
+  // terms mean the join flow has NO terms step, so the key is ABSENT rather than an empty string -
+  // "this operator set no terms" and "this operator set terms that say nothing" are different
+  // facts and the wire must keep them apart. Both strings render in the browser as plain
+  // auto-escaped React text content, never markup and never a link target (T-05-07-02).
   app.get('/v1/config', (c) => {
     const name = runtimeSettings ? runtimeSettings.serviceName.value : serviceName;
-    return c.json(name ? { ...networkDto, serviceName: name } : networkDto);
+    const termsText = runtimeSettings?.termsText.value;
+    return c.json({
+      ...networkDto,
+      ...(name ? { serviceName: name } : {}),
+      ...(termsText ? { termsText } : {}),
+    });
   });
 
   // Public cohort directory + service status (SVC-02, D-09/D-14/D-15). Always mounted
@@ -424,6 +438,42 @@ export function createHonoApp(
         runtimeSettings.resume();
         return c.json({ paused: runtimeSettings.paused });
       });
+
+      // The service settings surface (SVC-04 criterion 3 / SVC-05, D-10/D-12/D-13/D-16/D-19).
+      // Both verbs are registered INSIDE this gated block after `requireSameOrigin()` and
+      // `requireOperator(...)`, so an anonymous caller is rejected with 401 before either handler
+      // runs and before anything about this service's configuration is disclosed (T-05-07-01).
+      // Only an authenticated operator may read or reshape what this running service offers.
+      app.get('/v1/operator/settings', (c) => c.json(runtimeSettings.snapshot()));
+      app.put(
+        '/v1/operator/settings',
+        // The SAME 4 KiB limit and 413 handler as every other gated write. It bounds the body
+        // DURING streaming, before `c.req.json()` buffers it, and layers under the holder's own
+        // explicit length caps on the two free-text fields (T-05-07-03): the terms are the one
+        // field an operator could otherwise grow without limit, on a surface they can re-save.
+        bodyLimit({ maxSize: 4 * 1024, onError: (c) => c.json({ error: 'request too large' }, 413) }),
+        async (c) => {
+          let body: unknown;
+          try {
+            body = await c.req.json();
+          } catch {
+            return c.json({ error: 'expected a JSON settings body' }, 400);
+          }
+          // `applySettings` saves as a SET: it validates every supplied field first and applies
+          // NONE on any failure (T-05-07-05), so this 400 leaves the service exactly as it was and
+          // the console keeps rendering the previous served snapshot. The message is app-authored
+          // UI-SPEC copy (shared byte-identically with the create form's validation), never a raw
+          // library string.
+          const problem = runtimeSettings.applySettings(body as SettingsPatch);
+          if (problem) {
+            return c.json({ error: problem }, 400);
+          }
+          // Answer with the NEW snapshot so the console re-renders from what the SERVICE reports
+          // rather than from the patch the browser sent: a field the service normalized (an
+          // emptied name, trimmed terms) must show as the service holds it, not as it was typed.
+          return c.json(runtimeSettings.snapshot());
+        },
+      );
     }
 
     // On-demand cohort drafts (SVC-01). Registered AFTER the requireSameOrigin +

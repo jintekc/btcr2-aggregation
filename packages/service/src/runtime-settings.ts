@@ -39,6 +39,7 @@ import type { BeaconType } from '@btcr2-aggregation/shared';
 // `operator-cohorts.ts` imports only the TYPE of this module's holder, so the cycle is erased
 // at compile time and there is no runtime import cycle.
 import {
+  discoveryWindowCeilingError,
   DISCOVERY_WINDOW_ERROR,
   FUNDING_WINDOW_ERROR,
   SIZE_ERROR,
@@ -118,10 +119,41 @@ export interface RuntimeSettingsSeed {
   defaultDiscoveryWindowMs?: number;
   /** Funding window a new draft starts from, in ms (seeded from the service `fundingWindowMs`). */
   defaultFundingWindowMs?: number;
-  /** Participation terms (D-19); no environment seed exists this phase, so it starts unset. */
+  /** Participation terms (D-19), seeded from env `TERMS_TEXT`; empty/whitespace collapses to undefined. */
   termsText?: string;
+  /**
+   * This service's runner-level cohort TTL in ms, used as the SHORTEN-ONLY ceiling on the
+   * discovery-window default (D-11/D-13, RESEARCH Pitfall 7). Nothing in `aggregation@0.4.0` is
+   * per-cohort: the runner arms its TTL at advertise and never resets it, so a default window
+   * ABOVE that TTL is a promise this service cannot keep for the drafts that inherit it. Supplying
+   * it lets {@link RuntimeSettings.applySettings} refuse such a value at save time, naming the real
+   * maximum, exactly as `validateDraft` already refuses it per draft. Omitted, no ceiling applies
+   * (a service with no TTL never truncates anything).
+   */
+  discoveryWindowCeilingMs?: number;
   /** Where a malformed numeric seed is reported. Defaults to `console.warn`. */
   warn?: (message: string) => void;
+}
+
+/**
+ * Every runtime-adjustable field with its current value, its boot value, and whether the two
+ * differ: exactly what the console's per-setting source caption needs, served by
+ * `GET /v1/operator/settings` (D-12).
+ *
+ * It is a SNAPSHOT rather than a live view: the console renders `env default` or
+ * `changed this session (environment default: {value})` from SERVED data, so the caption is a fact
+ * the service reported rather than a comparison the browser guessed at against values it may not
+ * have. The paused and broadcast-disabled bits are deliberately NOT here: they are service STATE
+ * with their own controls and their own served bits, not settings a save applies as a set.
+ */
+export interface SettingsSnapshot {
+  serviceName: SettingField<string | undefined>;
+  defaultBeaconType: SettingField<BeaconType>;
+  defaultSize: SettingField<number>;
+  defaultThreshold: SettingField<number>;
+  defaultDiscoveryWindowMs: SettingField<number | undefined>;
+  defaultFundingWindowMs: SettingField<number | undefined>;
+  termsText: SettingField<string | undefined>;
 }
 
 /**
@@ -184,6 +216,12 @@ export interface RuntimeSettings {
    * the values a NEW draft starts from, read once at `createDraft`.
    */
   applySettings(patch: SettingsPatch): string | undefined;
+  /**
+   * Project every field with its source for the gated settings read (D-12). A FRESH object per
+   * call, never the internal records, so a caller cannot write settings through the DTO it was
+   * handed. See {@link SettingsSnapshot}.
+   */
+  snapshot(): SettingsSnapshot;
 }
 
 /** Beacon types an operator may set as the create-form default (mirrors `validateDraft`). */
@@ -253,6 +291,17 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
   const seededFundingWindowMs = numericKnob(
     'defaultFundingWindowMs',
     seed.defaultFundingWindowMs,
+    undefined,
+    warn,
+    ONE_MINUTE_MS,
+  );
+
+  // The shorten-only ceiling on the discovery-window DEFAULT (see the seed's docstring). Guarded
+  // through numericKnob for the same NaN reason as every other numeric seed: a NaN ceiling makes
+  // every `> ceiling` comparison false, which silently disables the very guard it configures.
+  const discoveryWindowCeilingMs = numericKnob(
+    'discoveryWindowCeilingMs',
+    seed.discoveryWindowCeilingMs,
     undefined,
     warn,
     ONE_MINUTE_MS,
@@ -366,6 +415,17 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
       if (discoveryProblem) {
         return discoveryProblem;
       }
+      // The shorten-only ceiling, refused at SAVE with this service's real maximum named rather
+      // than accepted and then silently overruled by a library timer the operator cannot see. This
+      // is the same refusal `validateDraft` makes per draft (05-06); it belongs here too because a
+      // DEFAULT above the TTL would hand that unenforceable window to every draft that inherits it.
+      if (
+        nextDiscoveryWindowMs !== undefined &&
+        discoveryWindowCeilingMs !== undefined &&
+        nextDiscoveryWindowMs > discoveryWindowCeilingMs
+      ) {
+        return discoveryWindowCeilingError(discoveryWindowCeilingMs);
+      }
 
       const nextFundingWindowMs =
         patch.defaultFundingWindowMs !== undefined
@@ -391,6 +451,20 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
       defaultFundingWindowMs.value = nextFundingWindowMs;
       termsText.value = nextTermsText;
       return undefined;
+    },
+
+    snapshot(): SettingsSnapshot {
+      // Built from the SAME `project` the per-field getters use, so the gated read and any direct
+      // holder read can never disagree about whether a field changed.
+      return {
+        serviceName: project(serviceName),
+        defaultBeaconType: project(defaultBeaconType),
+        defaultSize: project(defaultSize),
+        defaultThreshold: project(defaultThreshold),
+        defaultDiscoveryWindowMs: project(defaultDiscoveryWindowMs),
+        defaultFundingWindowMs: project(defaultFundingWindowMs),
+        termsText: project(termsText),
+      };
     },
   };
 }
