@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Completed 05-08-PLAN.md
-last_updated: "2026-07-29T15:54:04.978Z"
+stopped_at: Completed 05-09-PLAN.md
+last_updated: "2026-07-29T16:23:32.949Z"
 last_activity: 2026-07-28
 last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 44
-  completed_plans: 38
+  completed_plans: 39
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 9 of 14
+Plan: 10 of 14
 Status: Ready to execute
 Last activity: 2026-07-28 — Phase 05 execution started
 
-Progress: [█████████░] 86%
+Progress: [█████████░] 89%
 
 ## Performance Metrics
 
@@ -99,6 +99,7 @@ Progress: [█████████░] 86%
 | Phase 05 P06 | 35 min | 3 tasks | 14 files |
 | Phase 05 P07 | 30 min | 3 tasks | 18 files |
 | Phase 05 P08 | 35 min | 3 tasks | 16 files |
+| Phase 05 P09 | 30 min | 2 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -152,6 +153,8 @@ Recent decisions affecting current work (Phase 2):
 - [Phase 05]: [Phase 05] 05-07: a cleared window default sends an explicit null (an absent key already means leave-it-alone, so omitting it would silently discard the operator's edit); the create form's TIMING fields stay EMPTY rather than pre-filled, because empty means inherit and a pre-filled default would submit that number explicitly and freeze the cohort's window at today's value; the settings snapshot is loaded ONCE by the console shell so the create form and the settings view render from one snapshot rather than two reads of one holder that can visibly disagree (the 05-05 status-poll lesson); and a source comment must not spell the name of the token a guard greps for, or the comment defeats the guard.
 - [Phase 05]: [Phase 05] 05-08 (SVC-04, three parked items closed): the broadcast kill switch is ONE pure rule (cohortKeepsLiveWiring) consulted at BOTH beacon-tx handoffs - the data handoff choosing the real builder or the fixture, and the broadcast handoff - comparing each cohort's advertise stamp against the moment the switch engaged, so a killed cohort is genuinely created on the fixture path (never waits for funding, never reads a UTXO) rather than merely unpublished. attachBeaconBroadcast gained a shouldBroadcast gate consulted BEFORE serialization, because a fixture tx throws on extract() and would have flipped a healthy cohort's ended chip to failed. The engage stamp is taken once and never moved (a second click would slide the pivot and silently re-enable cohorts advertised in between), and the gate FAILS CLOSED on a cohort with no advertise stamp. The one-way guarantee is SEARCHED for, not documented: the spec enumerates the holder's own surface and the app's registered routes and pins both, so a future enableBroadcast fails the suite the moment it is written. The cached boot mode is never re-derived - broadcastDisabled is a SECOND bit and a SECOND warn chip beside it, because the service really did boot live and its chain reads really are still live.
 - [Phase 05]: [Phase 05] 05-08: dismissEnded removes exactly one ended record plus its retained activity and funding view, refuses an unknown id and a still-live cohort, calls no runner verb, and appends its OWN service-level log entry from inside the method so the one action whose purpose is to remove evidence cannot be the one that goes unrecorded. The bounded (100, oldest-first) service-level operatorActions ring rides the EXISTING gated monitoring poll as an additive sibling key (ADR 0016: no new SSE channel), all entries info-toned because they are the operator's own deliberate acts. A settings change is recorded by comparing two SERVED snapshots, so a save that re-sends held values records nothing, and the values themselves are never logged (an operator-authored string would widen the row without bound). Pause/resume/settings entries live in hono-adapter where the seam actually is (the routes mutate the holder directly, so index.ts never learns), while cancel/finalize stay on the index.ts hooks. An empty log BEFORE a read is not an empty log: operatorLogState keys the loading posture on the freshness stamp, never on the array.
+- [Phase 05]: [Phase 05] 05-09 (SVC-04, D-17 badged test peers): the operator fills a cohort's remaining seats with in-process createParticipant instances that are REAL participants - the seat cap is read LIVE from the runner session at call time (never a number the browser sent), so a mid-signing cohort refuses itself with no phase check at all because it already has every seat filled. The Test peer badge comes from a per-service Set of DIDs written at spawn time and handed to createCohortMonitor as the LIVE instance (a copy taken at construction would badge nothing for every later spawn, and would fail silently); nothing in the advert or opt-in distinguishes a test peer, which is correct, so inferring one could only ever mislabel a genuine stranger. Teardown is COUNTED, not inferred: the registry exposes activeCount, releaseCohortTables releases on every settle path, service.stop() calls stopAll, and the shared stopController.signal is a third net - three specs plus the e2e assert zero afterwards. release() drops only the stop handles and KEEPS the DID set, so an ended cohort's members keep reading badged; the set carries its own oldest-first bound because nothing prunes it.
+- [Phase 05]: [Phase 05] 05-09: addTestPeersFor is exported from test-peers.ts and used by BOTH createService and the route-semantics matrix, so lifecycle-routes.spec.ts asserts the SHIPPING arithmetic over a real registry rather than a re-typed copy (only the participant factory is faked) - the matrix now covers three verbs in one shape (401 before any lookup, 400 malformed, 404 opaque unknown, 409 app-authored reason, 200 result). A peer whose start() rejects is stopped and excluded from the count so a partial failure reports what actually took a seat, and a spawn where every peer failed is a 502 rather than a 200 claiming zero. On a live cohort the rung-2 confirm states BEFORE the act that peers co-sign for real and their DIDs are anchored on the named network, and the service logs + appends an honest note that each peer's own DID registration is SKIPPED (a KEY first update needs its own funded singleton beacon address and a confirmed registration, ADR 0007) rather than attempting it where nobody would look. The member badge and row line are authored in CohortDetail.tsx beside the other member-row labels (the 05-08 HealthStrip precedent), and the surface owns its own testPeerError field because the drill-down already renders the shared actionError on two other cards.
 
 ### Pending Todos
 
@@ -189,7 +192,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-29T15:54:04.952Z
-Stopped at: Completed 05-08-PLAN.md
+Last session: 2026-07-29T16:23:22.869Z
+Stopped at: Completed 05-09-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
