@@ -19,6 +19,7 @@ export type { CohortConfig, SigningTxData } from '@did-btcr2/aggregation/service
 export * from './networks.js';
 export * from './ipfs.js';
 export * from './phases.js';
+export * from './tos.js';
 
 /**
  * The two beacon types this aggregator supports, chosen per cohort. A CAS
