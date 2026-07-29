@@ -148,14 +148,14 @@ describe('operator store health (served broadcast mode, D-17/D-43)', () => {
           listBody({
             rows: [],
             metrics: { open: 0, inFlight: 0, anchored: 0, failed: 0 },
-            health: { mode: 'live', esploraReachable: true },
+            health: { mode: 'live', esploraReachable: true, paused: false },
           }),
           { status: 200 },
         ),
       ),
     );
     await useOperator.getState().refreshCohorts(BASE);
-    expect(useOperator.getState().health).toEqual({ mode: 'live', esploraReachable: true });
+    expect(useOperator.getState().health).toEqual({ mode: 'live', esploraReachable: true, paused: false });
   });
 
   it('leaves health undefined when the service serves no health (never presumes hermetic)', async () => {
@@ -173,7 +173,7 @@ describe('operator store health (served broadcast mode, D-17/D-43)', () => {
   });
 
   it('clears the stored mode on a session expiry so the next session re-reads it', async () => {
-    useOperator.setState({ health: { mode: 'live', esploraReachable: false } });
+    useOperator.setState({ health: { mode: 'live', esploraReachable: false, paused: false } });
     vi.stubGlobal('fetch', () => Promise.resolve(new Response('no', { status: 401 })));
     await useOperator.getState().refreshCohorts(BASE);
     expect(useOperator.getState().health).toBeUndefined();

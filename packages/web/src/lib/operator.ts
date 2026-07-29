@@ -401,6 +401,18 @@ export type ServiceMode = 'hermetic' | 'live-no-broadcast' | 'live';
 export interface ServiceHealthDTO {
   mode: ServiceMode;
   esploraReachable: boolean | 'n/a';
+  /**
+   * True while advertising is in DRAIN MODE (SVC-04, Phase 5 D-07). It rides this strip rather
+   * than needing its own read because the console already polls the merged list read, so the
+   * chip refreshes on the same tick as the mode chip. Server-side it is projected from the SAME
+   * runtime holder value the advertise gate checks and the public `GET /v1/status` reports, so
+   * what the console shows, what the public read claims, and what the service enforces are one
+   * derivation rather than three that could disagree.
+   *
+   * Deliberately separate from {@link ServiceMode}: the mode is fixed at construction and says
+   * how this service signs and broadcasts, where pause says whether it is offering new cohorts.
+   */
+  paused: boolean;
 }
 
 /**
