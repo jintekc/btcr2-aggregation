@@ -1,6 +1,7 @@
 import { canonicalHash } from '@did-btcr2/common';
-import { bytesToHex } from '@noble/hashes/utils';
-import { p2tr } from '@scure/btc-signer';
+import { SchnorrKeyPair } from '@did-btcr2/keypair';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { p2tr, Transaction } from '@scure/btc-signer';
 import { TEST_NETWORK } from '@scure/btc-signer/utils';
 import { describe, expect, it } from 'vitest';
 import {
@@ -115,5 +116,52 @@ describe('buildSingletonRegistrationTx', () => {
     const { keys } = createIdentity();
     expect(() => buildSingletonRegistrationTx({ keys, utxo, updateHash, fee: 0n })).toThrow(/positive/);
     expect(() => buildSingletonRegistrationTx({ keys, utxo, updateHash, fee: -1000n })).toThrow(/positive/);
+  });
+
+  /**
+   * The before-and-after pin for the PART-06 template split (05-12 task 1).
+   *
+   * Every value below was captured by RUNNING the builder before it was split, against a fixed
+   * secret and a fixed UTXO, so the refactor is pinned rather than assumed. It is deliberately
+   * green on both sides of the change: that is what makes it a regression pin.
+   *
+   * One value cannot be pinned as a literal and it is worth saying why rather than quietly
+   * omitting it. The signed `rawHex` is NOT reproducible: BIP340 signing mixes in auxiliary
+   * randomness, so two runs over the same transaction produce different witnesses. Everything the
+   * raw hex commits to IS deterministic though, so the pin re-parses the signed transaction and
+   * asserts its witness-free bytes and its transaction id, which is strictly what "the same
+   * transaction" means here. See `packages/shared/tests/psbt.spec.ts` for the same fact asserted
+   * from the other direction.
+   */
+  describe('the template split is behavior-preserving (golden pin, captured pre-refactor)', () => {
+    const FIXED_SECRET_HEX = '11'.repeat(32);
+    const FIXED_UPDATE_HASH = hexToBytes('ab'.repeat(32));
+    const FIXED_UTXO = { txid: 'bb'.repeat(32), vout: 0, value: 100_000 };
+    const GOLDEN_TXID = '6ac4b0669c4ef787484fe94486d232ef9cbb70b4f1b2548727e94289e13fd2c2';
+    // Version 2, the fixed input, then change (99000 sats to the P2TR beacon script) FIRST and
+    // the zero-value `OP_RETURN OP_PUSHBYTES_32 <updateHash>` LAST. The two long runs are written
+    // as repeats of the fixed inputs above rather than transcribed, so a typo cannot fake a pass.
+    const GOLDEN_TEMPLATE_HEX =
+      `0200000001${'bb'.repeat(32)}0000000000ffffffff` +
+      '02b882010000000000225120' +
+      '2a64b1ee3375f3bb4b367b8cb8384a47f73cf231717f827c6c6fbbf5aecf0c36' +
+      `0000000000000000226a20${'ab'.repeat(32)}00000000`;
+
+    it('returns the same transaction id, fee, change and transaction body for a fixed input', () => {
+      const keys = new SchnorrKeyPair({ secretKey: hexToBytes(FIXED_SECRET_HEX) });
+      const tx = buildSingletonRegistrationTx({
+        keys,
+        utxo: FIXED_UTXO,
+        updateHash: FIXED_UPDATE_HASH,
+      });
+
+      expect(tx.txid).toBe(GOLDEN_TXID);
+      expect(tx.fee).toBe(REGISTRATION_FEE_SATS);
+      expect(tx.change).toBe(BigInt(FIXED_UTXO.value) - REGISTRATION_FEE_SATS);
+
+      const parsed = Transaction.fromRaw(hexToBytes(tx.rawHex), { allowUnknownOutputs: true });
+      expect(parsed.id).toBe(GOLDEN_TXID);
+      expect(bytesToHex(parsed.unsignedTx)).toBe(GOLDEN_TEMPLATE_HEX);
+    });
   });
 });
