@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Completed 05-06-PLAN.md
-last_updated: "2026-07-29T14:56:29.366Z"
+stopped_at: Completed 05-07-PLAN.md
+last_updated: "2026-07-29T15:23:08.933Z"
 last_activity: 2026-07-28
 last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 44
-  completed_plans: 36
+  completed_plans: 37
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 7 of 14
+Plan: 8 of 14
 Status: Ready to execute
 Last activity: 2026-07-28 — Phase 05 execution started
 
-Progress: [████████░░] 82%
+Progress: [████████░░] 84%
 
 ## Performance Metrics
 
@@ -97,6 +97,7 @@ Progress: [████████░░] 82%
 | Phase 05 P04 | 12 min | 2 tasks | 14 files |
 | Phase 05 P05 | 13 min | 2 tasks | 15 files |
 | Phase 05 P06 | 35 min | 3 tasks | 14 files |
+| Phase 05 P07 | 30 min | 3 tasks | 18 files |
 
 ## Accumulated Context
 
@@ -146,6 +147,8 @@ Recent decisions affecting current work (Phase 2):
 - [Phase ?]: [Phase 05] 05-06 (SVC-04 criterion 3, per-cohort half): createDraft and updateDraft share exactly ONE validateDraft, and the parity test drives the SAME invalid body through both verbs comparing the thrown messages rather than re-typing a literal, because a re-typed string would still pass against a subtly different second validator. The PATCH route (the repo's first) runs the LOOKUP BEFORE the validation, so a non-draft id is a 404 rather than a validation verdict about a cohort the caller may not edit; next-cohort-only is enforced, with the served shape asserted unchanged after each refusal.
 - [Phase ?]: [Phase 05] 05-06: the per-draft discovery window can only SHORTEN. No timing value in aggregation@0.4.0 is per-cohort (cohortTtlMs/phaseTimeoutMs/advertRepeatIntervalMs are per-RUNNER, advertTtlMs per-transport), and the library arms its TTL at advertise and never resets it, so a longer window is refused at SAVE with the real service maximum named rather than silently overruled. Only a SUPPLIED window is measured against the ceiling. Enforcement is an app-side timer that DECLARES window-expired into the 05-01 intent registry and only THEN calls stopCohort (which emits nothing), making this the first consumer of the member 05-01 declared but left unused; the timer is unref'd, bounded, stop-signal-aborted and cleared on all three settle paths so it can never fire against a reused id. The funding window IS genuinely per-cohort and still obeys the 04 D-38 clamp untouched.
 - [Phase ?]: [Phase 05] 05-06: lib/cohort-form is the ONE pure module both cohort forms delegate every rule and every string to, because two copies of a rule is exactly how create/edit drift happens; it is React-free so the copy contract and minute-to-ms conversions are unit-asserted (23 tests) rather than eyeballed. An empty timing field is 'unset' and OMITS the wire key, never a 0 (which would mean no-window-at-all). The client deliberately does NOT judge the shorten-only ceiling: it depends on a runner TTL the browser is never told, so guessing would either block a legal value or promise one the service cannot keep. The gated list read gained an additive defaults key read PER REQUEST (D-16 lesson) so the create form's help names a REAL number; the edit form instead reads the DRAFT's captured defaults, because a draft keeps the shape it was made with.
+- [Phase 05]: [Phase 05] 05-07 (SVC-04 criterion 3 service half + SVC-05 operator half): the settings surface labels every value by its SERVED source (changed is a bit the service reports, never a comparison the browser makes against a boot value it was never told), states the env-seeds / runtime-overrides model in words under the heading, and saves as a SET so a rejected field applies nothing. createDraft resolves absent shape fields from the holder EXACTLY ONCE into that draft's own config, with n and k resolved as a PAIR (a default k taken against an operator-supplied n would turn a 5-seat request into 2-of-5). applySettings inherited the 05-06 shorten-only ceiling, because a DEFAULT above the runner TTL hands an unenforceable window to every draft that inherits it. termsText rides GET /v1/config additively with an ABSENT key meaning no terms step at all. Validation delegates to lib/cohort-form rather than growing a third copy.
+- [Phase 05]: [Phase 05] 05-07: a cleared window default sends an explicit null (an absent key already means leave-it-alone, so omitting it would silently discard the operator's edit); the create form's TIMING fields stay EMPTY rather than pre-filled, because empty means inherit and a pre-filled default would submit that number explicitly and freeze the cohort's window at today's value; the settings snapshot is loaded ONCE by the console shell so the create form and the settings view render from one snapshot rather than two reads of one holder that can visibly disagree (the 05-05 status-poll lesson); and a source comment must not spell the name of the token a guard greps for, or the comment defeats the guard.
 
 ### Pending Todos
 
@@ -183,7 +186,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-29T14:56:12.412Z
-Stopped at: Completed 05-06-PLAN.md
+Last session: 2026-07-29T15:22:30.434Z
+Stopped at: Completed 05-07-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
