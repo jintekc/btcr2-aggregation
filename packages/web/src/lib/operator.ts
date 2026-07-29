@@ -249,6 +249,127 @@ export async function updateDraft(
 }
 
 /**
+ * One runtime-adjustable setting as the gated read serves it (SVC-04 criterion 3, D-12).
+ *
+ * `value` and `envDefault` are OPTIONAL because JSON drops an undefined: an unset service name or
+ * unset terms arrive as `{ changed: false }` with no value key at all. That is the honest wire
+ * shape, and the console must render "not set" for it rather than an empty string that would read
+ * as a value the operator chose.
+ */
+export interface SettingFieldDTO<T> {
+  value?: T;
+  envDefault?: T;
+  /** Whether this field differs from what the environment set at boot; the caption's whole basis. */
+  changed: boolean;
+}
+
+/**
+ * Every runtime-adjustable setting with its source, from `GET /v1/operator/settings`. The console
+ * renders each caption from THIS served data rather than comparing values locally: a caption is a
+ * fact the service reported, not a guess the browser made about a boot value it never saw.
+ */
+export interface SettingsSnapshotDTO {
+  serviceName: SettingFieldDTO<string>;
+  defaultBeaconType: SettingFieldDTO<OperatorBeaconType>;
+  defaultSize: SettingFieldDTO<number>;
+  defaultThreshold: SettingFieldDTO<number>;
+  defaultDiscoveryWindowMs: SettingFieldDTO<number>;
+  defaultFundingWindowMs: SettingFieldDTO<number>;
+  termsText: SettingFieldDTO<string>;
+}
+
+/**
+ * A settings save. Every key is optional: an ABSENT key leaves that setting exactly as it is, an
+ * empty string CLEARS an optional text field, and an explicit `null` clears a window default. The
+ * console posts every field it renders in ONE request, so the service can judge the set as a whole
+ * and apply none of it on any rejection.
+ */
+export interface SettingsPatchDTO {
+  serviceName?: string;
+  defaultBeaconType?: OperatorBeaconType;
+  defaultSize?: number;
+  defaultThreshold?: number;
+  defaultDiscoveryWindowMs?: number | null;
+  defaultFundingWindowMs?: number | null;
+  termsText?: string;
+}
+
+/**
+ * The result of a settings save. It mirrors {@link UpdateDraftResult} exactly, for the same two
+ * reasons: the SERVICE's own 400 message is the backstop the inline error slot renders verbatim
+ * (so a rule the client does not mirror still reaches the operator in the service's words), and a
+ * 401 on a console left open past its session must take the one honest re-login path rather than
+ * being rendered as a validation failure.
+ */
+export type SaveSettingsResult =
+  | { ok: true; snapshot: SettingsSnapshotDTO }
+  | { ok: false; error: string }
+  | { ok: false; unauthorized: true };
+
+/**
+ * GET the gated settings snapshot. Discriminated like every other gated read (D-16/D-25): a 401 is
+ * a session expiry, a network/5xx fault is unreachable, and an ok read carries the snapshot.
+ */
+export async function fetchSettings(baseUrl: string): Promise<FetchResult<SettingsSnapshotDTO>> {
+  let res: Response;
+  try {
+    res = await fetch(endpoint(baseUrl, '/v1/operator/settings'), {
+      headers: { accept: 'application/json' },
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+  } catch {
+    return { kind: 'unreachable' };
+  }
+  if (res.status === 401) {
+    return { kind: 'unauthorized' };
+  }
+  if (!res.ok) {
+    return { kind: 'unreachable' };
+  }
+  try {
+    return { kind: 'ok', value: (await res.json()) as SettingsSnapshotDTO };
+  } catch {
+    return { kind: 'unreachable' };
+  }
+}
+
+/**
+ * PUT the whole settings patch in ONE request. On 200 returns the service's NEW snapshot (never
+ * the patch that was sent: a value the service normalized must display as the service holds it);
+ * on a 400 returns the service's specific message; on a 401 reports the session expiry.
+ *
+ * Deliberately NOT try/caught here, exactly like {@link createDraft} and {@link updateDraft}: a
+ * network-level failure throws and the store's own catch renders its single shared unreachable
+ * line, so that copy has one definition rather than one per client function.
+ */
+export async function saveSettings(baseUrl: string, patch: SettingsPatchDTO): Promise<SaveSettingsResult> {
+  const res = await fetch(endpoint(baseUrl, '/v1/operator/settings'), {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify(patch),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+  if (res.status === 401) {
+    return { ok: false, unauthorized: true };
+  }
+  if (res.ok) {
+    return { ok: true, snapshot: (await res.json()) as SettingsSnapshotDTO };
+  }
+  let error = 'Could not save the settings. Try again.';
+  try {
+    const body = (await res.json()) as { error?: string };
+    if (typeof body.error === 'string' && body.error) {
+      error = body.error;
+    }
+  } catch {
+    // Non-JSON body (e.g. a 413 text) falls back to the generic message above.
+  }
+  return { ok: false, error };
+}
+
+/**
  * Discriminated result of a gated monitoring read (SVC-03, D-16/D-25). The store branches
  * on `kind` to tell a session-expiry (`unauthorized` -> honest re-login, D-16) apart from
  * a transient network/5xx fault (`unreachable` -> freeze the last-known view, D-25) - the

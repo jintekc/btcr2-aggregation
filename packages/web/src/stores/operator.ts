@@ -14,6 +14,8 @@ import {
   resumeAdvertising as apiResumeAdvertising,
   fetchOperatorCohorts,
   fetchCohortDetail,
+  fetchSettings as apiFetchSettings,
+  saveSettings as apiSaveSettings,
   sessionProbe,
   type CohortDetailDTO,
   type CohortSummaryDTO,
@@ -22,6 +24,8 @@ import {
   type CohortDefaultsDTO,
   type ServiceHealthDTO,
   type ServiceMetricsDTO,
+  type SettingsPatchDTO,
+  type SettingsSnapshotDTO,
 } from '../lib/operator';
 
 /**
@@ -160,7 +164,36 @@ export const SESSION_EXPIRED =
  * the cohort list by default and toggles to a single active drill-down by cohort id. The
  * back link returns to the list. Mirrors the participant `participantView` toggle.
  */
-export type OperatorView = { kind: 'list' } | { kind: 'detail'; cohortId: string };
+export type OperatorView = { kind: 'list' } | { kind: 'detail'; cohortId: string } | { kind: 'settings' };
+
+/** Settings-surface lifecycle; mirrors {@link EditStatus} because both are one form's save. */
+export type SettingsStatus = 'idle' | 'loading' | 'saving' | 'error';
+
+/**
+ * The settings model, stated in words directly under the view heading (D-12, UI-SPEC E8).
+ *
+ * This sentence is the product decision made visible. Nothing here persists, because durability is
+ * DUR-01 and a quiet write path would change this product's state model without anyone deciding
+ * to. An operator who is not told that would reasonably assume a saved setting survives a restart,
+ * and discover otherwise from a service that silently reverted overnight.
+ */
+export const SETTINGS_MODEL_LINE =
+  'Environment variables set these at boot. Changes here apply to this running service only, and a restart returns every value to its environment default.';
+
+/** Transient good-tone confirmation after a settings save (UI-SPEC verbatim, em-dash-free). */
+export const SETTINGS_SAVED_OK = 'Settings updated for this session.';
+
+/**
+ * The honest limit on participation terms (SVC-05, D-19). The terms step lives in this web app; a
+ * client that speaks the aggregation protocol directly can still opt into a cohort without ever
+ * seeing them. Saying so on the setting itself is the difference between a feature and a claim
+ * about enforcement this service cannot make.
+ */
+export const TERMS_HONEST_LIMIT =
+  'These terms are enforced in this web app. A client that speaks the protocol directly can still opt in without accepting them.';
+
+/** The ghost link back to the cohort list, shared verbatim with the drill-down. */
+export const BACK_TO_COHORTS = 'Back to cohorts';
 
 interface OperatorState {
   auth: OperatorAuthStatus;
@@ -247,7 +280,24 @@ interface OperatorState {
    * that raised it. The copy is the shared {@link ACTION_FAILED} line.
    */
   pauseError?: string;
-  /** SPA-internal drill-down view (D-03): the cohort list, or one open cohort detail. */
+  /**
+   * The served settings snapshot (SVC-04 criterion 3, D-12), or undefined until the settings view's
+   * own read lands. It is the ONLY source the settings form renders from, which is what makes a
+   * rejected save safe: nothing was painted locally, so a refusal leaves every field showing the
+   * value the SERVICE still holds.
+   */
+  settings?: SettingsSnapshotDTO;
+  /** Settings read/save lifecycle; drives the `Saving…` label and disables the fields. */
+  settingsStatus: SettingsStatus;
+  /**
+   * Inline error for the settings form: the service's own 400 message, or the shared unreachable
+   * line. Its own field for the 05-02 reason - the controls card and the settings view are
+   * different surfaces, and a one-shot action error belongs to the surface that raised it.
+   */
+  settingsError?: string;
+  /** Transient good-tone confirmation after a successful settings save. */
+  settingsMessage?: string;
+  /** SPA-internal drill-down view (D-03): the cohort list, one open cohort detail, or settings. */
   view: OperatorView;
   /**
    * The cohort id whose cancel is in flight (SVC-04), so exactly the confirming panel renders its
@@ -356,6 +406,26 @@ interface OperatorState {
   pauseAdvertising: (baseUrl: string) => Promise<void>;
   /** Resume advertising; the exact mirror of {@link pauseAdvertising}, and equally non-optimistic. */
   resumeAdvertising: (baseUrl: string) => Promise<void>;
+  /**
+   * Open the service settings view (D-12). SPA-internal view state only, exactly like the
+   * drill-down: no routed URL is introduced this phase.
+   */
+  openSettings: () => void;
+  /** Leave the settings view for the cohort list, dropping the form's transient slice. */
+  closeSettings: () => void;
+  /**
+   * Read the gated settings snapshot once. Branches like every other gated read: `unauthorized`
+   * takes the ONE shared session-expiry path (D-16), `unreachable` raises the shared line without
+   * blanking a snapshot already on screen (D-25), `ok` replaces the snapshot.
+   */
+  loadSettings: (baseUrl: string) => Promise<void>;
+  /**
+   * Save the whole settings form in ONE request (D-12). A rejection applies NOTHING: the service
+   * validates the set and refuses it whole, and this store writes no field locally either way, so
+   * the surface can never render a half-saved state. On success the SERVED snapshot replaces the
+   * previous one, so a value the service normalized displays as the service holds it.
+   */
+  saveSettings: (baseUrl: string, patch: SettingsPatchDTO) => Promise<void>;
   /** Open a cohort's drill-down (D-03): set the detail view and clear any stale prior detail. */
   openCohort: (id: string) => void;
   /** Close the drill-down: return to the cohort list and clear the detail slice. */
@@ -436,6 +506,10 @@ export const useOperator = create<OperatorState>((set, get) => ({
   pauseBusy: false,
   pauseMessage: undefined,
   pauseError: undefined,
+  settings: undefined,
+  settingsStatus: 'idle',
+  settingsError: undefined,
+  settingsMessage: undefined,
   view: { kind: 'list' },
   cancelling: undefined,
   finalizing: undefined,
@@ -510,6 +584,13 @@ export const useOperator = create<OperatorState>((set, get) => ({
         pauseBusy: false,
         pauseMessage: undefined,
         pauseError: undefined,
+        // Drop the settings snapshot with the rest of the gated state: it is this service's
+        // in-memory configuration, and the service may be restarted into different values before
+        // the next sign-in.
+        settings: undefined,
+        settingsStatus: 'idle',
+        settingsError: undefined,
+        settingsMessage: undefined,
         view: { kind: 'list' },
         cancelling: undefined,
         finalizing: undefined,
@@ -537,6 +618,10 @@ export const useOperator = create<OperatorState>((set, get) => ({
       pauseBusy: false,
       pauseMessage: undefined,
       pauseError: undefined,
+      settings: undefined,
+      settingsStatus: 'idle',
+      settingsError: undefined,
+      settingsMessage: undefined,
       view: { kind: 'list' },
       // Drop any in-flight action marker: the next sign-in must start with no control claiming
       // to be mid-cancel.
@@ -767,6 +852,71 @@ export const useOperator = create<OperatorState>((set, get) => ({
 
   async resumeAdvertising(baseUrl) {
     await runAdvertisingToggle(set, get, baseUrl, 'resume');
+  },
+
+  openSettings() {
+    // Clear the form's transient slice on the way in: a stale error or confirmation from an
+    // earlier visit must never render beside freshly served values. The snapshot itself is left
+    // alone so a return visit shows the last-known settings while the read is in flight, rather
+    // than blanking a form the operator just came back to.
+    set({
+      view: { kind: 'settings' },
+      settingsStatus: 'loading',
+      settingsError: undefined,
+      settingsMessage: undefined,
+      actionError: undefined,
+    });
+  },
+
+  closeSettings() {
+    set({ view: { kind: 'list' }, settingsStatus: 'idle', settingsError: undefined, settingsMessage: undefined });
+  },
+
+  async loadSettings(baseUrl) {
+    const result = await apiFetchSettings(baseUrl);
+    if (result.kind === 'unauthorized') {
+      // The ONE shared session-expiry path (D-16); it clears the settings slice itself.
+      get().expireSession();
+      return;
+    }
+    if (result.kind === 'unreachable') {
+      // Keep whatever snapshot is already on screen (D-25): a transient fault must not blank a
+      // form the operator may be mid-way through reading.
+      set({ settingsStatus: 'error', settingsError: UNREACHABLE });
+      return;
+    }
+    set({ settings: result.value, settingsStatus: 'idle', settingsError: undefined });
+  },
+
+  async saveSettings(baseUrl, patch) {
+    set({ settingsStatus: 'saving', settingsError: undefined, settingsMessage: undefined });
+    try {
+      const result = await apiSaveSettings(baseUrl, patch);
+      if (result.ok) {
+        // The SERVED snapshot replaces the previous one. Never the patch that was sent: a value
+        // the service normalized (a trimmed name, cleared terms) must display as the service holds
+        // it, not as it was typed.
+        set({ settings: result.snapshot, settingsStatus: 'idle', settingsMessage: SETTINGS_SAVED_OK });
+        // The service name rides `GET /v1/config`, which the participant store owns, so a rename
+        // reaches the health strip and the public header on the next load rather than through a
+        // second copy of the name held here.
+        setTimeout(() => {
+          if (get().settingsMessage === SETTINGS_SAVED_OK) {
+            set({ settingsMessage: undefined });
+          }
+        }, 4000);
+        return;
+      }
+      if ('unauthorized' in result) {
+        get().expireSession();
+        return;
+      }
+      // A rejection applies NOTHING (the service validates the set and refuses it whole), and this
+      // store writes no field either, so every rendered value still shows what the service holds.
+      set({ settingsStatus: 'error', settingsError: result.error });
+    } catch {
+      set({ settingsStatus: 'error', settingsError: UNREACHABLE });
+    }
   },
 
   openCohort(id) {

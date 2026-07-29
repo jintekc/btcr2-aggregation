@@ -7,6 +7,7 @@ import { OperatorCohortList } from './OperatorCohortList';
 import { CohortDetail } from './CohortDetail';
 import { HealthStrip } from './HealthStrip';
 import { ServiceControls } from './ServiceControls';
+import { SettingsView } from './SettingsView';
 
 /** List poll cadence (matches the drill-down detail poll): keeps chips/metrics/freshness live. */
 const LIST_POLL_MS = 4000;
@@ -86,6 +87,20 @@ export function OperatorConsole({ baseUrl }: { baseUrl: string }) {
         <HealthStrip />
         <ServiceControls baseUrl={baseUrl} />
         <CohortDetail baseUrl={baseUrl} cohortId={view.cohortId} />
+      </div>
+    );
+  }
+
+  // Service settings (D-12): the THIRD SPA-internal view, reached from the controls card and left
+  // by the same `Back to cohorts` link the drill-down uses. The strip and the controls card stay
+  // visible above it exactly as they do above the other two views, so the operator never loses
+  // sight of the mode, the network, or whether advertising is draining while they reconfigure.
+  if (view.kind === 'settings') {
+    return (
+      <div className="space-y-6">
+        <HealthStrip />
+        <ServiceControls baseUrl={baseUrl} />
+        <SettingsView baseUrl={baseUrl} />
       </div>
     );
   }

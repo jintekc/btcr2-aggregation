@@ -167,8 +167,15 @@ export interface SettingsPatch {
   defaultBeaconType?: BeaconType;
   defaultSize?: number;
   defaultThreshold?: number;
-  defaultDiscoveryWindowMs?: number;
-  defaultFundingWindowMs?: number;
+  /**
+   * A supplied `null` CLEARS this window default, exactly as an empty string clears an optional
+   * text field above, and mirroring the `null`-means-cleared idiom `DraftInput` already uses for
+   * its per-cohort windows. Without it a console field that renders a value could never be emptied
+   * again, since an absent key already means "leave this one alone".
+   */
+  defaultDiscoveryWindowMs?: number | null;
+  /** A supplied `null` clears this window default; see {@link defaultDiscoveryWindowMs}. */
+  defaultFundingWindowMs?: number | null;
   termsText?: string;
 }
 
@@ -407,9 +414,10 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
         return THRESHOLD_ERROR;
       }
 
+      // `null` clears (see {@link SettingsPatch}); an absent key leaves the stored value alone.
       const nextDiscoveryWindowMs =
         patch.defaultDiscoveryWindowMs !== undefined
-          ? patch.defaultDiscoveryWindowMs
+          ? (patch.defaultDiscoveryWindowMs ?? undefined)
           : defaultDiscoveryWindowMs.value;
       const discoveryProblem = validateWindow(nextDiscoveryWindowMs, DISCOVERY_WINDOW_ERROR);
       if (discoveryProblem) {
@@ -429,7 +437,7 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
 
       const nextFundingWindowMs =
         patch.defaultFundingWindowMs !== undefined
-          ? patch.defaultFundingWindowMs
+          ? (patch.defaultFundingWindowMs ?? undefined)
           : defaultFundingWindowMs.value;
       const fundingProblem = validateWindow(nextFundingWindowMs, FUNDING_WINDOW_ERROR);
       if (fundingProblem) {

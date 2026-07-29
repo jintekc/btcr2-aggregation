@@ -138,6 +138,52 @@ export function Input({
   );
 }
 
+/**
+ * A multi-line sibling of {@link Input} over the same inset canvas surface.
+ *
+ * It exists for the participation-terms setting (SVC-05, D-19) and for the PSBT paste field the
+ * external-signer leg adds, and it introduces NO new design language: the border, background,
+ * padding, text, placeholder, focus-ring and disabled classes are {@link Input}'s VERBATIM, so a
+ * later change to the input treatment cannot leave the two looking like different systems. The
+ * only additions are a `min-h-32` floor and internal scrolling, so a long terms document scrolls
+ * inside the field rather than growing the card off-screen (05-UI-SPEC E8 overflow).
+ *
+ * Promoted the way {@link Expander} documents its own promotion: one implementation, shared, rather
+ * than a per-surface textarea that drifts.
+ */
+export function TextArea({
+  value,
+  onChange,
+  placeholder,
+  id,
+  name,
+  rows = 6,
+  disabled = false,
+  className = '',
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  id?: string;
+  name?: string;
+  rows?: number;
+  disabled?: boolean;
+  className?: string;
+}) {
+  return (
+    <textarea
+      id={id}
+      name={name}
+      value={value}
+      rows={rows}
+      placeholder={placeholder}
+      disabled={disabled}
+      onChange={(e) => onChange(e.target.value)}
+      className={`min-h-32 w-full resize-y overflow-auto rounded-lg border border-edge bg-canvas px-3 py-2 text-sm text-ink placeholder:text-faint transition focus:border-edge-strong focus:outline-none focus:ring-2 focus:ring-edge-strong disabled:cursor-not-allowed disabled:opacity-40 ${className}`}
+    />
+  );
+}
+
 /** A select control over the inset canvas surface (options are typed string values). */
 export function Select<T extends string>({
   value,

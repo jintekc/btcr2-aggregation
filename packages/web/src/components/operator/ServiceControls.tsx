@@ -13,6 +13,14 @@ export const PAUSE_LABEL = 'Pause advertising';
 /** The resume control's label; the same treatment, for the same reason. */
 export const RESUME_LABEL = 'Resume advertising';
 
+/**
+ * The entry point to the third console view (D-12). It lives on THIS card because the settings it
+ * opens are service-level facts, exactly like the pause beside it, rather than anything about an
+ * individual cohort. Ghost like every other control here: opening a view is not destructive, and
+ * Phase 5 adds no new accent CTA.
+ */
+export const SETTINGS_ENTRY_LABEL = 'Service settings';
+
 /** What the service has told us about advertising. `unknown` until the first ok read lands. */
 export type AdvertisingState = 'unknown' | 'running' | 'paused';
 
@@ -109,6 +117,8 @@ export function ServiceControls({ baseUrl }: { baseUrl: string }) {
   const pauseError = useOperator((s) => s.pauseError);
   const pause = useOperator((s) => s.pauseAdvertising);
   const resume = useOperator((s) => s.resumeAdvertising);
+  const openSettings = useOperator((s) => s.openSettings);
+  const consoleView = useOperator((s) => s.view);
 
   const view = serviceControlsView({ paused, busy: pauseBusy });
 
@@ -128,6 +138,13 @@ export function ServiceControls({ baseUrl }: { baseUrl: string }) {
             }
           >
             {view.toggleLabel}
+          </Button>
+        ) : null}
+        {/* The settings entry point. Hidden while the settings view is already open: an entry
+            point to the surface you are already on is not a control, it is noise. */}
+        {consoleView.kind !== 'settings' ? (
+          <Button variant="ghost" onClick={() => openSettings()}>
+            {SETTINGS_ENTRY_LABEL}
           </Button>
         ) : null}
       </div>
