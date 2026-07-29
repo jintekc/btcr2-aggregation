@@ -541,3 +541,149 @@ describe('GET and PUT /v1/operator/settings route semantics (05-07, ADR 0015)', 
     runner.stop();
   });
 });
+
+describe('DELETE /v1/operator/ended/:id route semantics (SVC-04, D-15)', () => {
+  it('401s with no session cookie, BEFORE any lookup', async () => {
+    const { app, runner, monitor } = lifecycleApp();
+    monitor.noteCanceled('some-cohort');
+
+    // An id with a real ended record and a never-existed id must be indistinguishable anonymously.
+    const existing = await app.request('/v1/operator/ended/some-cohort', { method: 'DELETE' });
+    const missing = await app.request('/v1/operator/ended/never-existed', { method: 'DELETE' });
+    expect(existing.status).toBe(401);
+    expect(missing.status).toBe(401);
+    expect(await existing.text()).toBe(await missing.text());
+    // Nothing was dismissed.
+    expect(monitor.summary().some((r) => r.cohortId === 'some-cohort')).toBe(true);
+
+    runner.stop();
+  });
+
+  it('400s an id failing the shape guard, even with a valid session', async () => {
+    const { app, runner } = lifecycleApp();
+    const cookie = await login(app);
+
+    const res = await app.request('/v1/operator/ended/not%20a%20valid%20id', {
+      method: 'DELETE',
+      headers: { cookie },
+    });
+    expect(res.status).toBe(400);
+
+    runner.stop();
+  });
+
+  it('404s an unknown id', async () => {
+    const { app, runner } = lifecycleApp();
+    const cookie = await login(app);
+
+    const res = await app.request('/v1/operator/ended/never-existed', { method: 'DELETE', headers: { cookie } });
+    expect(res.status).toBe(404);
+
+    runner.stop();
+  });
+
+  it('200s a real ended record, and a repeat then 404s (the record is gone)', async () => {
+    const { app, runner, monitor } = lifecycleApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+    // Cancel first so there is a real ended record with a real fate behind it.
+    await app.request(`/v1/operator/cohorts/${cohortId}/cancel`, { method: 'POST', headers: { cookie } });
+    await settle();
+    expect(monitor.summary().some((r) => r.cohortId === cohortId)).toBe(true);
+
+    const first = await app.request(`/v1/operator/ended/${cohortId}`, { method: 'DELETE', headers: { cookie } });
+    expect(first.status).toBe(200);
+    expect(monitor.summary().some((r) => r.cohortId === cohortId)).toBe(false);
+
+    const second = await app.request(`/v1/operator/ended/${cohortId}`, { method: 'DELETE', headers: { cookie } });
+    expect(second.status).toBe(404);
+
+    runner.stop();
+  });
+
+  it('leaves the public directory and the operator cohort list untouched by a dismissal', async () => {
+    const { app, runner, monitor, operatorCohorts } = lifecycleApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+    await app.request(`/v1/operator/cohorts/${cohortId}/cancel`, { method: 'POST', headers: { cookie } });
+    await settle();
+
+    const directoryBefore = JSON.stringify(operatorCohorts.directory());
+    await app.request(`/v1/operator/ended/${cohortId}`, { method: 'DELETE', headers: { cookie } });
+
+    // Dismissal is telemetry-only (D-15): the public directory is byte-identical, and the
+    // dismissal is recorded in the operator log rather than anywhere a stranger can see.
+    expect(JSON.stringify(operatorCohorts.directory())).toBe(directoryBefore);
+    expect(monitor.operatorActions().map((e) => e.text)).toContain(
+      `Dismissed the record for cohort ${cohortId.slice(0, 8)}.`,
+    );
+
+    runner.stop();
+  });
+});
+
+describe('the operator actions log rides the existing gated monitoring read (ADR 0016)', () => {
+  it('serves operatorActions as an additive sibling key beside rows/metrics/health', async () => {
+    const { app, runner, monitor } = lifecycleApp();
+    const cookie = await login(app);
+    monitor.noteOperatorAction('Paused advertising.');
+
+    const res = await app.request('/v1/operator/cohorts', { headers: { cookie } });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      cohorts: unknown[];
+      monitoring?: { rows: unknown[]; metrics: unknown; health?: unknown; operatorActions?: { text: string }[] };
+    };
+    expect(body.monitoring?.operatorActions?.map((e) => e.text)).toEqual(['Paused advertising.']);
+    // Additive: every pre-existing key is still served.
+    expect(Array.isArray(body.cohorts)).toBe(true);
+    expect(Array.isArray(body.monitoring?.rows)).toBe(true);
+    expect(body.monitoring?.metrics).toBeDefined();
+    expect(body.monitoring?.health).toBeDefined();
+
+    runner.stop();
+  });
+
+  it('records pause, resume, cancel, and finalize as self-contained sentences', async () => {
+    const { app, runner, monitor, setPhase } = lifecycleApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+
+    await app.request('/v1/operator/advertising/pause', { method: 'POST', headers: { cookie } });
+    await app.request('/v1/operator/advertising/resume', { method: 'POST', headers: { cookie } });
+    setPhase(cohortId, 'SigningStarted');
+    await app.request(`/v1/operator/cohorts/${cohortId}/finalize`, { method: 'POST', headers: { cookie } });
+    await app.request(`/v1/operator/cohorts/${cohortId}/cancel`, { method: 'POST', headers: { cookie } });
+    await settle();
+
+    const short = cohortId.slice(0, 8);
+    expect(monitor.operatorActions().map((e) => e.text)).toEqual([
+      'Paused advertising.',
+      'Resumed advertising.',
+      `Triggered the k-of-n fallback on cohort ${short}.`,
+      `Canceled cohort ${short}.`,
+    ]);
+
+    runner.stop();
+  });
+
+  it('records a settings change by name, and records nothing for a save that changed nothing', async () => {
+    const { app, runner, monitor } = lifecycleApp();
+    const cookie = await login(app);
+    const save = (body: unknown): Promise<Response> =>
+      app.request('/v1/operator/settings', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', cookie },
+        body: JSON.stringify(body),
+      });
+
+    await save({ serviceName: 'Acme (maintenance)' });
+    expect(monitor.operatorActions().map((e) => e.text)).toEqual(['Changed the service name.']);
+
+    // A save that re-sends the value the service already holds changed nothing, so it says nothing.
+    await save({ serviceName: 'Acme (maintenance)' });
+    expect(monitor.operatorActions()).toHaveLength(1);
+
+    runner.stop();
+  });
+});

@@ -1130,3 +1130,153 @@ describe('createCohortMonitor funding view (LIVE-01, D-36 through D-43)', () => 
     expect(monitor.summary().find((r) => r.cohortId === 'c1')?.chip).not.toBe('needs-funding');
   });
 });
+
+describe('dismissEnded: clearing one ended record, telemetry only (SVC-04, D-15)', () => {
+  it('removes exactly one ended record and leaves every sibling present', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner);
+    runner.emit('signing-complete', anchoredResult('c1'));
+    runner.emit('signing-complete', anchoredResult('c2'));
+    runner.emit('cohort-failed', { cohortId: 'c3', reason: 'stalled' });
+
+    const before = monitor.summary().map((r) => r.cohortId).sort();
+    expect(before).toEqual(['c1', 'c2', 'c3']);
+
+    expect(monitor.dismissEnded('c2')).toBe(true);
+
+    const after = monitor.summary().map((r) => r.cohortId).sort();
+    expect(after).toEqual(['c1', 'c3']);
+    // And the service-level counters move by exactly that one record.
+    expect(monitor.serviceMetrics()).toEqual({ open: 0, inFlight: 0, anchored: 1, failed: 1 });
+  });
+
+  it('drops the dismissed cohort from serviceMetrics without disturbing the others', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner);
+    runner.emit('cohort-failed', { cohortId: 'f1', reason: 'stalled' });
+    runner.emit('cohort-failed', { cohortId: 'f2', reason: 'stalled' });
+    expect(monitor.serviceMetrics().failed).toBe(2);
+
+    expect(monitor.dismissEnded('f1')).toBe(true);
+    expect(monitor.serviceMetrics().failed).toBe(1);
+  });
+
+  it('reports not-found for an unknown id rather than throwing', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner);
+    expect(() => monitor.dismissEnded('never-existed')).not.toThrow();
+    expect(monitor.dismissEnded('never-existed')).toBe(false);
+  });
+
+  it('refuses a cohort that is still LIVE (dismissal is for ended records only)', () => {
+    const runner = bareRunner();
+    // Stage an observed live phase for an id that also carries an ended record, the only way a
+    // record and a live phase can coexist. A dismissal must lose that race, not win it.
+    const staged = new Map<string, string>([['live-1', 'Advertised']]);
+    const realGetCohortPhase = runner.session.getCohortPhase.bind(runner.session);
+    runner.session.getCohortPhase = ((cohortId: string) =>
+      staged.get(cohortId) ?? realGetCohortPhase(cohortId)) as typeof runner.session.getCohortPhase;
+    const monitor = createCohortMonitor(runner);
+    runner.emit('signing-complete', anchoredResult('live-1'));
+
+    expect(monitor.dismissEnded('live-1')).toBe(false);
+    expect(monitor.summary().some((r) => r.cohortId === 'live-1')).toBe(true);
+  });
+
+  it('touches telemetry only: the runner is never called and the record simply stops being served', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner);
+    const stopCalls: string[] = [];
+    runner.stopCohort = ((cohortId: string) => {
+      stopCalls.push(cohortId);
+    }) as typeof runner.stopCohort;
+    runner.emit('signing-complete', anchoredResult('c1'));
+
+    expect(monitor.dismissEnded('c1')).toBe(true);
+    expect(stopCalls).toEqual([]);
+    // Its retained per-cohort activity goes with it: the record is gone, so is its log.
+    expect(monitor.detail('c1')).toMatchObject({ exists: false, activity: [] });
+  });
+
+  it('appends its OWN operator action, so clearing a record is itself recorded', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner);
+    runner.emit('signing-complete', anchoredResult('abcdefgh-ijkl'));
+
+    expect(monitor.dismissEnded('abcdefgh-ijkl')).toBe(true);
+    const texts = monitor.operatorActions().map((e) => e.text);
+    expect(texts).toEqual(['Dismissed the record for cohort abcdefgh.']);
+  });
+
+  it('records nothing for a refused dismissal', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner);
+    expect(monitor.dismissEnded('never-existed')).toBe(false);
+    expect(monitor.operatorActions()).toEqual([]);
+  });
+});
+
+describe('the SERVICE-level operator actions ring (SVC-04, D-14/D-15)', () => {
+  it('stamps every entry with a server wall clock, a level, and self-contained text', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner);
+    const before = Date.now();
+    monitor.noteOperatorAction('Paused advertising.');
+
+    const [entry] = monitor.operatorActions();
+    expect(entry.text).toBe('Paused advertising.');
+    expect(entry.level).toBe('info');
+    expect(entry.t).toBeGreaterThanOrEqual(before);
+    expect(typeof entry.id).toBe('number');
+  });
+
+  it('is bounded and evicts oldest-first', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner);
+    for (let i = 0; i < 140; i += 1) {
+      monitor.noteOperatorAction(`Canceled cohort c${i}.`);
+    }
+    const entries = monitor.operatorActions();
+    expect(entries.length).toBeLessThanOrEqual(100);
+    // The oldest went first: the newest entry is still present, the very first is not.
+    expect(entries[entries.length - 1].text).toBe('Canceled cohort c139.');
+    expect(entries.some((e) => e.text === 'Canceled cohort c0.')).toBe(false);
+  });
+
+  it('skips a consecutive duplicate, so a double-click records once', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner);
+    monitor.noteOperatorAction('Paused advertising.');
+    monitor.noteOperatorAction('Paused advertising.');
+    expect(monitor.operatorActions()).toHaveLength(1);
+
+    // Two identical actions separated by other activity are genuinely two events.
+    monitor.noteOperatorAction('Resumed advertising.');
+    monitor.noteOperatorAction('Paused advertising.');
+    expect(monitor.operatorActions().map((e) => e.text)).toEqual([
+      'Paused advertising.',
+      'Resumed advertising.',
+      'Paused advertising.',
+    ]);
+  });
+
+  it('is a pure projection a caller cannot write through', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner);
+    monitor.noteOperatorAction('Paused advertising.');
+    const entries = monitor.operatorActions();
+    entries.push({ id: 99, t: 0, level: 'bad', text: 'forged' });
+    entries[0].text = 'rewritten';
+    expect(monitor.operatorActions().map((e) => e.text)).toEqual(['Paused advertising.']);
+  });
+
+  it('keeps the per-cohort ring and the service ring apart', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner);
+    monitor.noteOperatorAction('c1', 'Operator canceled this cohort.');
+    monitor.noteOperatorAction('Canceled cohort c1.');
+
+    expect(monitor.detail('c1').activity.map((e) => e.text)).toEqual(['Operator canceled this cohort.']);
+    expect(monitor.operatorActions().map((e) => e.text)).toEqual(['Canceled cohort c1.']);
+  });
+});
