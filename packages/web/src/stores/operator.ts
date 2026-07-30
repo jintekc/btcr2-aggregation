@@ -196,6 +196,23 @@ export const SETTINGS_SAVED_OK = 'Settings updated for this session.';
 export const TERMS_HONEST_LIMIT =
   'These terms are enforced in this web app. A client that speaks the protocol directly can still opt in without accepting them.';
 
+/**
+ * The honest limit on RETAINED acceptances (SVC-05, T-05-17-05 and T-05-17-07).
+ *
+ * The acceptance route is anonymous by necessity (a participant accepting terms has no session and
+ * never will), so the namespace behind it is bounded oldest-first, exactly like every other
+ * retained structure in this service. Two consequences an operator would otherwise discover only
+ * when a participant asked, and both are stated here rather than hidden: a participant who
+ * re-accepts for the same cohort leaves ONE current record rather than a second proof, and past the
+ * bound the oldest record is dropped, so a hash a participant is holding can stop resolving.
+ *
+ * Nothing server-side reads this namespace, so a dropped record never blocks a join or affects a
+ * cohort: what is lost is proof durability, not function. The alternative, refusing new acceptances
+ * once the bound is full, would let anyone lock legitimate joiners out of the gate itself.
+ */
+export const TERMS_RETENTION_NOTE =
+  'Acceptances are kept in memory on this service and a restart clears them. Only the most recent few hundred are retained, oldest dropped first, and re-accepting for the same cohort replaces the earlier record.';
+
 /** The ghost link back to the cohort list, shared verbatim with the drill-down. */
 export const BACK_TO_COHORTS = 'Back to cohorts';
 

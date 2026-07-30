@@ -20,6 +20,7 @@ import {
   SETTINGS_MODEL_LINE,
   SETTINGS_SAVED_OK,
   TERMS_HONEST_LIMIT,
+  TERMS_RETENTION_NOTE,
   useOperator,
 } from '../src/stores/operator';
 import type { SettingsSnapshotDTO } from '../src/lib/operator';
@@ -184,6 +185,16 @@ describe('the settings copy is the UI-SPEC contract, free of the long dash', () 
     );
   });
 
+  it('states the honest limit on RETAINED acceptances (SVC-05, T-05-17-05/07)', () => {
+    // The acceptance namespace is bounded oldest-first, so two things are true that an operator
+    // would otherwise learn only from a confused participant: a re-acceptance replaces rather than
+    // adds, and past the bound the oldest record is dropped, so a hash a participant is holding can
+    // stop resolving. Disclosed on the setting itself rather than left to the source comments.
+    expect(TERMS_RETENTION_NOTE).toBe(
+      'Acceptances are kept in memory on this service and a restart clears them. Only the most recent few hundred are retained, oldest dropped first, and re-accepting for the same cohort replaces the earlier record.',
+    );
+  });
+
   it('uses the shipped in-flight button treatment', () => {
     expect(SAVE_SETTINGS_LABEL).toBe('Save settings');
     expect(SAVE_SETTINGS_BUSY).toBe('Saving…');
@@ -191,7 +202,13 @@ describe('the settings copy is the UI-SPEC contract, free of the long dash', () 
 
   it('contains no em-dash in any authored settings string', () => {
     // Em-dashes in authored copy propagate straight into shipped UI strings; guard at the source.
-    for (const copy of [SETTINGS_MODEL_LINE, SETTINGS_SAVED_OK, TERMS_HONEST_LIMIT, SOURCE_ENV_DEFAULT]) {
+    for (const copy of [
+      SETTINGS_MODEL_LINE,
+      SETTINGS_SAVED_OK,
+      TERMS_HONEST_LIMIT,
+      TERMS_RETENTION_NOTE,
+      SOURCE_ENV_DEFAULT,
+    ]) {
       expect(copy).not.toMatch(/—/);
     }
   });

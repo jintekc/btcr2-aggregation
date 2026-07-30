@@ -5,6 +5,7 @@ import {
   NEXT_COHORT_ONLY_LINE,
   SETTINGS_MODEL_LINE,
   TERMS_HONEST_LIMIT,
+  TERMS_RETENTION_NOTE,
   useOperator,
 } from '../../stores/operator';
 import {
@@ -343,6 +344,7 @@ export function SettingsView({ baseUrl }: { baseUrl: string }) {
                 their acceptance is recorded as a signed record.
               </p>
               <p className="mt-1 text-xs text-faint">{TERMS_HONEST_LIMIT}</p>
+              <p className="mt-1 text-xs text-faint">{TERMS_RETENTION_NOTE}</p>
               <SourceCaption field={snapshot?.termsText} text={envDefaultText(snapshot?.termsText.envDefault)} />
             </Field>
           </Card>
