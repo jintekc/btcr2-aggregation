@@ -152,12 +152,15 @@ directly.
 | 10 | The participant's terminal card names the cancel and never narrates it as a stall or a timeout | `packages/web/tests/terminal-reason.spec.ts`, "narrates a cancel as a cancel on the EXACT input that produces stall copy today" plus "never narrates a cancel as a stall, a failure, or an expiry" | 05-24 |
 | 10 | Both narration variants read correctly, and the specific one is reachable ONLY from a real answer: the operator attribution on a service-reported cancel, the honest fallback on anything else | `packages/web/tests/participant-fate.spec.ts`, "names the operator on a 200 whose body carries the boolean true" against the four refusal rows in "a fault cannot fabricate a cancel accusation", each asserting the rendered sentence and not only the flag | 05-24 |
 | 15 | A wrong-chain endpoint is refused with a mismatch naming BOTH chains | `packages/web/tests/tx-client.spec.ts`, "judges the endpoint against THIS participant's chain, not a chain the code picked" (the store's own network on one side, the endpoint's on the other) | 05-24 |
+| 2 | A timing field the operator CLEARS on an edit round-trips as EMPTY, meaning "use this service's default", rather than silently keeping the value that was there | `packages/service/tests/draft-edit.spec.ts`, "a per-cohort timing window can be CLEARED and SET on the edit path (audit #29)": both windows, each driven both ways, each read back from the update verb AND from the served gated list, with the service's own default still carried beside the cleared key | 05-25 |
+| 11 | A canceled cohort still reads as canceled to anyone querying its fate after the operator dismisses the row | `packages/service/tests/cohort-fate.spec.ts`, "still carries a CANCELED fate through a dismissal, so the condition really discriminates", beside the shipped 05-19 row "still answers the canceled fact after a 200 dismissal" | 05-25 |
+| 11 | An EXPIRED cohort does NOT start reading as canceled once its row is dismissed, so a lapse is never presented as a deliberate cancel | `packages/service/tests/cohort-fate.spec.ts`, "does NOT carry an EXPIRED fate, so a lapse never becomes a reported cancel (audit #19)", with "answers FALSE for an expired record that was NOT dismissed" isolating the dismissal and "answers a dismissed EXPIRED id byte-identically to one this service never issued" keeping the route non-oracle | 05-25 |
 
 No test above is fully covered yet, so all of them stay in `## Tests`. Test 8 still needs the
 long-body-at-a-narrow-viewport clause, which is a genuine visual judgment and stays with a human.
 Test 6 still needs the public paused notice and the narrow-width chip wrap. Test 9 still needs the
-live-cohort registration disclosure (05-26 closes it). Test 11 still needs the expired-row fate read
-(05-25 closes it). Test 17 still needs a real `LIVE=1 BROADCAST=1` boot, which no unit gate can stand
+live-cohort registration disclosure (05-26 closes it). Test 17 still needs a real
+`LIVE=1 BROADCAST=1` boot, which no unit gate can stand
 up. Test 2 still needs the over-ceiling refusal naming this service's real maximum (05-26 closes it)
 and the `Cancel edit` closes-without-destroying clause, which is behind a click. Test 12 still
 carries an owner JUDGMENT, "confirm the new wording reads as honest rather than as a regression",
@@ -165,6 +168,31 @@ which no assertion can make for them; 05-27 narrows it rather than removing it.
 
 Test 4's remaining clauses are the ceremony ladder's rung-2 k-of-n consequence wording and the
 in-flight disable-both-buttons behavior, which is behind a click.
+
+**Test 11 was checked clause by clause for full retirement in 05-25 and is NOT retired.** Three of
+its four clauses now have rows: the canceled-fate survival, the expired-fate non-invention, and (from
+05-22) the confirmation body's disclosure of what a dismissal costs. The fourth, "the row disappears
+and stays gone, including after a refresh", is covered on the SERVICE side only. `forgetTerminal`
+plus `monitor.dismissEnded` are proven to clear both ended-record sources (`05-19`, re-read through
+`listCohorts()` in `packages/service/tests/lifecycle-routes.spec.ts`, and again in 05-25's expired
+row), so a refresh cannot bring the record back from the source of truth. What is NOT covered is the
+CONSOLE side: `grep -rn dismissEnded packages/web/tests` finds nothing, so the store action at
+`packages/web/src/stores/operator.ts:1144` is invoked by no test at all, and its deliberate design
+choice (re-read from the service rather than filter the row out locally, which is exactly what makes
+the row stay gone rather than merely look gone) is unexercised, as are its 401 and unreachable
+branches. `packages/web/tests/operator.spec.ts` is not in 05-25's `files_modified` and no other plan
+in this round claims it, so the pin was left to whoever owns it rather than guessed at. Its natural
+shape is the same four-fact 401 row 05-24 wrote for cancel and finalize, plus one row asserting the
+dismissal re-reads instead of splicing.
+
+**A copy question raised by 05-25, for the batched copy read.** The service refuses an edit of a
+draft that is no longer a draft with `{ error: 'unknown draft' }`, and the web client renders that
+string VERBATIM (`packages/web/src/lib/operator.ts`), contrary to a docstring that claimed a 404 fell
+back to the generic message. 05-25 corrected the docstring and pinned the server string where it is
+emitted, deliberately without changing either. Whether "unknown draft" is the right sentence for an
+operator staring at a stale edit form, given that the id may well be a cohort they just advertised,
+is a copy decision. The uniformity itself is now protected: all three draft refusals are asserted
+identical to each other, so any reword has to keep them so.
 
 **Test 10 was checked clause by clause for full retirement in 05-24 and is NOT retired.** Two of its
 three clauses now have rows above. The third, "the next-step line reads correctly", is uncovered:

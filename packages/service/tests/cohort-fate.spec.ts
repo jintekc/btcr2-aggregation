@@ -331,6 +331,107 @@ describe('the fate survives an operator dismissing the row (05-19, D-02)', () =>
     runner.stop();
   });
 
+  it('does NOT carry an EXPIRED fate, so a lapse never becomes a reported cancel (audit #19)', async () => {
+    // THE LEG NOTHING EVER DROVE. All three rows above cancel before they dismiss, so
+    // `forgetTerminal`'s `record.fate === 'canceled'` condition was only ever entered on its true
+    // side, and widening it to `record.fate` (any fate is truthy) would have shipped green.
+    //
+    // The consequence is an accusation. `GET /v1/cohort-fate/:id` is the ONE bit a seated
+    // participant can learn out of band, and the participant console turns a true into "The
+    // operator canceled this cohort." So a widened carry would tell every anonymous participant of
+    // a cohort that simply ran out of time that the operator ended it deliberately (D-02,
+    // ADR 0017), the moment the operator tidied the row away.
+    const { app, runner, operatorCohorts } = fateApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+
+    // Settled WITHOUT a cancel: `runner.stopCohort` declares no intent, so `settleCompletion`
+    // files the `expired` fate. Deliberately NOT `cancelCohort`, which declares the intent first;
+    // reaching this record through a cancel is exactly what made the existing rows blind here.
+    runner.stopCohort(cohortId);
+    await settle();
+
+    // Sanity, so the row cannot pass by dismissing a record that was never expired in the first
+    // place: the operator's own list says `expired`, and the fate already reads false.
+    const listed = operatorCohorts.listCohorts().find((r) => r.draftId === cohortId);
+    expect(listed?.state).toBe('expired');
+    expect((await anonymousFate(app, cohortId)).body).toEqual({ canceled: false });
+
+    // Through the REAL gated route, exactly as the canceled rows above drive it.
+    const dismissed = await app.request(`/v1/operator/ended/${cohortId}`, {
+      method: 'DELETE',
+      headers: { cookie },
+    });
+    expect(dismissed.status).toBe(200);
+    expect(operatorCohorts.listCohorts().some((r) => r.draftId === cohortId)).toBe(false);
+
+    // The dismissal removed the RECORD and carried NOTHING: an expiry is still an expiry.
+    expect((await anonymousFate(app, cohortId)).body).toEqual({ canceled: false });
+
+    runner.stop();
+  });
+
+  it('still carries a CANCELED fate through a dismissal, so the condition really discriminates', async () => {
+    // The control for the row above, deliberately in the same block rather than left to the
+    // shipped row higher up. A widened carry is only visible as an ASYMMETRY: with the two legs
+    // adjacent, the mutation that breaks the expired row must be seen leaving this one green,
+    // which is what says the carry is scoped rather than broken.
+    const { app, runner, operatorCohorts } = fateApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+
+    expect(operatorCohorts.cancelCohort(cohortId)).toBe('ok');
+    await settle();
+    expect(operatorCohorts.listCohorts().find((r) => r.draftId === cohortId)?.state).toBe('canceled');
+
+    const dismissed = await app.request(`/v1/operator/ended/${cohortId}`, {
+      method: 'DELETE',
+      headers: { cookie },
+    });
+    expect(dismissed.status).toBe(200);
+    expect((await anonymousFate(app, cohortId)).body).toEqual({ canceled: true });
+
+    runner.stop();
+  });
+
+  it('answers FALSE for an expired record that was NOT dismissed, isolating the dismissal', async () => {
+    // Without this row the expired-dismissal row above would pass just as happily against a build
+    // where an expiry read false for reasons that had nothing to do with the dismissal path. The
+    // only difference between the two rows is the DELETE.
+    const { app, runner, operatorCohorts } = fateApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+
+    runner.stopCohort(cohortId);
+    await settle();
+
+    expect(operatorCohorts.listCohorts().find((r) => r.draftId === cohortId)?.state).toBe('expired');
+    expect((await anonymousFate(app, cohortId)).body).toEqual({ canceled: false });
+
+    runner.stop();
+  });
+
+  it('answers a dismissed EXPIRED id byte-identically to one this service never issued', async () => {
+    // The non-oracle property, re-asserted across the dismissal path (T-05-10-01). A fix that
+    // stopped the expired carry but made a dismissed expiry answer 404, or grew a second key
+    // saying so, would satisfy every row above and still hand an anonymous caller a way to learn
+    // that this service once ran a cohort under that id.
+    const { app, runner, operatorCohorts } = fateApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+
+    runner.stopCohort(cohortId);
+    await settle();
+    expect(operatorCohorts.forgetTerminal(cohortId)).toBe(true);
+
+    const dismissedExpiry = await anonymousFate(app, cohortId);
+    const neverExisted = await anonymousFate(app, 'an-id-this-service-never-issued');
+    expect(dismissedExpiry).toEqual(neverExisted);
+    expect(dismissedExpiry).toEqual({ status: 200, body: { canceled: false } });
+
+    runner.stop();
+  });
+
   it('BOUNDS the carry: past the cap the oldest dismissed cancel reads like an unknown id', async () => {
     const { app, runner, operatorCohorts } = fateApp();
     const cookie = await login(app);
