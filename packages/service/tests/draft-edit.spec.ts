@@ -33,6 +33,7 @@ import {
 
 const PASSWORD = 'correct-horse-battery-staple';
 const ACTIVE_NETWORK = 'signet';
+const MINUTE = 60_000;
 
 /**
  * An operator-enabled app wired exactly as `index.ts` wires it, over a REAL runner so the advertise
@@ -171,6 +172,199 @@ describe('updateDraft reshapes a draft in place', () => {
     expect(updated?.beaconType).toBe('SMTBeacon');
     expect(updated?.threshold).toBe(2);
     expect(updated?.capacity).toBe(4);
+
+    runner.stop();
+  });
+});
+
+/**
+ * THE SUCCESSFUL WINDOW EDIT (audit #29, SVC-04 criterion 3, D-11/D-13).
+ *
+ * Every other row in this file that touches the edit path either passes no window key at all or
+ * (in `discovery-window.spec.ts`) supplies one that is refused by `validateDraft` before the update
+ * verb ever assembles anything. So the assembly itself - the four-way conditional spread that
+ * decides which explicit windows an edited draft carries - was unexecuted source, and a refactor
+ * that MERGED the supplied keys over the previous draft's own explicit windows would have shipped
+ * green while silently keeping a window the operator had just cleared.
+ *
+ * The consequence is a broken promise rather than a crash: the console tells the operator that an
+ * empty timing field means "use this service's default" (`operator-cohorts.ts`, `effectiveWindows`),
+ * and clearing the field would not have made that true.
+ *
+ * Each window is driven BOTH ways on purpose. A clearing row on its own would pass just as happily
+ * against code that never wrote an explicit window at all, so the setting row is what proves the
+ * clearing row is measuring a real transition. Both are read back twice, from the update verb's own
+ * return value AND from the served gated list, because a response DTO assembled separately from the
+ * stored draft would satisfy one and not the other.
+ */
+describe('a per-cohort timing window can be CLEARED and SET on the edit path (audit #29)', () => {
+  /** The gated list as the operator's console really reads it, by draft id. */
+  async function servedRow(
+    app: ReturnType<typeof draftEditApp>['app'],
+    cookie: string,
+    draftId: string,
+  ): Promise<OperatorCohortDTO | undefined> {
+    const res = await app.request('/v1/operator/cohorts', { headers: { cookie } });
+    const { cohorts } = (await res.json()) as { cohorts: OperatorCohortDTO[] };
+    return cohorts.find((c) => c.draftId === draftId);
+  }
+
+  it('CLEARS a discovery window the draft carried, on the DTO and on the served list', async () => {
+    // The service has a default of its own, so "cleared" has to mean "falls back to the service
+    // default", not "has no window at all". Both halves are asserted below.
+    const { app, runner, operatorCohorts } = draftEditApp(true, { defaultDiscoveryWindowMs: 20 * MINUTE });
+    const cookie = await login(app);
+    const created = operatorCohorts.createDraft({
+      beaconType: 'CASBeacon',
+      size: 2,
+      discoveryWindowMs: 10 * MINUTE,
+    });
+    expect(created.discoveryWindowMs).toBe(10 * MINUTE);
+
+    // The console sends the whole current shape with the timing field left empty, which is the
+    // key omitted entirely (the browser's null is normalized to undefined by the validator).
+    const updated = operatorCohorts.updateDraft(created.draftId, {
+      beaconType: 'CASBeacon',
+      size: 2,
+      threshold: 2,
+    });
+
+    // ABSENT, not an explicit undefined and not a zero: the wire shape is additive, so the console
+    // can tell "no window of my own" apart from "a window of nothing".
+    expect(updated?.discoveryWindowMs).toBeUndefined();
+    expect(updated && 'discoveryWindowMs' in updated).toBe(false);
+    // ...and the service's own default is still carried, which is what makes the empty field mean
+    // "use this service's default" rather than "no window".
+    expect(updated?.defaultDiscoveryWindowMs).toBe(20 * MINUTE);
+
+    // The same fact off the STORED draft, not only off the response the verb just built.
+    const served = await servedRow(app, cookie, created.draftId);
+    expect(served?.discoveryWindowMs).toBeUndefined();
+    expect(served && 'discoveryWindowMs' in served).toBe(false);
+    expect(served?.defaultDiscoveryWindowMs).toBe(20 * MINUTE);
+
+    runner.stop();
+  });
+
+  it('SETS a discovery window on a draft that had none, on the DTO and on the served list', async () => {
+    // The positive twin. Without it the clearing row above would pass against an assembly that
+    // never wrote an explicit window in the first place.
+    const { app, runner, operatorCohorts } = draftEditApp();
+    const cookie = await login(app);
+    const created = operatorCohorts.createDraft({ beaconType: 'CASBeacon', size: 2 });
+    expect(created.discoveryWindowMs).toBeUndefined();
+
+    const updated = operatorCohorts.updateDraft(created.draftId, {
+      beaconType: 'CASBeacon',
+      size: 2,
+      threshold: 2,
+      discoveryWindowMs: 7 * MINUTE,
+    });
+    expect(updated?.discoveryWindowMs).toBe(7 * MINUTE);
+
+    const served = await servedRow(app, cookie, created.draftId);
+    expect(served?.discoveryWindowMs).toBe(7 * MINUTE);
+
+    runner.stop();
+  });
+
+  it('CLEARS a funding window the draft carried, on the DTO and on the served list', async () => {
+    // The assembly handles both windows in one expression, so a refactor that merged one would
+    // almost certainly merge both; each window therefore gets its own pair rather than riding on
+    // the other's.
+    const { app, runner, operatorCohorts } = draftEditApp(true, { defaultFundingWindowMs: 12 * MINUTE });
+    const cookie = await login(app);
+    const created = operatorCohorts.createDraft({
+      beaconType: 'CASBeacon',
+      size: 2,
+      fundingWindowMs: 6 * MINUTE,
+    });
+    expect(created.fundingWindowMs).toBe(6 * MINUTE);
+
+    const updated = operatorCohorts.updateDraft(created.draftId, {
+      beaconType: 'CASBeacon',
+      size: 2,
+      threshold: 2,
+    });
+    expect(updated?.fundingWindowMs).toBeUndefined();
+    expect(updated && 'fundingWindowMs' in updated).toBe(false);
+    expect(updated?.defaultFundingWindowMs).toBe(12 * MINUTE);
+
+    const served = await servedRow(app, cookie, created.draftId);
+    expect(served?.fundingWindowMs).toBeUndefined();
+    expect(served && 'fundingWindowMs' in served).toBe(false);
+    expect(served?.defaultFundingWindowMs).toBe(12 * MINUTE);
+
+    runner.stop();
+  });
+
+  it('SETS a funding window on a draft that had none, on the DTO and on the served list', async () => {
+    const { app, runner, operatorCohorts } = draftEditApp();
+    const cookie = await login(app);
+    const created = operatorCohorts.createDraft({ beaconType: 'CASBeacon', size: 2 });
+    expect(created.fundingWindowMs).toBeUndefined();
+
+    const updated = operatorCohorts.updateDraft(created.draftId, {
+      beaconType: 'CASBeacon',
+      size: 2,
+      threshold: 2,
+      fundingWindowMs: 4 * MINUTE,
+    });
+    expect(updated?.fundingWindowMs).toBe(4 * MINUTE);
+
+    const served = await servedRow(app, cookie, created.draftId);
+    expect(served?.fundingWindowMs).toBe(4 * MINUTE);
+
+    runner.stop();
+  });
+
+  it('clears ONE window while leaving the other, so the two are assembled independently', async () => {
+    // A merge refactor and a swap refactor both survive a single-window pair; only a row that moves
+    // exactly one of the two can tell the assembly reads each key on its own.
+    const { runner, operatorCohorts } = draftEditApp();
+    const created = operatorCohorts.createDraft({
+      beaconType: 'CASBeacon',
+      size: 2,
+      discoveryWindowMs: 10 * MINUTE,
+      fundingWindowMs: 6 * MINUTE,
+    });
+
+    const updated = operatorCohorts.updateDraft(created.draftId, {
+      beaconType: 'CASBeacon',
+      size: 2,
+      threshold: 2,
+      fundingWindowMs: 6 * MINUTE,
+    });
+    expect(updated?.discoveryWindowMs).toBeUndefined();
+    expect(updated?.fundingWindowMs).toBe(6 * MINUTE);
+
+    runner.stop();
+  });
+
+  it('leaves every OTHER field exactly as supplied when neither window is sent', async () => {
+    // The assembly rebuilds the whole DTO, so it is also the place a clobber would happen. This row
+    // is what says the window work does not disturb the shape the operator actually edited.
+    const { app, runner, operatorCohorts } = draftEditApp();
+    const cookie = await login(app);
+    const created = operatorCohorts.createDraft({ beaconType: 'CASBeacon', size: 2 });
+
+    const updated = operatorCohorts.updateDraft(created.draftId, {
+      beaconType: 'SMTBeacon',
+      size: 5,
+      threshold: 3,
+    });
+    expect(updated).toEqual({
+      draftId: created.draftId,
+      beaconType: 'SMTBeacon',
+      network: ACTIVE_NETWORK,
+      threshold: 3,
+      capacity: 5,
+      joined: 0,
+      state: 'draft',
+    });
+
+    const served = await servedRow(app, cookie, created.draftId);
+    expect(served).toEqual(updated);
 
     runner.stop();
   });
