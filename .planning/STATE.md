@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: "Completed 05-16-PLAN.md (audit defect 2: funding-watch stand-down)"
-last_updated: "2026-07-30T14:32:58.472Z"
+stopped_at: "Completed 05-17-PLAN.md (audit defect 3: bounded acceptance namespace)"
+last_updated: "2026-07-30T14:51:10.754Z"
 last_activity: 2026-07-30
 last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 50
-  completed_plans: 46
+  completed_plans: 47
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 16 of 20 (gap-closure round 05-15..05-20)
+Plan: 17 of 20 (gap-closure round 05-15..05-20)
 Status: Ready to execute
 Last activity: 2026-07-30 — Phase 05 execution started
 
-Progress: [█████████░] 92%
+Progress: [█████████░] 94%
 
 ## Performance Metrics
 
@@ -107,6 +107,7 @@ Progress: [█████████░] 92%
 | Phase 05 P14 | 25 min | 2 tasks | 6 files |
 | Phase 05 P15 | 8min | 2 tasks | 3 files |
 | Phase 05 P16 | 15 min | 2 tasks | 4 files |
+| Phase 05 P17 | 20 | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -177,6 +178,8 @@ Recent decisions affecting current work (Phase 2):
 - [Phase ?]: 05-15: the accepted-set rule lives in one exported isAcceptedTapKeySig with exactly one call site, exported because the library refuses other lengths first so the default-refuse branch is only pinnable at the predicate
 - [Phase ?]: The kill switch stands down the display funding watch too: one guard at keygen-complete consulting the shared per-cohort predicate, so all three money legs agree by construction (05-AUDIT entry 2)
 - [Phase ?]: No esplora observation is synthesized on the stand-down path; the resulting unrefreshed health bit is disclosed in ADR 0017, the UAT checklist and a pinned spec row instead (T-05-16-05)
+- [Phase ?]: Bound the anonymous acceptance namespace by EVICTING oldest-first, never by capping-and-refusing: a cap would let an attacker lock legitimate joiners out of the SVC-05 join gate
+- [Phase ?]: The acceptance ledger's remember() never returns the hash it is retaining, so a byte-identical repost cannot turn the anonymous route into a delete primitive (T-05-17-06)
 
 ### Pending Todos
 
@@ -216,7 +219,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-30T14:32:48.564Z
-Stopped at: Completed 05-16-PLAN.md (audit defect 2: funding-watch stand-down)
+Last session: 2026-07-30T14:51:04.523Z
+Stopped at: Completed 05-17-PLAN.md (audit defect 3: bounded acceptance namespace)
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
