@@ -196,7 +196,7 @@ Plans:
 
 **Slip order** (CONTEXT D-22, three tiers): CORE never slips - SVC-04 lifecycle control (plans 01 through 07 and 10). SECOND - the four absorbed parked items (plans 08 and 09). SLIP-FIRST - the three folded scoping one-pagers (plans 11, 12, and 13), which re-park cleanly to Phase 6 or the next milestone if the phase runs long.
 
-**Plans**: 20/27 plans executed (20 shipped, 7 planned in the second gap round)
+**Plans**: 21/27 plans executed
 Plans:
 **Wave 1**
 
@@ -278,7 +278,7 @@ Plans:
 
 **Gap round 2, wave 1**
 
-- [ ] 05-21-PLAN.md - TRACER: typecheck `packages/web` in `pnpm test` + render web components via `react-dom/server`, proven on the funded-cancel gate, the post-broadcast suppression, and the terms empty state (SVC-04/SVC-05, defects #15/#21/#8/#7, wave 1)
+- [x] 05-21-PLAN.md - TRACER: typecheck `packages/web` in `pnpm test` + render web components via `react-dom/server`, proven on the funded-cancel gate, the post-broadcast suppression, and the terms empty state (SVC-04/SVC-05, defects #15/#21/#8/#7, wave 1)
 
 Note on the `depends_on` chain: 05-22 through 05-26 each declare the previous plan, so waves stay one plan deep. The code dependency for 05-22, 05-23 and 05-24 is on 05-21 alone; the chained edges express the round's serialization rule, since three plans depending on 05-21 directly would compute to one wave, dispatch concurrently against a tree each transiently mutates, and collide on `05-UAT.md`.
 
@@ -333,5 +333,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 2. Participant Discovery + Browse-and-Pick Join | 9/9 | Complete    | 2026-07-16 |
 | 3. Participant Submit, Co-Sign, Track, and Resolve | 9/9 | Complete    | 2026-07-22 |
 | 4. Operator Cohort Monitoring | 8/8 | Complete    | 2026-07-27 |
-| 5. Operator Cohort Lifecycle Control | 20/27 | In Progress|  |
+| 5. Operator Cohort Lifecycle Control | 21/27 | In Progress|  |
 | 6. Two-Stranger End-to-End + Real-Aggregator Framing | 0/TBD | Not started | - |

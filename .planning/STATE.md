@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Completed 05-20-PLAN.md
-last_updated: "2026-07-30T15:35:58.102Z"
+stopped_at: Completed 05-21-PLAN.md
+last_updated: "2026-07-30T20:10:37.647Z"
 last_activity: 2026-07-30
 last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 5
-  completed_phases: 5
-  total_plans: 50
-  completed_plans: 50
+  completed_phases: 4
+  total_plans: 57
+  completed_plans: 51
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 20 of 20 (gap-closure round 05-15..05-20)
+Plan: 2 of 27
 Status: Ready to execute
 Last activity: 2026-07-30 — Phase 05 execution started
 
-Progress: [██████████] 100%
+Progress: [█████████░] 89%
 
 ## Performance Metrics
 
@@ -111,6 +111,7 @@ Progress: [██████████] 100%
 | Phase 05 P18 | ~25 min | 2 tasks | 5 files |
 | Phase 05 P19 | 22 | 3 tasks | 11 files |
 | Phase 05 P20 | 50m | 2 tasks | 9 files |
+| Phase 05 P21 | ~35m | 3 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -191,6 +192,9 @@ Recent decisions affecting current work (Phase 2):
 - [Phase ?]: 05-19: audit defect 8 is a coverage and duplication defect, not a live bug; the DOM harness stays deferred with its exposure recorded
 - [Phase ?]: [Phase 05] Two unconfirmed terminal chips (co-signed, co-signed-fallback) rather than one, so honest labelling costs no list-level script-path signal (05-20)
 - [Phase ?]: [Phase 05] Chip tone/label/pulse moved into an exported CHIP_PRESENTATION accessor in operator-rows.ts, because a module-private map is unassertable without a DOM harness (05-20)
+- [Phase ?]: 05-21: static render over react-dom/server instead of jsdom or happy-dom, so packages/web gains a render gate with zero packages added and no vitest config
+- [Phase ?]: 05-21: setState seeding of a render is forbidden; zustand's server snapshot reads getInitialState(), so a seed is invisible and every absence assertion would pass vacuously
+- [Phase ?]: 05-21: packages/web is now referenced LAST by the root tsc -b, so pnpm test typechecks web src AND tests for the first time
 
 ### Pending Todos
 
@@ -230,7 +234,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-30T15:35:47.327Z
-Stopped at: Completed 05-20-PLAN.md
+Last session: 2026-07-30T20:10:27.334Z
+Stopped at: Completed 05-21-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
