@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: "Completed 05-15-PLAN.md (audit defect 1: sighash pin)"
-last_updated: "2026-07-30T14:16:51.738Z"
+stopped_at: "Completed 05-16-PLAN.md (audit defect 2: funding-watch stand-down)"
+last_updated: "2026-07-30T14:32:58.472Z"
 last_activity: 2026-07-30
 last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 50
-  completed_plans: 45
+  completed_plans: 46
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 15 of 20 (gap-closure round 05-15..05-20)
+Plan: 16 of 20 (gap-closure round 05-15..05-20)
 Status: Ready to execute
 Last activity: 2026-07-30 — Phase 05 execution started
 
-Progress: [█████████░] 90%
+Progress: [█████████░] 92%
 
 ## Performance Metrics
 
@@ -106,6 +106,7 @@ Progress: [█████████░] 90%
 | Phase 05 P13 | 35 min | 3 tasks | 12 files |
 | Phase 05 P14 | 25 min | 2 tasks | 6 files |
 | Phase 05 P15 | 8min | 2 tasks | 3 files |
+| Phase 05 P16 | 15 min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -174,6 +175,8 @@ Recent decisions affecting current work (Phase 2):
 - [Phase 05]: [Phase 05] 05-14: docs/UPSTREAM-LIMITS.md lifts the six Phase-4 live-UAT limits out of a phase artifact into one referenceable document and ADDS the seventh (the missing per-seat release API this phase re-parked), each with observed behavior, the pinned version, the effect on a running service, and the app-side workaround; it states at the TOP that filing is still QUEUED and not done by this phase, because a consolidated list otherwise reads like a filed batch. DEPLOY documents every runtime control in the order an operator meets them plus a dedicated 'What survives a restart' section, and the participant-facing features (chain-endpoint override with the CORS constraint named as the thing that will actually generate support questions and reported distinctly from unreachable, the wallet PSBT path, participation terms with the app-level enforcement boundary in its own paragraph). NO specific external wallet is named as compatible anywhere in docs/ (RESEARCH A1/A2 are search-derived, not tested here), and the PART-06 external-wallet leg is marked NON-BLOCKING in the checklist for the same reason. Six new env vars documented AND mirrored into docker-compose.yml with the same defaults; SERVICE_NAME's now-false 'no edit surface' row was corrected. New pnpm e2e:gate runs all thirteen hermetic e2e legs as one command (named e2e:gate, not e2e:hermetic, which would have claimed legs it omits). Full gate green with nothing weakened: 969 tests, lint, web build, thirteen legs individually and through the script. The owner's checklist pass is the remaining gate and was NOT run.
 - [Phase ?]: 05-15: pinned the ACCEPTED taproot sighash set (64-byte SIGHASH_DEFAULT, or 65 bytes trailing 0x01) rather than blacklisting SIGHASH_NONE, because five non-default flavours passed and each breaks a different guarantee
 - [Phase ?]: 05-15: the accepted-set rule lives in one exported isAcceptedTapKeySig with exactly one call site, exported because the library refuses other lengths first so the default-refuse branch is only pinnable at the predicate
+- [Phase ?]: The kill switch stands down the display funding watch too: one guard at keygen-complete consulting the shared per-cohort predicate, so all three money legs agree by construction (05-AUDIT entry 2)
+- [Phase ?]: No esplora observation is synthesized on the stand-down path; the resulting unrefreshed health bit is disclosed in ADR 0017, the UAT checklist and a pinned spec row instead (T-05-16-05)
 
 ### Pending Todos
 
@@ -213,7 +216,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-30T14:16:51.699Z
-Stopped at: Completed 05-15-PLAN.md (audit defect 1: sighash pin)
+Last session: 2026-07-30T14:32:48.564Z
+Stopped at: Completed 05-16-PLAN.md (audit defect 2: funding-watch stand-down)
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)

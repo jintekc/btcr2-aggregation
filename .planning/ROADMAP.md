@@ -196,7 +196,7 @@ Plans:
 
 **Slip order** (CONTEXT D-22, three tiers): CORE never slips - SVC-04 lifecycle control (plans 01 through 07 and 10). SECOND - the four absorbed parked items (plans 08 and 09). SLIP-FIRST - the three folded scoping one-pagers (plans 11, 12, and 13), which re-park cleanly to Phase 6 or the next milestone if the phase runs long.
 
-**Plans**: 15/20 plans executed
+**Plans**: 16/20 plans executed
 Plans:
 **Wave 1**
 
@@ -259,7 +259,7 @@ Plans:
 **Gap wave 1**
 
 - [x] 05-15-PLAN.md - Pin the sighash type in the registration PSBT validator (PART-06, real funds, Gap wave 1)
-- [ ] 05-16-PLAN.md - Stand down the funding watch under the broadcast kill switch (SVC-04, real funds, Gap wave 1)
+- [x] 05-16-PLAN.md - Stand down the funding watch under the broadcast kill switch (SVC-04, real funds, Gap wave 1)
 
 **Gap wave 2** *(sequenced after the real-funds fixes)*
 
@@ -301,5 +301,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 2. Participant Discovery + Browse-and-Pick Join | 9/9 | Complete    | 2026-07-16 |
 | 3. Participant Submit, Co-Sign, Track, and Resolve | 9/9 | Complete    | 2026-07-22 |
 | 4. Operator Cohort Monitoring | 8/8 | Complete    | 2026-07-27 |
-| 5. Operator Cohort Lifecycle Control | 15/20 | In Progress|  |
+| 5. Operator Cohort Lifecycle Control | 16/20 | In Progress|  |
 | 6. Two-Stranger End-to-End + Real-Aggregator Framing | 0/TBD | Not started | - |
