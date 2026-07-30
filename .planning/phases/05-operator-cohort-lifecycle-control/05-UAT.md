@@ -136,10 +136,18 @@ directly.
 | 4 | Rung 3 (ordinary cancel) asks for no typed id and keeps its confirm armed | `packages/web/tests/lifecycle.spec.ts`, same block, "keeps the ordinary cancel at low friction" | 05-21 |
 | 4 | Cancel is HIDDEN rather than disabled after broadcast, and the post-broadcast line explains itself | `packages/web/tests/lifecycle.spec.ts`, "LifecycleActions hides Cancel once the beacon transaction is out (D-04, rendered)" | 05-21 |
 | 8 | A service that set no terms shows no terms step at all: no scroll box, no acceptance checkbox | `packages/web/tests/terms-render.spec.tsx`, "a service that set NO terms renders NO terms step at all" | 05-21 |
+| 6 | The `Advertising paused` chip appears BESIDE the mode chip, leaving the mode label unchanged | `packages/web/tests/service-controls.spec.ts`, "keeps the mode label unchanged and adds the paused chip beside it while draining" | 05-22 |
+| 9 | A cohort with no seats left renders the test-peer control disabled beside the real refusal reason, and that reason is the service's own 409 sentence | `packages/web/tests/service-controls.spec.ts`, "renders the control DISABLED beside the refusal reason when no seats are left" plus "states the seat-exhausted refusal reason, which the service must repeat byte for byte" | 05-22 |
+| 11 | The dismissal confirmation body discloses what a dismissal costs: the record AND its activity log, from this console, for this session, with no undo | `packages/web/tests/service-controls.spec.ts`, "states the rung-1 dismissal copy, including that there is no undo" (exact equality on all three sentences) | 05-22 |
+| 17 | The kill-switch control is offered ONLY on a live boot mode with broadcasting still available, and is replaced rather than disabled once engaged | `packages/web/tests/service-controls.spec.ts`, "ServiceControls offers the kill switch only where it can act (rendered)" | 05-22 |
+| 17 | After the switch engages, the health strip still reports the LIVE boot mode, with a separate warn chip beside it rather than a rewritten mode chip | `packages/web/tests/service-controls.spec.ts`, "keeps the LIVE label and adds the broadcast-off chip once the kill switch engages" | 05-22 |
 
-Neither test 4 nor test 8 is fully covered yet, so both stay in `## Tests` above. Test 4 still needs
-the 401 shared-session-expiry clause (05-24 closes it). Test 8 still needs the long-body-at-a-narrow-
-viewport clause, which is a genuine visual judgment and stays with a human.
+No test above is fully covered yet, so all of them stay in `## Tests`. Test 4 still needs the 401
+shared-session-expiry clause (05-24 closes it). Test 8 still needs the long-body-at-a-narrow-viewport
+clause, which is a genuine visual judgment and stays with a human. Test 6 still needs the public
+paused notice and the narrow-width chip wrap. Test 9 still needs the live-cohort registration
+disclosure (05-26 closes it). Test 11 still needs the expired-row fate read (05-25 closes it). Test
+17 still needs a real `LIVE=1 BROADCAST=1` boot, which no unit gate can stand up.
 
 ## Summary
 

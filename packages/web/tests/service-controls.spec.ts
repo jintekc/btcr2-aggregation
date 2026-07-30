@@ -7,6 +7,7 @@ import {
   operatorLogState,
   PAUSE_LABEL,
   RESUME_LABEL,
+  ServiceControls,
   serviceControlsView,
 } from '../src/components/operator/ServiceControls';
 import {
@@ -300,10 +301,31 @@ describe('the kill-switch and dismissal copy is exact contract copy (05-UI-SPEC 
   // decides which rows it renders on, so a future copy change has two places to find.
   it('states the rung-1 dismissal copy, including that there is no undo', () => {
     expect(DISMISS_HEADING).toBe('Remove this record?');
+    // EXACT equality on all three sentences (`05-AUDIT-2.md` entry 22). What the two easily
+    // droppable phrases cost if they go: without "and its activity log" and " for this session"
+    // the confirm reads as if the record were permanently destroyed SERVER side, when in fact it
+    // clears one console for one session (D-15, UI-SPEC E10). A promise about what an act costs
+    // must not be able to narrow silently, and containment alone let it.
+    expect(DISMISS_BODY).toBe(
+      "This clears the ended cohort's record and its activity log from your console for this session. The cohort itself already ended, so nothing on the chain or in the directory changes. There is no undo.",
+    );
+    // Kept beside the exact pin because they name WHICH facts are load-bearing, which the one
+    // long string does not make obvious to a reader.
     expect(DISMISS_BODY).toContain('There is no undo.');
     expect(DISMISS_BODY).toContain('nothing on the chain or in the directory changes');
     expect(DISMISS_CONFIRM_LABEL).toBe('Dismiss record');
     expect(KEEP_RECORD_LABEL).toBe('Keep it');
+  });
+
+  it('keeps the additive re-advertise line as its OWN exact sentence', () => {
+    // Two constants, not one, and this pin is what keeps them distinguishable. The line is an
+    // ADDITIVE disclosure rendered as a second stacked paragraph only on rows where the cost is
+    // real, so folding it into `DISMISS_BODY` would state a cost that most dismissals do not
+    // carry. `packages/web/tests/operator-rows.spec.ts` pins the two FACTS it must name, beside
+    // the predicate that decides which rows it renders on; this pins the sentence itself.
+    expect(DISMISS_READVERTISE_LINE).toBe(
+      'This also removes the cohort from your cohort list, so it can no longer be re-advertised.',
+    );
   });
 
   it('states the operator-log empty heading and body', () => {
@@ -584,5 +606,65 @@ describe('TestPeerAction refuses a full cohort in the markup, not only in words 
     expect(html).toContain(asRenderedText(addTestPeersHelp(2)));
     expect(html).not.toContain(asRenderedText(NO_SEATS_LEFT_REASON));
     expect(controlDisabled(html)).toBe(false);
+  });
+});
+
+/**
+ * The one-way broadcast kill switch's MODE GUARD, rendered (`05-AUDIT-2.md` entry 16, D-14).
+ *
+ * `broadcastControlState` is already covered above, and those rows stay: they are load-bearing
+ * about the RULE. What was missing is proof the COMPONENT consults it. Deleting
+ * `broadcast === 'available' &&` from the button's guard shipped green, and a danger-toned one-way
+ * control appearing on a service that will never broadcast is verbatim the fail signal the UAT
+ * procedure for test 17 describes. The audit proposed closing this in a browser leg because no
+ * spec in this repo could render a component; 05-21 changed that, so it closes here, in the
+ * cheapest gate to keep green, and 05-27 adds the real-Chromium witness as a second and
+ * independent one.
+ */
+describe('ServiceControls offers the kill switch only where it can act (rendered)', () => {
+  beforeEach(() => {
+    participantFixture.current = { network: 'regtest' };
+    operatorFixture.current = {};
+  });
+
+  /** The card under one served health payload. `view` and `operatorActions` are incidental reads
+   *  the component makes on every render; seeded at their real initial values so the rows below
+   *  are about the kill switch and nothing else. */
+  function card(health: OperatorState['health']): string {
+    operatorFixture.current = { view: { kind: 'list' }, operatorActions: [], health };
+    return renderStatic(createElement(ServiceControls, { baseUrl: 'http://svc.example' }));
+  }
+
+  /**
+   * THE ANTI-VACUITY CONTROL, written and run FIRST. Three of the four rows below assert an
+   * ABSENCE, and without this one they would all pass against a fixture that never reached the
+   * renderer at all.
+   */
+  it('offers the control on a live service with broadcasting still available', () => {
+    const html = card({ mode: 'live', esploraReachable: true, paused: false, broadcastDisabled: false });
+    expect(html).toContain(asRenderedText(DISABLE_BROADCAST_LABEL));
+    expect(html).not.toContain(asRenderedText(BROADCAST_OFF_LINE));
+  });
+
+  it('offers NOTHING to stand down on a hermetic service', () => {
+    const html = card({ mode: 'hermetic', esploraReachable: 'n/a', paused: false });
+    expect(html).not.toContain(asRenderedText(DISABLE_BROADCAST_LABEL));
+  });
+
+  it('offers NOTHING on a live service that was never going to broadcast', () => {
+    // Verbatim the UAT fail signal: a danger-toned one-way control on a service that will never
+    // broadcast asks the operator to stand down something that was never standing.
+    const html = card({ mode: 'live-no-broadcast', esploraReachable: true, paused: false });
+    expect(html).not.toContain(asRenderedText(DISABLE_BROADCAST_LABEL));
+  });
+
+  it('REPLACES the control with the one-way line once the switch is already engaged', () => {
+    // Two assertions, and the second is the point: a disabled-but-present control would satisfy a
+    // presence check on the line alone, and the shipped decision is that the control is GONE, not
+    // disabled. A disabled button would imply the act is still pending or still reversible from
+    // this console, and it is neither.
+    const html = card({ mode: 'live', esploraReachable: true, paused: false, broadcastDisabled: true });
+    expect(html).toContain(asRenderedText(BROADCAST_OFF_LINE));
+    expect(html).not.toContain(asRenderedText(DISABLE_BROADCAST_LABEL));
   });
 });
