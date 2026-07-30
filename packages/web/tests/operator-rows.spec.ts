@@ -1,5 +1,14 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { canceledEndedLine, chipForCohort, groupForChip, groupRenderRows } from '../src/lib/operator-rows';
+import {
+  canceledEndedLine,
+  chipForCohort,
+  dismissDropsReadvertise,
+  groupForChip,
+  groupRenderRows,
+} from '../src/lib/operator-rows';
+import { DISMISS_READVERTISE_LINE } from '../src/stores/operator';
 import type { CohortSummaryDTO, OperatorCohortDTO } from '../src/lib/operator';
 
 /**
@@ -137,5 +146,140 @@ describe('the canceled fate (D-05)', () => {
     const line = canceledEndedLine(Date.parse('2026-07-28T22:31:00Z'));
     expect(line.startsWith('Canceled by the operator at ')).toBe(true);
     expect(line.endsWith('.')).toBe(true);
+  });
+});
+
+/**
+ * The dismissal's FULL cost, disclosed on exactly the rows where it is real (05-19, D-15).
+ *
+ * Once a dismissal also clears the terminal record, `readvertiseExpired` loses the record it
+ * needs, so dismissing an EXPIRED row destroys that row's only escape hatch. The shipped
+ * "there is no undo" covers that only in the abstract, so the confirm gains one sentence, and it
+ * must appear on the rows that offer Re-advertise and nowhere else.
+ *
+ * `packages/web` has NO DOM harness, so a pure predicate plus a constant-containment grep is
+ * exactly the pairing that let audit defect 8's seven assertions guard a function nothing called.
+ * The source-read block below is what makes these assertions depend on the code they describe,
+ * using the `readFileSync` + `fileURLToPath` technique `packages/web/tests/terms.spec.ts` already
+ * uses and the brace-matched region extraction `packages/web/tests/tx-client.spec.ts:407-431` uses.
+ */
+describe('dismissDropsReadvertise: the disclosure predicate (05-19)', () => {
+  it('is TRUE for a row whose served state offers Re-advertise', () => {
+    expect(dismissDropsReadvertise(cohort({ state: 'expired' }))).toBe(true);
+  });
+
+  it('is FALSE for a monitoring-only ended row, which has no served cohort at all', () => {
+    // This is the row the unconditional-render mistake would lie to: nothing was ever
+    // re-advertisable here, so telling the operator they are giving that up is simply false.
+    expect(dismissDropsReadvertise(undefined)).toBe(false);
+  });
+
+  it('is FALSE for every other served state', () => {
+    for (const state of ['draft', 'advertised', 'canceled'] as const) {
+      expect(dismissDropsReadvertise(cohort({ state }))).toBe(false);
+    }
+  });
+});
+
+describe('DISMISS_READVERTISE_LINE says what the dismissal costs (05-19)', () => {
+  it('names the cohort list and uses the word re-advertise', () => {
+    // CONTAINMENT rather than exact-string equality, in the shape of the shipped `DISMISS_BODY`
+    // pin: the wording is the author's, the two FACTS are the contract. Pinning the whole
+    // sentence would make a future rewording fail for no reason; pinning nothing would let
+    // `'This also clears the row.'` satisfy every other assertion in this file while still never
+    // telling the operator that their only re-advertise path is being destroyed.
+    expect(DISMISS_READVERTISE_LINE).toContain('re-advertise');
+    expect(DISMISS_READVERTISE_LINE).toContain('cohort list');
+  });
+});
+
+/** The shipped list component's source, read once (the `terms.spec.ts` technique). */
+const LIST_SRC = readFileSync(
+  fileURLToPath(new URL('../src/components/operator/OperatorCohortList.tsx', import.meta.url)),
+  'utf8',
+);
+
+/**
+ * The same source with its import declarations stripped, so an occurrence COUNT means "renders in
+ * exactly one place" rather than "is mentioned once including its own import".
+ */
+const LIST_RENDER_SRC = LIST_SRC.replace(/^import[\s\S]*?from\s+'[^']*';$/gm, '');
+
+/**
+ * The rung-1 `<ConfirmPanel ...>` element, isolated so a placement pin cannot be satisfied by a
+ * paragraph sitting BESIDE the panel.
+ *
+ * Located by angle and brace matching rather than by slicing to the next known element, following
+ * `packages/web/tests/tx-client.spec.ts:407-431`, and carrying the same kind of SELF-GUARD it
+ * carries: a pin that fails for the wrong reason (or that silently widens into its neighbour) is
+ * worse than no pin, because the next reader disarms it.
+ */
+function confirmPanelElement(): string {
+  const start = LIST_SRC.indexOf('<ConfirmPanel');
+  expect(start).toBeGreaterThan(0);
+  let depth = 0;
+  for (let i = start; i < LIST_SRC.length; i += 1) {
+    const ch = LIST_SRC[i];
+    if (ch === '{') {
+      depth += 1;
+    } else if (ch === '}') {
+      depth -= 1;
+    } else if (ch === '>' && depth === 0) {
+      // Self-closing (`... />`) is the shipped shape; a plain `>` would open a tag whose matching
+      // close has to be found instead. Both are handled so the extractor cannot quietly truncate.
+      if (LIST_SRC[i - 1] === '/') {
+        return LIST_SRC.slice(start, i + 1);
+      }
+      const close = LIST_SRC.indexOf('</ConfirmPanel>', i);
+      if (close < 0) {
+        throw new Error('ConfirmPanel element not found: no matching close tag');
+      }
+      return LIST_SRC.slice(start, close + '</ConfirmPanel>'.length);
+    }
+  }
+  throw new Error('ConfirmPanel element not found: unbalanced delimiters');
+}
+
+describe('OperatorCohortList renders the disclosure conditionally, INSIDE the confirm (05-19)', () => {
+  it('imports the predicate', () => {
+    expect(LIST_SRC).toContain('dismissDropsReadvertise');
+    expect(LIST_SRC).toMatch(/import[\s\S]*?dismissDropsReadvertise[\s\S]*?from\s+'\.\.\/\.\.\/lib\/operator-rows'/);
+  });
+
+  it('actually CALLS the predicate, rather than importing it and ignoring it', () => {
+    const occurrences = LIST_SRC.split('dismissDropsReadvertise').length - 1;
+    expect(occurrences).toBeGreaterThanOrEqual(2);
+  });
+
+  it('renders the line in exactly ONE place, and that place is guarded by the predicate', () => {
+    // Without this, a component that renders `<p>{DISMISS_READVERTISE_LINE}</p>` unconditionally
+    // and never imports the predicate satisfies every other assertion here, and a monitoring-only
+    // ended row would be told the cohort can no longer be re-advertised, which is false for it.
+    const occurrences = LIST_RENDER_SRC.split('DISMISS_READVERTISE_LINE').length - 1;
+    expect(occurrences).toBe(1);
+    expect(LIST_RENDER_SRC).toMatch(/dismissDropsReadvertise\([A-Za-z0-9_.?]*\)\s*\?[^:]*DISMISS_READVERTISE_LINE[^:]*:/);
+  });
+
+  it('calls the predicate on the served cohort of the ROW, not on a value that makes it constant', () => {
+    // Every other assertion here is argument-INDEPENDENT, so without this one
+    // `dismissDropsReadvertise(undefined) ? <p>{DISMISS_READVERTISE_LINE}</p> : null` passes them
+    // all while rendering the sentence for NO row at all. `cohort` is the binding the component
+    // destructures from `entry` and the same one `isExpired` is derived from, so pinning the call
+    // text also pins that the disclosure and the Re-advertise control read one fact.
+    expect(LIST_SRC).toContain('dismissDropsReadvertise(cohort)');
+  });
+
+  it('places the guarded line INSIDE the rung-1 ConfirmPanel, not beside it', () => {
+    const panel = confirmPanelElement();
+    // Self-guard, in the shape of the `register()` extractor's: the slice starts where it should
+    // and did NOT widen into the discard-draft confirm that follows in the same component.
+    expect(panel.startsWith('<ConfirmPanel')).toBe(true);
+    expect(panel).not.toContain('Discard this draft?');
+    expect(panel).not.toContain('Keep draft');
+    // The panel takes its content as a `body={...}` PROP, so a sibling placement still compiles
+    // and still renders on the row while sitting OUTSIDE the confirmation the operator is
+    // reading, which defeats the entire point of disclosing a cost before a confirm.
+    expect(panel).toContain('DISMISS_READVERTISE_LINE');
+    expect(panel).toContain('dismissDropsReadvertise(cohort)');
   });
 });

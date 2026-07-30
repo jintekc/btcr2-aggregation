@@ -3,6 +3,7 @@ import { Badge, Button, Card, ConfirmPanel, CopyField, SectionTitle, StatusDot }
 import { cosignCaption, cosignValue } from '../../lib/directory';
 import {
   canceledEndedLine,
+  dismissDropsReadvertise,
   groupRenderRows,
   type ChipKey,
   type GroupKey,
@@ -15,6 +16,7 @@ import {
   DISMISS_CONFIRM_LABEL,
   DISMISS_HEADING,
   DISMISS_LABEL,
+  DISMISS_READVERTISE_LINE,
   EDIT_UNAVAILABLE_REASON,
   KEEP_RECORD_LABEL,
   useOperator,
@@ -261,12 +263,26 @@ function CohortRow({
 
       {/* The rung-1 dismissal ceremony (UI-SPEC E10): neutral tone, one fixed body, no typed
           value. Both buttons disable while the delete is in flight, and a failure renders the
-          list's shared action-error line with the row left exactly as it was. */}
+          list's shared action-error line with the row left exactly as it was.
+
+          The second paragraph is the one ADDITIONAL cost a dismissal carries on a row that still
+          offers Re-advertise (05-19, D-15): clearing the terminal record is exactly what takes
+          that option away. It sits INSIDE the panel's `body` prop rather than beside the panel,
+          because the panel takes its content as a prop, so a sibling would compile, would render
+          on the row, and would still be outside the confirmation the operator is reading.
+          `ConfirmPanel` already wraps the body in a `space-y-2` container, so the two paragraphs
+          stack with no styling change. The ceremony and its rung are unchanged; only the
+          disclosure is new. */}
       {confirmingDismiss ? (
         <ConfirmPanel
           tone="neutral"
           heading={DISMISS_HEADING}
-          body={<p>{DISMISS_BODY}</p>}
+          body={
+            <>
+              <p>{DISMISS_BODY}</p>
+              {dismissDropsReadvertise(cohort) ? <p>{DISMISS_READVERTISE_LINE}</p> : null}
+            </>
+          }
           confirmLabel={DISMISS_CONFIRM_LABEL}
           cancelLabel={KEEP_RECORD_LABEL}
           busy={dismissing === id}

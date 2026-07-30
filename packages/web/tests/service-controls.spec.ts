@@ -23,6 +23,7 @@ import {
   DISMISS_CONFIRM_LABEL,
   DISMISS_HEADING,
   DISMISS_LABEL,
+  DISMISS_READVERTISE_LINE,
   KEEP_BROADCAST_LABEL,
   KEEP_RECORD_LABEL,
   OPERATOR_ACTIONS_EMPTY,
@@ -217,6 +218,9 @@ describe('the kill-switch and dismissal copy is exact contract copy (05-UI-SPEC 
     expect(BROADCAST_OFF_CHIP).toBe('Broadcast off (this session)');
   });
 
+  // The 05-19 disclosure line (`DISMISS_READVERTISE_LINE`) joins this dismissal copy set. Its
+  // CONTENT is pinned in `packages/web/tests/operator-rows.spec.ts`, beside the predicate that
+  // decides which rows it renders on, so a future copy change has two places to find.
   it('states the rung-1 dismissal copy, including that there is no undo', () => {
     expect(DISMISS_HEADING).toBe('Remove this record?');
     expect(DISMISS_BODY).toContain('There is no undo.');
@@ -245,6 +249,7 @@ describe('the kill-switch and dismissal copy is exact contract copy (05-UI-SPEC 
       DISMISS_HEADING,
       DISMISS_BODY,
       DISMISS_CONFIRM_LABEL,
+      DISMISS_READVERTISE_LINE,
       KEEP_RECORD_LABEL,
       OPERATOR_ACTIONS_TITLE,
       OPERATOR_ACTIONS_EMPTY,

@@ -258,6 +258,20 @@ export const DISMISS_LABEL = 'Dismiss';
 export const DISMISS_HEADING = 'Remove this record?';
 export const DISMISS_BODY =
   "This clears the ended cohort's record and its activity log from your console for this session. The cohort itself already ended, so nothing on the chain or in the directory changes. There is no undo.";
+/**
+ * The one ADDITIONAL cost a dismissal carries on a row that still offers Re-advertise (05-19,
+ * D-15). Rendered as a second stacked paragraph inside the same rung-1 confirm, and only when
+ * {@link file://../lib/operator-rows.ts} `dismissDropsReadvertise` says the cost is real.
+ *
+ * A separate constant rather than an edit to {@link DISMISS_BODY}: that body's sentences are
+ * still true on every row, its shipped content pin stays green, and none of the fixed dismissal
+ * copy in `05-UI-SPEC.md` has to be re-approved for an additive disclosure. It names the two
+ * facts that matter (the cohort leaves the cohort list, and it can no longer be re-advertised),
+ * because a confirmation that promises less than the action costs is the exact defect class this
+ * sentence exists to close.
+ */
+export const DISMISS_READVERTISE_LINE =
+  'This also removes the cohort from your cohort list, so it can no longer be re-advertised.';
 export const DISMISS_CONFIRM_LABEL = 'Dismiss record';
 export const KEEP_RECORD_LABEL = 'Keep it';
 /** The in-flight confirm label for a dismissal. */

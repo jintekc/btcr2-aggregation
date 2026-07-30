@@ -49,6 +49,29 @@ export function canceledEndedLine(at: number): string {
   return `Canceled by the operator at ${new Date(at).toLocaleTimeString()}.`;
 }
 
+/**
+ * Whether dismissing this row would ALSO give up its Re-advertise option (05-19, D-15).
+ *
+ * A dismissal now clears the operator cohort list's terminal record as well as the monitoring
+ * ended record, and for an expired row that terminal record is exactly what `readvertiseExpired`
+ * needs: forgetting it destroys the row's only escape hatch. The shipped `DISMISS_BODY` says
+ * "there is no undo", which covers that in the abstract only, so the confirm names the specific
+ * cost - and only where it is real.
+ *
+ * Decided from the SAME served fact the Re-advertise control itself is gated on (`isExpired` in
+ * {@link file://../components/operator/OperatorCohortList.tsx}), so the control and the
+ * disclosure can never disagree about which rows have something to lose. A monitoring-only ended
+ * row passes `undefined` here and reads false: nothing was ever re-advertisable for it, so
+ * telling its operator they are giving that up would be simply untrue.
+ *
+ * Dependency-free like every other predicate in this file, so the rule is unit-testable in a
+ * package with no DOM harness. Its whole purpose is to keep a confirmation from promising less
+ * than it costs.
+ */
+export function dismissDropsReadvertise(cohort?: OperatorCohortDTO): boolean {
+  return cohort?.state === 'expired';
+}
+
 /** The four list groups, in render order (04-UI-SPEC list group headings). */
 export type GroupKey = 'attention' | 'active' | 'drafts' | 'ended';
 
