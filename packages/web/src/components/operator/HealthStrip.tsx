@@ -5,7 +5,21 @@ import { useParticipant } from '../../stores/participant';
 import { useOperator } from '../../stores/operator';
 import type { ServiceMode } from '../../lib/operator';
 
-const MODE_LABEL: Record<ServiceMode, string> = {
+/**
+ * The three mode labels, one per member of {@link ServiceMode} (D-17).
+ *
+ * EXPORTED so it can be asserted (`05-AUDIT-2.md` entry 6). This is the single most consequential
+ * piece of copy on this surface: it is the operator's only statement of whether this service moves
+ * real Bitcoin. While the record was module-private no test could reach it, so relabelling `live`
+ * shipped undetected, and the last hop from a served mode to a rendered chip was recorded in
+ * `05-VALIDATION.md:76` as verified by `build`, which is itself the admission. The same reasoning
+ * moved the cohort-row chip presentation map out of `OperatorCohortList.tsx` and into
+ * `lib/operator-rows.ts` in 05-20: a label an operator relies on belongs somewhere a spec can pin
+ * it. The map stays HERE, beside the file's other chip labels, so every label on this row still has
+ * one home. Pinned in `packages/web/tests/service-controls.spec.ts`, both as a map and as rendered
+ * output under each served mode.
+ */
+export const MODE_LABEL: Record<ServiceMode, string> = {
   hermetic: 'Hermetic',
   'live-no-broadcast': 'Live (no broadcast)',
   live: 'Live',

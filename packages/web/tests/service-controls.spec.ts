@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
-import { BROADCAST_OFF_CHIP } from '../src/components/operator/HealthStrip';
+import { createElement } from 'react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { BROADCAST_OFF_CHIP, HealthStrip, MODE_LABEL } from '../src/components/operator/HealthStrip';
 import {
   broadcastControlState,
   operatorLogState,
@@ -31,6 +32,72 @@ import {
   OPERATOR_ACTIONS_LOADING,
   OPERATOR_ACTIONS_TITLE,
 } from '../src/stores/operator';
+import { asRenderedText, renderStatic } from './support/render';
+import type { ServiceMode } from '../src/lib/operator';
+import type { OperatorState } from '../src/stores/operator';
+import type { ParticipantState } from '../src/stores/participant';
+
+/**
+ * The render fixtures, and the FILE-SCOPED fakes that carry them into a static render.
+ *
+ * This file keeps its own render blocks rather than splitting them into a sibling, because the
+ * check 05-22 required BEFORE writing came back clean: every pre-existing row here calls a pure
+ * selector or reads an exported copy constant, and NOT ONE of them touches a bound store hook. The
+ * fake spreads the actual module, so `DISMISS_BODY` and every other constant above stays the
+ * shipped one; only `useOperator` and `useParticipant` are replaced. (`packages/web/tests/
+ * terms-render.spec.tsx` is a sibling precisely because `terms.spec.ts` does have live hook calls,
+ * which `vi.mock`, being file-scoped, could not have served.)
+ *
+ * The recipe is the one `packages/web/tests/support/render.tsx` spells out: a `vi.mock` factory is
+ * hoisted above this file's imports, so it may CAPTURE a plain holder but must resolve both the
+ * original module and the helper by dynamic import. The holders are typed as partials of the
+ * stores' own state, so a misspelled fixture key is a compile error rather than an `undefined`
+ * indistinguishable from an unseeded store.
+ *
+ * There is no `setState` in this file, and there cannot be. A static render takes
+ * `useSyncExternalStore`'s SERVER snapshot, which zustand implements as `getInitialState()`, so a
+ * `setState` seed is invisible; and here the bound hooks ARE the fake, which exposes none. Every
+ * row of the mode matrix below would render the pre-first-read fallback and pass while proving
+ * nothing.
+ */
+const operatorFixture: { current: Partial<OperatorState> } = { current: {} };
+const participantFixture: { current: Partial<ParticipantState> } = { current: {} };
+
+vi.mock('../src/stores/operator', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/stores/operator')>();
+  const { selectorFake } = await import('./support/render');
+  return { ...actual, useOperator: selectorFake(() => operatorFixture.current) };
+});
+
+vi.mock('../src/stores/participant', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/stores/participant')>();
+  const { selectorFake } = await import('./support/render');
+  return { ...actual, useParticipant: selectorFake(() => participantFixture.current) };
+});
+
+/**
+ * Whether `label` renders as a COMPLETE chip, rather than merely appearing somewhere in the markup.
+ *
+ * `Live` is a substring of `Live (no broadcast)`, so a plain `toContain` could never assert that
+ * the live-no-broadcast row does not ALSO claim plain live, which is exactly the both-directions
+ * property the mode matrix rests on. Every chip on the health strip is a `Badge`, which renders its
+ * children directly inside one `<span>`, so the closing tag is what makes the match exact.
+ */
+function chipRendered(html: string, label: string): boolean {
+  return html.includes(`>${asRenderedText(label)}</span>`);
+}
+
+/**
+ * The character house style forbids in authored copy, spelled as an ESCAPE and once.
+ *
+ * Every guard in this file compares against this constant rather than pasting the character in
+ * literally, which is what lets the repo-wide scan for it over this file return nothing. A guard
+ * that must contain the character it forbids reads as a violation to every grep that looks, and
+ * 05-21 had to record exactly that as an acceptance criterion it could not meet. The two
+ * pre-existing guards below were converted to it; the comparison is byte-identical, so neither
+ * assertion changed meaning.
+ */
+const LONG_DASH = '\u2014';
 
 /**
  * SVC-04 service-controls coverage (05-05, D-06 through D-09).
@@ -152,7 +219,7 @@ describe('the controls-card copy is the exact 05-UI-SPEC contract copy', () => {
       RESUME_LABEL,
     ];
     for (const s of strings) {
-      expect(s).not.toContain('—');
+      expect(s).not.toContain(LONG_DASH);
     }
   });
 });
@@ -257,7 +324,121 @@ describe('the kill-switch and dismissal copy is exact contract copy (05-UI-SPEC 
       OPERATOR_ACTIONS_LOADING,
     ];
     for (const s of strings) {
-      expect(s).not.toContain('—');
+      expect(s).not.toContain(LONG_DASH);
     }
+  });
+});
+
+/**
+ * The health strip's MODE CHIP (`05-AUDIT-2.md` entry 6, D-14/D-17, T-05-08-03).
+ *
+ * This chip is the operator's only statement of whether this service moves real Bitcoin, and its
+ * semantic feed is genuinely covered end to end: `monitor.serviceHealth` has server rows, the wire
+ * shape has route rows, `state.health` has store rows. Only the LAST HOP was not, and
+ * `05-VALIDATION.md:76` records that hop's verify method as `build`, which is itself the admission.
+ * Relabelling `live`, or rewriting the chip expression to render `Hermetic` whenever the broadcast
+ * kill switch is engaged, both shipped green.
+ *
+ * Every row asserts in BOTH directions, the expected label present and the other two absent. A
+ * presence check alone would pass a chip that rendered every label at once.
+ */
+describe('the health strip renders the SERVED mode and reads nothing else (rendered)', () => {
+  beforeEach(() => {
+    // Reset between rows so one fixture cannot leak into the next. The network must be a real
+    // registry name: the strip resolves it through the network registry, and an unknown value
+    // does not render.
+    operatorFixture.current = {};
+    participantFixture.current = { network: 'regtest' };
+  });
+
+  /**
+   * Exhaustive by CONSTRUCTION: a fourth `ServiceMode` makes this record a type error, so a new
+   * mode cannot be added without a row below. A plain `ServiceMode[]` would not do: an array
+   * literal is checked for MEMBERSHIP, never for completeness, so a hand-listed array silently
+   * keeps typechecking while the matrix stops being a matrix.
+   */
+  const EVERY_MODE: Record<ServiceMode, true> = {
+    hermetic: true,
+    'live-no-broadcast': true,
+    live: true,
+  };
+  const ALL_MODES = Object.keys(EVERY_MODE) as ServiceMode[];
+
+  /** What the strip says before the first ok list read lands. Inline JSX, so it is spelled here. */
+  const CHECKING_MODE = 'Checking mode';
+
+  function strip(health?: OperatorState['health']): string {
+    operatorFixture.current = { health };
+    return renderStatic(createElement(HealthStrip));
+  }
+
+  it('carries exactly one label per ServiceMode, each pinned word for word', () => {
+    expect(MODE_LABEL.hermetic).toBe('Hermetic');
+    expect(MODE_LABEL['live-no-broadcast']).toBe('Live (no broadcast)');
+    expect(MODE_LABEL.live).toBe('Live');
+    // Derived from the union rather than hand-listed, so a fourth mode with no label fails here.
+    expect(Object.keys(MODE_LABEL).sort()).toEqual([...ALL_MODES].sort());
+  });
+
+  it('carries no long dash in any mode label (house style, checker-blocked at the source)', () => {
+    for (const label of Object.values(MODE_LABEL)) {
+      expect(label).not.toContain(LONG_DASH);
+    }
+  });
+
+  /**
+   * THE ANTI-VACUITY CONTROL for this whole block, and it was written and run FIRST, before any
+   * row asserting an absence. Until something renders, an assertion that a label is missing passes
+   * against a fixture that never reached the renderer at all, which is the exact failure the
+   * `getInitialState()` trap produces for a `setState` seed.
+   */
+  it('renders the live label on a live service (anti-vacuity: a fixture really does arrive)', () => {
+    const html = strip({ mode: 'live', esploraReachable: true, paused: false });
+    expect(chipRendered(html, MODE_LABEL.live)).toBe(true);
+    expect(chipRendered(html, CHECKING_MODE)).toBe(false);
+  });
+
+  for (const mode of ALL_MODES) {
+    it(`renders ONLY the ${mode} label when the service serves ${mode}`, () => {
+      const html = strip({ mode, esploraReachable: mode === 'hermetic' ? 'n/a' : true, paused: false });
+      expect(chipRendered(html, MODE_LABEL[mode])).toBe(true);
+      for (const other of ALL_MODES.filter((m) => m !== mode)) {
+        expect(chipRendered(html, MODE_LABEL[other])).toBe(false);
+      }
+    });
+  }
+
+  it('makes NO mode claim at all before the first read lands', () => {
+    // Not a fourth mode: a distinct posture. Presuming "Hermetic" on a service that has not
+    // answered would tell the operator it does not touch the chain while it may be broadcasting
+    // real Bitcoin. On its own this row is indistinguishable from a broken fixture, which is why
+    // the live row above must already be passing.
+    const html = strip(undefined);
+    expect(chipRendered(html, CHECKING_MODE)).toBe(true);
+    for (const mode of ALL_MODES) {
+      expect(chipRendered(html, MODE_LABEL[mode])).toBe(false);
+    }
+  });
+
+  it('keeps the LIVE label and adds the broadcast-off chip once the kill switch engages', () => {
+    // The D-14 property in one row, and it takes all three assertions together: the live label
+    // present proves the mode was not rewritten, the hermetic label absent proves it was not
+    // rewritten to THAT, and the broadcast-off chip present proves the flip is disclosed at all.
+    // No single one of the three catches a mutation that makes the mode chip read the kill switch.
+    // The service really did boot live and its chain reads really are still live; saying otherwise
+    // would report a boot mode it never had (T-05-08-03).
+    const html = strip({ mode: 'live', esploraReachable: true, paused: false, broadcastDisabled: true });
+    expect(chipRendered(html, MODE_LABEL.live)).toBe(true);
+    expect(chipRendered(html, MODE_LABEL.hermetic)).toBe(false);
+    expect(chipRendered(html, BROADCAST_OFF_CHIP)).toBe(true);
+  });
+
+  it('keeps the mode label unchanged and adds the paused chip beside it while draining', () => {
+    // Pause says whether this service is offering NEW cohorts; the mode says how it signs and
+    // broadcasts. The paused chip rides beside the mode chip, never instead of it (D-07).
+    const html = strip({ mode: 'live', esploraReachable: true, paused: true });
+    expect(chipRendered(html, MODE_LABEL.live)).toBe(true);
+    expect(chipRendered(html, 'Advertising paused')).toBe(true);
+    expect(chipRendered(html, CHECKING_MODE)).toBe(false);
   });
 });
