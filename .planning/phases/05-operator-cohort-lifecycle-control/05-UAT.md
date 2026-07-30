@@ -141,13 +141,22 @@ directly.
 | 11 | The dismissal confirmation body discloses what a dismissal costs: the record AND its activity log, from this console, for this session, with no undo | `packages/web/tests/service-controls.spec.ts`, "states the rung-1 dismissal copy, including that there is no undo" (exact equality on all three sentences) | 05-22 |
 | 17 | The kill-switch control is offered ONLY on a live boot mode with broadcasting still available, and is replaced rather than disabled once engaged | `packages/web/tests/service-controls.spec.ts`, "ServiceControls offers the kill switch only where it can act (rendered)" | 05-22 |
 | 17 | After the switch engages, the health strip still reports the LIVE boot mode, with a separate warn chip beside it rather than a rewritten mode chip | `packages/web/tests/service-controls.spec.ts`, "keeps the LIVE label and adds the broadcast-off chip once the kill switch engages" | 05-22 |
+| 2 | The edit form opens pre-filled from the DRAFT's own captured values, including both timing windows, rather than from the service's current defaults | `packages/web/tests/cohort-form-render.spec.tsx`, "shows a saved discovery and funding window as MINUTES, not as empty fields" plus "seeds the beacon type, the size and the threshold from the draft too" | 05-23 |
+| 2 | A timing field the operator never set round-trips as EMPTY, meaning "use the default", rather than as a zero or a pre-filled service default | `packages/web/tests/cohort-form-render.spec.tsx`, "leaves a window the operator never set EMPTY", with `packages/web/tests/cohort-form.spec.ts` "reads an EMPTY field as unset, never as a zero window" on the wire half | 05-23 |
+| 2 | The same validation messages appear on the create and the edit path, and they are the service's own sentences byte for byte | `packages/web/tests/cohort-form.spec.ts`, "the shape-error copy, pinned independently of the constants that carry it" (both forms delegate to the one shared module, so one pin covers both paths) | 05-23 |
+| 6 | A paused service disables its advertise controls, on BOTH the draft and the expired call site, with the reason rendered beside each | `packages/web/tests/operator-rows-render.spec.tsx`, "a paused service disables BOTH advertise controls and says why", plus "pause is DRAIN MODE, not a kill switch" for the narrowness | 05-23 |
+| 12 | A completed co-sign round reads as `Signed` rather than as anything naming an anchor, and the k-of-n script-path cohort keeps its own distinct label | `packages/web/tests/operator-rows.spec.ts`, "every chip label is pinned word for word" (exact per-chip labels plus the anchor-wording guard on the unconfirmed pair and the in-flight chip) | 05-23 |
 
 No test above is fully covered yet, so all of them stay in `## Tests`. Test 4 still needs the 401
 shared-session-expiry clause (05-24 closes it). Test 8 still needs the long-body-at-a-narrow-viewport
 clause, which is a genuine visual judgment and stays with a human. Test 6 still needs the public
 paused notice and the narrow-width chip wrap. Test 9 still needs the live-cohort registration
 disclosure (05-26 closes it). Test 11 still needs the expired-row fate read (05-25 closes it). Test
-17 still needs a real `LIVE=1 BROADCAST=1` boot, which no unit gate can stand up.
+17 still needs a real `LIVE=1 BROADCAST=1` boot, which no unit gate can stand up. Test 2 still needs
+the over-ceiling refusal naming this service's real maximum (05-26 closes it) and the `Cancel edit`
+closes-without-destroying clause, which is behind a click. Test 12 still carries an owner JUDGMENT,
+"confirm the new wording reads as honest rather than as a regression", which no assertion can make
+for them; 05-27 narrows it rather than removing it.
 
 ## Summary
 

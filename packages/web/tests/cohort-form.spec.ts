@@ -16,6 +16,17 @@ import {
 } from '../src/lib/cohort-form';
 
 /**
+ * The two forbidden dashes, spelled as escapes (the 05-22 idiom, adopted here in 05-23).
+ *
+ * A guard written as `not.toMatch(/<the characters themselves>/)` has to CONTAIN what it forbids,
+ * so every repo-wide scan reads this file as a violation. Comparing against escaped constants is
+ * byte-identical in behavior, changes no assertion's meaning, and lets `grep -rlP '\x{2014}'`
+ * over this file return nothing.
+ */
+const LONG_DASH = '\u2014';
+const EN_DASH = '\u2013';
+
+/**
  * SVC-04 criterion 3 shared-form coverage (05-06, D-10/D-11).
  *
  * The create form and the draft-edit form must enforce the same rules and render the same words.
@@ -123,6 +134,46 @@ describe('shared validation', () => {
   });
 });
 
+/**
+ * WHAT the four shape errors say, pinned independently (`05-AUDIT-2.md` entry 17, defect #30).
+ *
+ * The rule rows above are about WHICH error a bad shape produces; they compare a function's return
+ * against the constant, so they follow any rewording and cannot be about wording. Until this block
+ * existed nothing on the web side said what these sentences ARE, and any reword shipped green.
+ *
+ * The contract in words: this client refuses a bad cohort shape with the SAME message the SERVICE
+ * would, byte for byte (SVC-04 criterion 3, D-10/D-11). The client normally shows it without a
+ * round trip and the server's own 400 renders in the same inline slot as a backstop, so an operator
+ * who trips the rule locally and one who trips it on the wire must read ONE sentence rather than
+ * two that drift by a character.
+ *
+ * The other half of that contract is pinned server-side, independently, in
+ * `packages/service/src/operator-cohorts.spec.ts` (the `THRESHOLD_ERROR` literal at its top and
+ * the size literal in its create-refusal row) and `packages/service/tests/runtime-settings.spec.ts`
+ * (the threshold literal in its same-patch refusal row). Those specs are NAMED here rather than
+ * imported: `packages/web` does not depend on `packages/service` and must not start, so two
+ * independent retyped literals are what makes the byte-identity real on both sides. A shared
+ * import would prove only that one string equals itself.
+ */
+describe('the shape-error copy, pinned independently of the constants that carry it (05-AUDIT-2 #30)', () => {
+  it('states the cohort-size refusal word for word', () => {
+    expect(SIZE_ERROR).toBe('Cohort size must be at least 1 signer.');
+  });
+
+  it('states the signing-threshold refusal word for word', () => {
+    // The sentence the audit singled out: it names both bounds, so an operator who typed a k above
+    // n learns the rule rather than only that something was wrong.
+    expect(THRESHOLD_ERROR).toBe('Signing threshold must be a whole number between 1 and the cohort size.');
+  });
+
+  it('states both window refusals word for word', () => {
+    // Same family and, before this block, the same unpinned state. Their wording carries the
+    // whole-number rule and the floor, which is what stops an operator retrying 0.5 forever.
+    expect(DISCOVERY_WINDOW_ERROR).toBe('Discovery window must be a whole number of minutes, at least 1.');
+    expect(FUNDING_WINDOW_ERROR).toBe('Funding window must be a whole number of minutes, at least 1.');
+  });
+});
+
 describe('the timing help copy', () => {
   it('names this service default when the service reported one (UI-SPEC E7)', () => {
     expect(discoveryWindowHelp(30 * ONE_MINUTE_MS)).toBe(
@@ -157,7 +208,8 @@ describe('the timing help copy', () => {
       clampDisclosure(600_000, 900_000) ?? '',
     ];
     for (const s of strings) {
-      expect(s).not.toMatch(/[—–]/);
+      expect(s).not.toContain(LONG_DASH);
+      expect(s).not.toContain(EN_DASH);
     }
   });
 });
