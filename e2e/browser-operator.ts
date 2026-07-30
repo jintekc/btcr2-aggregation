@@ -36,6 +36,17 @@ import type { Browser } from 'playwright-core';
 const OPERATOR_PASSWORD = 'operator-monitor-correct-horse-battery-staple';
 /** The cohort seat count n and (k == n) the pure n-of-n signing floor, all filled by headless peers. */
 const COHORT_SIZE = 2;
+/**
+ * The signed-in console heading, mirroring `packages/web/src/components/operator/OperatorConsole.tsx`.
+ * Written as a literal rather than imported because `packages/web` is not a project reference of
+ * `e2e/tsconfig.json`; a browser leg asserts what a browser can see, which is the rendered string.
+ */
+const CONSOLE_HEADING = 'Operator console';
+/**
+ * The one-way broadcast stand-down control, mirroring `DISABLE_BROADCAST_LABEL` in
+ * `packages/web/src/stores/operator.ts`. Same reason for the literal as {@link CONSOLE_HEADING}.
+ */
+const CONSOLE_KILL_SWITCH_LABEL = 'Disable broadcast';
 
 const WEB_DIST = fileURLToPath(new URL('../packages/web/dist', import.meta.url));
 
@@ -152,8 +163,41 @@ export async function runBrowserOperatorCohort(options: BrowserOperatorOptions =
     // Sign in with the operator password (the server session middleware is the real boundary, D-04).
     await page.getByLabel('Operator password').fill(OPERATOR_PASSWORD);
     await page.getByRole('button', { name: 'Sign in' }).click();
+    // THE SIGN-IN PROOF. `New cohort` is rendered by `OperatorConsole.tsx` and by nothing else, so
+    // it exists on exactly one side of the sign-in boundary. Waiting on it is what distinguishes a
+    // successful sign-in from a refused one.
     await page.getByRole('button', { name: 'New cohort' }).waitFor({ state: 'visible', timeout: timeoutMs });
+    // The console heading, pinned by exact text so a rename is caught (05-AUDIT-2.md entry 24,
+    // defect #3). This is a COPY PIN and it is NOT a sign-in proof: `LoginPanel.tsx` renders the
+    // byte-identical `Operator console` string above the password field, so the heading is present
+    // on BOTH sides of the boundary and could never have discriminated between them, whatever
+    // 05-UAT-PROCEDURES.md used to say. The control waited on above is the proof; this row exists
+    // only so the string cannot be renamed unnoticed. Whether the signed-in console deserves a
+    // heading of its own is a copy question for the owner, left open here rather than answered by
+    // editing either component.
+    if ((await page.getByRole('heading', { name: CONSOLE_HEADING, exact: true }).count()) < 1) {
+      fail(`the signed-in console did not render its "${CONSOLE_HEADING}" heading (05-AUDIT-2.md #3)`);
+    }
     log('[ok] operator sign-in: the monitoring console is visible');
+
+    // Mode honesty for the ONE-WAY control (D-14, 05-AUDIT-2.md entry 16, defect #27). This boot is
+    // hermetic (no live, no broadcast), so there is nothing to stand down and the kill switch must
+    // not exist. This is an INDEPENDENT WITNESS rather than the only one: 05-22 added a rendered
+    // matrix over `ServiceControls` and, measured rather than assumed, that matrix does redden when
+    // the component's mode guard is deleted. What it renders is the component with a faked store;
+    // what runs here is the BUILT bundle, driven by the real store against this service's own
+    // served mode, so the two fail for different reasons and a wiring change that satisfies one can
+    // still be caught by the other. A danger-toned one-way control appearing here is verbatim the
+    // fail signal 05-UAT-PROCEDURES.md describes for a hermetic boot. Same count-of-zero idiom as
+    // the explorer link below.
+    const killSwitches = await page.getByRole('button', { name: CONSOLE_KILL_SWITCH_LABEL }).count();
+    if (killSwitches > 0) {
+      fail(
+        `mode honesty (D-14): the one-way "${CONSOLE_KILL_SWITCH_LABEL}" control rendered ${killSwitches} time(s) on a ` +
+          'HERMETIC boot (this run passes no live and no broadcast); it is offered only on a served live-broadcasting mode',
+      );
+    }
+    log('[ok] kill switch: the one-way broadcast control is absent on the hermetic boot (D-14)');
 
     // Create a cohort (two honest numbers: threshold k and size n, both COHORT_SIZE for pure n-of-n).
     await page.getByRole('button', { name: 'New cohort' }).click();
