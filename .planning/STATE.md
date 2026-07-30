@@ -4,16 +4,16 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
-status: executing
-stopped_at: Completed 05-26-PLAN.md
-last_updated: "2026-07-30T23:02:06.948Z"
+status: verifying
+stopped_at: Completed 05-27-PLAN.md (phase 5 second gap round complete)
+last_updated: "2026-07-30T23:30:13.455Z"
 last_activity: 2026-07-30
 last_activity_desc: "gap round 2 wave 6 complete (05-26): the discovery-window ceiling is proven SEEDED by a real boot, three no-op route guards are distinguished from having no guard, the live test-peer caveat is driven through the shipped spawn path, and the frozen terms hash has externally verifiable answers"
 progress:
   total_phases: 5
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 57
-  completed_plans: 56
+  completed_plans: 57
 ---
 
 # Project State
@@ -29,10 +29,10 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
 Plan: 27 of 27 (gap-closure round 2, 05-21..05-27: 6 of 7 done)
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-07-30 - gap round 2 wave 6 complete (05-26): the discovery-window ceiling is proven SEEDED by a real boot, three no-op route guards are distinguished from having no guard, the live test-peer caveat is driven through the shipped spawn path, and the frozen terms hash has externally verifiable answers
 
-Progress: [██████████] 98%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -117,6 +117,7 @@ Progress: [██████████] 98%
 | Phase 05 P24 | ~45m | 3 tasks | 6 files |
 | Phase 05 P25 | ~40m | 3 tasks | 6 files |
 | Phase 05 P26 | 55m | 3 tasks | 7 files |
+| Phase 05 P27 | ~70m | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -215,6 +216,9 @@ Recent decisions affecting current work (Phase 2):
 - [Phase ?]: 05-26: the boot seed of the discovery-window ceiling is pinned by booting a real createService and reading its exposed settings holder, never by injecting the knob; the six hand-injected rows stay green under the deletion mutation, which is the demonstration that they were the hole
 - [Phase ?]: 05-26: a no-op route guard is proven by interleaving a DIFFERENT recorded action between two identical ones, because the monitor ring's own consecutive-duplicate skip makes back-to-back duplicates green with or without the guard
 - [Phase ?]: 05-26: the frozen terms-hash format now has externally known SHA-256 vectors (including a non-ASCII one pinning the UTF-8 step); all 13 pre-existing assertions stayed green under a sha3_256 swap, reproducing audit defect #6 exactly
+- [Phase ?]: 05-27: the audit's premise for #27 was contradicted by measurement (05-22 rendered ServiceControls, not only its selector); the browser leg was reframed in its shipped comment as a second witness at the bundle level rather than dropped
+- [Phase ?]: 05-27: UAT test 18 retired as un-runnable (a settle race is no more drivable by hand than by a harness), with its two checkable clauses cited and the backstop recorded
+- [Phase ?]: 05-27: 05-UAT.md reconciled from 18 items to 16 (2 retired, 13 narrowed), residue grouped by kind of human input, with a fifth group the triage did not predict (clauses behind a click) recorded rather than counted as judgment
 
 ### Pending Todos
 
@@ -254,7 +258,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-30T23:01:57.497Z
-Stopped at: Completed 05-26-PLAN.md
+Last session: 2026-07-30T23:30:13.435Z
+Stopped at: Completed 05-27-PLAN.md (phase 5 second gap round complete)
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
