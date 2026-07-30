@@ -49,7 +49,8 @@
     "tdd_mode": false,
     "ui_review": true,
     "use_worktrees": true,
-    "_auto_chain_active": false
+    "_auto_chain_active": false,
+    "api_coverage_gate": false
   },
   "ship": {
     "pr_body_sections": [
