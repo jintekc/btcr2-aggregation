@@ -25,7 +25,7 @@ Step-by-step detail for most items lives in `05-UAT-CHECKLIST.md`, which 05-16 a
 
 ### 1. Cold Start Smoke Test
 expected: Kill any running coordinator. Clear ephemeral state. Start the service from scratch on the hermetic default (no LIVE, no BROADCAST) and load the web app. The process boots with no errors, GET /v1/config answers with the resolved network, the operator can sign in at /operator, and the public directory renders. Any boot-time clamp warning (05-18) names both numbers rather than failing silently.
-result: [pending]
+result: pass
 
 ### 2. Draft creation, in-place edit, and per-cohort timing windows
 expected: Create a draft, then edit it in place. The edit form opens pre-filled from the draft's own captured defaults (not the service's current ones), the same validation messages appear on both the create and edit paths, and `Cancel edit` closes the form without destroying anything. Set a discovery window longer than the service can honor and confirm the save is refused with this service's real maximum named in minutes, rather than accepted. Leave a timing field empty and confirm it round-trips as empty (meaning "use the default"), not as a zero.
