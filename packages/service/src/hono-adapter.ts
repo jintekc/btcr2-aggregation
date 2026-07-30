@@ -44,6 +44,7 @@ import type { AnchorState } from './anchor-state.js';
 import {
   BROADCAST_DISABLED_TEXT,
   changedSettingText,
+  dismissedRecordText,
   PAUSED_ADVERTISING_TEXT,
   RESUMED_ADVERTISING_TEXT,
   type CohortMonitor,
@@ -935,18 +936,47 @@ export function createHonoApp(
     // is indistinguishable from a real one to them (T-05-08-04). The `:id` shape guard runs before
     // the lookup, exactly as on cancel / finalize / detail.
     //
-    // It mounts on the MONITOR rather than the cohort surface because an ended record is
-    // monitoring state: a cohort that anchored has already been pruned from the operator list
-    // (`settleCompletion` mints no terminal record for a success), so its ended row is the only
-    // thing left to dismiss. `dismissEnded` touches nothing but that bounded telemetry, and false
-    // covers both an unknown id and a cohort still live, which map to the same opaque 404.
-    if (monitor) {
+    // The console's Ended group is a UNION of TWO independent record sources, so the dismissal
+    // clears both (05-19, `05-AUDIT.md` entries 4 and 6). The monitoring fold holds an ended
+    // record; the operator cohort list holds a terminal record carrying the cohort's fate. Only
+    // a SUCCESSFULLY anchored cohort is pruned from the operator list (`settleCompletion` mints
+    // no terminal record for a success), which is what made the older single-source reasoning
+    // read as complete: a canceled or expired cohort keeps a terminal record, so clearing only
+    // the monitor's copy answered 200 and left the row on screen, and the app-side window-expiry
+    // path (which mints a terminal record and NO monitoring record, because `runner.stopCohort`
+    // emits no runner event) answered 404 with the row still there.
+    //
+    // Mounted when EITHER source is wired, not on the monitor alone: with two sources, a wiring
+    // that had `operatorCohorts` and no monitor would leave the route unmounted and every
+    // terminal record permanently undismissable. `createService` always wires both, so that is
+    // theoretical today; the condition states what the route now needs rather than what it
+    // needed when the monitor was its only source. Each source is consulted only when present.
+    //
+    // Nothing about the auth or oracle posture moves: this still sits inside the gated block
+    // after BOTH prefix guards, so an anonymous caller is rejected with 401 BEFORE any lookup
+    // (T-05-08-04), and the `:id` shape guard still runs before either source is touched. A
+    // false from both covers an unknown id and a cohort still live alike, which map to the same
+    // opaque 404. Both halves are telemetry / operator-list bookkeeping only: no runner call, no
+    // directory effect, no chain effect.
+    if (monitor || operatorCohorts) {
       app.delete('/v1/operator/ended/:id', (c) => {
         const id = c.req.param('id');
         if (!/^[0-9a-zA-Z-]{1,64}$/.test(id)) {
           return c.json({ error: 'invalid cohort id' }, 400);
         }
-        return monitor.dismissEnded(id) ? c.json({ ok: true }) : c.json({ error: 'unknown ended cohort' }, 404);
+        const monitorCleared = monitor ? monitor.dismissEnded(id) : false;
+        const terminalCleared = operatorCohorts ? operatorCohorts.forgetTerminal(id) : false;
+        if (!monitorCleared && !terminalCleared) {
+          return c.json({ error: 'unknown ended cohort' }, 404);
+        }
+        // `dismissEnded` records its own operator action, so only the monitor-less half needs to
+        // append one: the log stays complete for the window-expiry sub-case (whose monitoring
+        // record never existed) without recording the same dismissal twice. On a monitor-less
+        // wiring there is no ring to append to, so the entry is simply skipped.
+        if (!monitorCleared && terminalCleared) {
+          monitor?.noteOperatorAction(dismissedRecordText(id));
+        }
+        return c.json({ ok: true });
       });
     }
 

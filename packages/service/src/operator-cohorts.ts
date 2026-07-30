@@ -99,6 +99,7 @@ import {
   buildCohortConfig,
   DISPLAY_PHASES,
   FINALIZABLE_PHASES,
+  IN_FLIGHT_PHASES,
   OPEN_PHASES,
   type BeaconType,
   type NetworkName,
@@ -582,6 +583,32 @@ export interface OperatorCohorts {
    */
   readvertiseExpired(cohortId: string): AdvertiseResult;
   /**
+   * Forget one cohort's TERMINAL record: the second half of an operator's dismissal (D-15,
+   * `05-AUDIT.md` entries 4 and 6). Returns whether a record was actually there.
+   *
+   * The console's Ended group is a UNION of two independent sources - the monitoring fold's
+   * ended record and the terminal record {@link listCohorts} renders - so a dismissal that
+   * cleared only the first answered 200 and watched the same row come straight back. This is
+   * the other half, and it makes the confirmation's promise of an irreversible removal true.
+   *
+   * It refuses on exactly the phases `monitor.dismissEnded` refuses on, reading the SAME shared
+   * {@link OPEN_PHASES} / {@link IN_FLIGHT_PHASES} sets rather than a local copy (review WR-05),
+   * so the two halves of one dismissal can never disagree about whether a cohort has really
+   * ended and a still-filling or still-co-signing cohort's record can never be cleared from
+   * either side.
+   *
+   * This is the SECOND path that deletes a specific terminal record, beside
+   * {@link readvertiseExpired}, and that has a consequence worth stating plainly: for an
+   * EXPIRED row, re-advertising is the record's only escape hatch, so forgetting the record
+   * also gives up the ability to re-advertise that cohort. The console states exactly that
+   * before the operator confirms (the disclosure sentence rendered on the rows that offer
+   * Re-advertise), rather than leaving it under the general "there is no undo".
+   *
+   * It removes the RECORD, not the FACT. See {@link cohortFate}: the same map has a second,
+   * ANONYMOUS reader, so a canceled fate is carried out of the record before it is deleted.
+   */
+  forgetTerminal(cohortId: string): boolean;
+  /**
    * Drafts (state 'draft') plus advertised cohorts (state 'advertised') plus terminal
    * records carrying their fate (state 'expired' or 'canceled'), for the operator list.
    * Terminal records are operator-only (never in {@link directory}).
@@ -601,12 +628,21 @@ export interface OperatorCohorts {
    * how `publicFunding` sits beside the operator funding view: the same terminal record backs
    * both, and only the fate bit crosses (T-05-10-02).
    *
-   * Non-oracle by construction (T-05-10-01): the answer is `false` for EVERY case that is not a
-   * retained cancel - unknown, evicted, never-existed, expired, failed, completed (whose record
-   * is pruned on success), still live, and still a draft. There is deliberately no `exists`
-   * bit and no second key, so no combination of answers distinguishes a cohort this service
-   * once ran from one it never heard of. O(1), no chain or disk I/O, so the anonymous route
-   * cannot be turned into a load generator (T-05-10-03).
+   * It also survives the operator DISMISSING the row (05-19, T-05-19-07). {@link forgetTerminal}
+   * deletes the record this used to be a single lookup into, so without a carry an operator
+   * tidying their console would silently switch off a participant-facing honesty feature. The
+   * read therefore means "this service canceled this cohort inside its bounded retention",
+   * whether or not the operator still keeps the record: a dismissal removes the operator's
+   * record, never the participant's answer.
+   *
+   * Non-oracle by construction (T-05-10-01), and the carry does not weaken that: the answer is
+   * `false` for EVERY case that is not a retained cancel - unknown, evicted, never-existed,
+   * expired, failed, completed (whose record is pruned on success), still live, and still a
+   * draft. The carry holds cohort IDS ONLY and is populated only for a fate that already read
+   * `true` here, so it can turn no other case true and can leak no field the record held. There
+   * is deliberately no `exists` bit and no second key, so no combination of answers distinguishes
+   * a cohort this service once ran from one it never heard of. O(1), no chain or disk I/O, so
+   * the anonymous route cannot be turned into a load generator (T-05-10-03).
    */
   cohortFate(cohortId: string): CohortFateDTO;
   /** Public: the open/joinable cohorts derived from the live set (D-14/D-15). */
@@ -712,6 +748,15 @@ function validateDraft(
 const MAX_TERMINAL = 24;
 
 /**
+ * Upper bound on the canceled-fate carry that outlives a dismissed terminal record (05-19,
+ * T-05-19-08). The SAME value as {@link MAX_TERMINAL} on purpose: the carry exists to keep
+ * {@link OperatorCohorts.cohortFate} answering for exactly as long as it would have answered had
+ * the operator never dismissed the row, so a different cap would make "inside this service's
+ * bounded retention" mean two different things depending on whether the record was tidied away.
+ */
+const MAX_DISMISSED_CANCELED = MAX_TERMINAL;
+
+/**
  * A draft's timing windows, held as TWO separate facts rather than one merged number (D-11/D-13).
  *
  * `explicit` is what the operator actually typed, so an empty console field stays empty on the way
@@ -771,6 +816,24 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
     string,
     { config: CohortConfig; reason: string; fate: 'expired' | 'canceled'; windows: DraftWindows }
   >();
+  // The canceled fates carried OUT of terminal records the operator dismissed (05-19, D-02).
+  // Cohort ids only, nothing else: `cohortFate` reads this beside the `terminal` map so an
+  // operator tidying their console cannot retract the one bit a canceled participant can learn
+  // out of band. Bounded at MAX_DISMISSED_CANCELED with the same oldest-first eviction
+  // `rememberTerminal` uses (a Set preserves insertion order exactly as a Map does), because an
+  // operator can cancel and dismiss in a loop (T-05-19-08).
+  //
+  // WHY THE WRITE LIVES IN `forgetTerminal` rather than in `rememberTerminal`'s canceled branch:
+  // writing it at record time would give a re-advertised canceled cohort's OLD id a permanent
+  // canceled bit, changing `readvertiseExpired`'s observable behavior in a way nothing asked
+  // for, and it would change the meaning of the shipped eviction row (which pins that an evicted
+  // cancel reads byte-identically to an unknown id). Writing it only here leaves every
+  // non-dismissal path byte-identical, so the existing eviction and non-oracle rows keep their
+  // exact meaning, and `readvertiseExpired` is untouched.
+  //
+  // A fate-only STUB left behind in the `terminal` map was rejected outright: `readvertiseExpired`
+  // would find that config-less record and try to advertise it.
+  const dismissedCanceled = new Set<string>();
   // The per-cohort timing windows an ADVERTISED cohort was advertised with, so a re-advertise
   // carries the same shape forward and the settle paths can release them alongside everything
   // else. Keyed by the LIVE cohort id, exactly like `advertised`.
@@ -1369,6 +1432,44 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
       };
     },
 
+    forgetTerminal(cohortId: string): boolean {
+      // 1. LOOKUP FIRST. An id with no terminal record is not-found, whether it never existed,
+      //    aged out of the bounded retention, or is a live cohort that has not ended - all three
+      //    read identically, exactly as `monitor.dismissEnded` reads them.
+      const record = terminal.get(cohortId);
+      if (!record) {
+        return false;
+      }
+      // 2. The SAME belt-and-braces phase refusal `monitor.dismissEnded` applies, over the SAME
+      //    shared sets (review WR-05): a dismissal must never clear a record for a cohort that is
+      //    still filling or co-signing, because that cohort is still going to change. The two
+      //    halves of one dismissal guard on one definition of "still in flight", so they can
+      //    never disagree about whether a cohort has really ended.
+      const phase = runner.session.getCohortPhase(cohortId);
+      if (phase && (OPEN_PHASES.has(phase) || IN_FLIGHT_PHASES.has(phase))) {
+        return false;
+      }
+      // 3. Carry the FACT out before the RECORD goes (D-02, T-05-19-07). `cohortFate` is the
+      //    second reader of this map and the only one outside the operator gate, so a plain
+      //    delete would close an operator-console honesty defect by switching off the one bit of
+      //    out-of-band honesty a canceled participant gets.
+      if (record.fate === 'canceled') {
+        dismissedCanceled.add(cohortId);
+        while (dismissedCanceled.size > MAX_DISMISSED_CANCELED) {
+          const oldest = dismissedCanceled.values().next().value;
+          if (oldest === undefined) {
+            break;
+          }
+          dismissedCanceled.delete(oldest);
+        }
+      }
+      // 4. Operator-list bookkeeping only. Note what is NOT here, exactly as in `dismissEnded`:
+      //    no `runner.stopCohort`, no intent declaration, no directory touch, no chain call.
+      terminal.delete(cohortId);
+      console.log(`[operator] forgot the terminal record for cohort ${cohortId}`);
+      return true;
+    },
+
     listCohorts(): OperatorCohortDTO[] {
       const draftDtos = [...drafts.values()].map((d) => d.dto);
       const advertisedDtos: OperatorCohortDTO[] = directory().map((entry) => ({
@@ -1409,7 +1510,12 @@ export function createOperatorCohorts(opts: OperatorCohortsOptions): OperatorCoh
       // by accident. A record's own `fate` is the authority (never the rejection message it
       // carries), which is what makes an expiry unable to read as a cancel, and a missing
       // record - unknown, evicted, pruned-on-success, never advertised - simply reads false.
-      return { canceled: terminal.get(cohortId)?.fate === 'canceled' };
+      //
+      // The second disjunct is the DISMISSED cancel (05-19): `forgetTerminal` deletes the record
+      // this reads, so the fate is carried into a bounded, id-only set beside it. It can only
+      // ever turn true a case that was already true here, so the non-oracle argument above is
+      // unchanged: every non-cancel still reads false, and there is still exactly one key.
+      return { canceled: terminal.get(cohortId)?.fate === 'canceled' || dismissedCanceled.has(cohortId) };
     },
 
     directory,

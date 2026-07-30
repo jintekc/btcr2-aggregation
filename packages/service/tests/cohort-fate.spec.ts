@@ -280,3 +280,82 @@ describe('GET /v1/cohort-fate/:id is not an existence oracle (T-05-10-01)', () =
     runner.stop();
   });
 });
+
+/**
+ * A dismissal removes the RECORD, not the FACT (05-19, D-02/D-15, T-05-19-07).
+ *
+ * `cohortFate` is the SECOND reader of the same `terminal` map the operator's dismissal now
+ * deletes from, and it is the only one outside the operator gate. A `forgetTerminal` that simply
+ * deleted the record would close an operator-console honesty defect by switching OFF the one bit
+ * of out-of-band honesty a canceled participant gets - and no row above would see it, because
+ * every one of them drives a cancel and a settle and then reads, never a DISMISSAL and then a
+ * read. These rows are that missing axis.
+ */
+describe('the fate survives an operator dismissing the row (05-19, D-02)', () => {
+  it('still answers the canceled fact after a 200 dismissal, while the operator row is gone', async () => {
+    const { app, runner, operatorCohorts } = fateApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+    expect(operatorCohorts.cancelCohort(cohortId)).toBe('ok');
+    await settle();
+
+    // Through the REAL gated route with the session cookie, so this proves the shipped path.
+    const dismissed = await app.request(`/v1/operator/ended/${cohortId}`, {
+      method: 'DELETE',
+      headers: { cookie },
+    });
+    expect(dismissed.status).toBe(200);
+
+    // BOTH halves in one row so they cannot drift: the record is gone AND the fact remains. A
+    // plain `terminal.delete(cohortId)` with no fate carry is exactly what this row exists to
+    // catch - it would answer `{ canceled: false }` here with every other spec still green.
+    expect(operatorCohorts.listCohorts().some((r) => r.draftId === cohortId)).toBe(false);
+    expect((await anonymousFate(app, cohortId)).body).toEqual({ canceled: true });
+
+    runner.stop();
+  });
+
+  it('still carries exactly one key after a dismissal, so nothing followed the bit out', async () => {
+    const { app, runner, operatorCohorts } = fateApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+    operatorCohorts.cancelCohort(cohortId);
+    await settle();
+    await app.request(`/v1/operator/ended/${cohortId}`, { method: 'DELETE', headers: { cookie } });
+
+    const { body } = await anonymousFate(app, cohortId);
+    expect(Object.keys(body as object)).toEqual(['canceled']);
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toMatch(/reason|canceled by the operator|did:|seats|capacity|amount|sats/i);
+
+    runner.stop();
+  });
+
+  it('BOUNDS the carry: past the cap the oldest dismissed cancel reads like an unknown id', async () => {
+    const { app, runner, operatorCohorts } = fateApp();
+    const cookie = await login(app);
+
+    // Driven through `cancelCohort` + `settle` + `forgetTerminal` directly rather than through the
+    // login-and-route pair, so this loop stays as cheap as the shipped eviction row's loop above.
+    // Without a bound, an operator who cancels and dismisses in a loop grows a set that never
+    // empties, which is T-05-19-08.
+    const dismissed: string[] = [];
+    for (let i = 0; i < MAX_TERMINAL + 1; i += 1) {
+      const cohortId = await createAndAdvertise(app, cookie);
+      expect(operatorCohorts.cancelCohort(cohortId)).toBe('ok');
+      await settle();
+      expect(operatorCohorts.forgetTerminal(cohortId)).toBe(true);
+      dismissed.push(cohortId);
+    }
+    const evicted = dismissed[0];
+    const newest = dismissed[dismissed.length - 1];
+
+    expect((await anonymousFate(app, newest)).body).toEqual({ canceled: true });
+    const gone = await anonymousFate(app, evicted);
+    const unknown = await anonymousFate(app, 'an-id-this-service-never-issued');
+    expect(gone).toEqual(unknown);
+    expect(unknown).toEqual({ status: 200, body: { canceled: false } });
+
+    runner.stop();
+  });
+});

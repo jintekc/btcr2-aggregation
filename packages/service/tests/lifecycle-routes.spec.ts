@@ -8,6 +8,7 @@ import {
   addedTestPeersText,
   canceledCohortText,
   createCohortMonitor,
+  dismissedRecordText,
   finalizedCohortText,
   operatorAddedTestPeersText,
 } from '../src/monitor.js';
@@ -681,7 +682,11 @@ describe('DELETE /v1/operator/ended/:id route semantics (SVC-04, D-15)', () => {
     runner.stop();
   });
 
-  it('leaves the public directory and the operator cohort list untouched by a dismissal', async () => {
+  // NOTE: the operator cohort LIST is exactly what a dismissal now clears (05-19, audit defect 4);
+  // that changed half is pinned by the `listCohorts()` rows in the describe block below. This case
+  // keeps its original assertions byte-identical because their staying green unedited is what
+  // proves a dismissal still cannot reach the PUBLIC surface.
+  it('leaves the public directory untouched by a dismissal', async () => {
     const { app, runner, monitor, operatorCohorts } = lifecycleApp();
     const cookie = await login(app);
     const cohortId = await createAndAdvertise(app, cookie);
@@ -697,6 +702,136 @@ describe('DELETE /v1/operator/ended/:id route semantics (SVC-04, D-15)', () => {
     expect(monitor.operatorActions().map((e) => e.text)).toContain(
       `Dismissed the record for cohort ${cohortId.slice(0, 8)}.`,
     );
+
+    runner.stop();
+  });
+});
+
+/**
+ * The dismissal clears BOTH ended-record sources (05-19, `05-AUDIT.md` entries 4 and 6).
+ *
+ * The console's Ended group is a UNION: the monitoring fold holds an ended record, and the
+ * operator cohort list holds a terminal record carrying the cohort's fate. The route used to
+ * delete only the first, so a canceled row answered 200 and came straight back on the next list
+ * read, and an expired row whose monitoring record never existed answered 404 while the row
+ * persisted. Every row here re-reads `listCohorts()`, which is the axis the shipped cases missed.
+ */
+describe('DELETE /v1/operator/ended/:id clears BOTH ended-record sources (05-19, D-15)', () => {
+  /**
+   * Count the operator-actions entries whose text is exactly this cohort's dismissal line.
+   *
+   * Read BEFORE and AFTER the route DELETE, never as an absolute count. An absolute count is
+   * unsatisfiable in the terminal-record-only sub-case below, because its setup calls
+   * `monitor.dismissEnded` directly and that method records its own action before returning, so a
+   * correct fix would read 2. A `toContain` check is worse in a different way: the setup already
+   * put that exact text in the ring, so containment passes whether or not the route appended at
+   * all, which is to say it measures nothing about the route. The delta measures only what the
+   * route did.
+   */
+  function dismissalCount(monitor: ReturnType<typeof lifecycleApp>['monitor'], cohortId: string): number {
+    return monitor.operatorActions().filter((e) => e.text === dismissedRecordText(cohortId)).length;
+  }
+
+  it('drops a dismissed CANCELED cohort from the operator cohort list, not just from the monitor', async () => {
+    const { app, runner, monitor, operatorCohorts } = lifecycleApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+    await app.request(`/v1/operator/cohorts/${cohortId}/cancel`, { method: 'POST', headers: { cookie } });
+    await settle();
+    // Both sources hold a record: the monitoring ended row AND the terminal record the console's
+    // Ended group actually renders the canceled row from.
+    expect(monitor.summary().some((r) => r.cohortId === cohortId)).toBe(true);
+    expect(operatorCohorts.listCohorts().some((r) => r.draftId === cohortId)).toBe(true);
+
+    // This sub-case needs no interleave: the cancel that staged the state already appended
+    // `canceledCohortText(cohortId)`, so the ring's tail differs from the text the route appends.
+    const before = dismissalCount(monitor, cohortId);
+    const res = await app.request(`/v1/operator/ended/${cohortId}`, { method: 'DELETE', headers: { cookie } });
+    expect(res.status).toBe(200);
+
+    expect(monitor.summary().some((r) => r.cohortId === cohortId)).toBe(false);
+    expect(operatorCohorts.listCohorts().some((r) => r.draftId === cohortId)).toBe(false);
+    expect(dismissalCount(monitor, cohortId) - before).toBe(1);
+
+    runner.stop();
+  });
+
+  it('200s a cohort holding a TERMINAL record but no monitoring ended record, and drops its row', async () => {
+    const { app, runner, monitor, operatorCohorts } = lifecycleApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+    await app.request(`/v1/operator/cohorts/${cohortId}/cancel`, { method: 'POST', headers: { cookie } });
+    await settle();
+    // Reproduce the app-side WINDOW-EXPIRY state: only a terminal record, no monitoring ended
+    // record. The real path is not driven here because the per-draft discovery window has a
+    // sixty-second floor, so a genuine window expiry cannot be reached inside a unit spec - which
+    // is precisely why this sub-case went uncovered and answered 404 with the row still on screen.
+    expect(monitor.dismissEnded(cohortId)).toBe(true);
+    expect(monitor.summary().some((r) => r.cohortId === cohortId)).toBe(false);
+    expect(operatorCohorts.listCohorts().some((r) => r.draftId === cohortId)).toBe(true);
+
+    // The interleave is LOAD-BEARING, not tidiness: `recordServiceAction` returns early when the
+    // incoming text is byte-identical to the ring's LAST entry (monitor.ts:954-958, deliberate so
+    // an idempotent verb clicked twice records once), and `dismissedRecordText` is a pure function
+    // of the id (monitor.ts:122). The direct `monitor.dismissEnded` above therefore left exactly
+    // the text the route is about to append sitting as the tail, and with nothing in between a
+    // CORRECT route append is suppressed and the delta below reads 0. Cancelling a second cohort
+    // appends `canceledCohortText(otherId)`, which differs, so the tail moves and the append lands.
+    // Remove this and the row starts failing against a correct implementation.
+    //
+    // The adjacency is an artifact of THIS setup and not a production shape: on the real
+    // window-expiry path the monitor never held an ended record for the cohort at all
+    // (`runner.stopCohort` emits no runner event, so only a terminal record is minted), so nothing
+    // can precede the route's own append and the entry is genuinely once per dismissal.
+    const otherId = await createAndAdvertise(app, cookie);
+    await app.request(`/v1/operator/cohorts/${otherId}/cancel`, { method: 'POST', headers: { cookie } });
+    await settle();
+
+    const before = dismissalCount(monitor, cohortId);
+    const res = await app.request(`/v1/operator/ended/${cohortId}`, { method: 'DELETE', headers: { cookie } });
+    expect(res.status).toBe(200);
+    expect(operatorCohorts.listCohorts().some((r) => r.draftId === cohortId)).toBe(false);
+    expect(dismissalCount(monitor, cohortId) - before).toBe(1);
+
+    runner.stop();
+  });
+
+  it('refuses a cohort still in an in-flight phase, from BOTH sources', async () => {
+    const { app, runner, monitor, operatorCohorts, setPhase } = lifecycleApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+    // The setup is load-bearing and must NOT be "simplified" back to advertise-then-DELETE. Both
+    // halves look up their record BEFORE they check the phase (`!ended.has(id)` at monitor.ts:1490
+    // and the equivalent lookup at the top of `forgetTerminal`), so a live cohort with no records
+    // refuses one layer earlier for a different reason: the route 404s, "nothing was removed" is
+    // trivially true, and a `forgetTerminal` with NO phase guard at all passes unchanged. Cancel
+    // and settle so BOTH records exist, then stage an in-flight observed phase, so the input
+    // actually reaches the guard this row exists to certify.
+    await app.request(`/v1/operator/cohorts/${cohortId}/cancel`, { method: 'POST', headers: { cookie } });
+    await settle();
+    setPhase(cohortId, 'SigningStarted');
+
+    const res = await app.request(`/v1/operator/ended/${cohortId}`, { method: 'DELETE', headers: { cookie } });
+    expect(res.status).toBe(404);
+    expect(operatorCohorts.listCohorts().some((r) => r.draftId === cohortId)).toBe(true);
+    expect(monitor.summary().some((r) => r.cohortId === cohortId)).toBe(true);
+
+    runner.stop();
+  });
+
+  it('404s an id neither source knows, with the same opaque body as a known-but-refused one', async () => {
+    const { app, runner } = lifecycleApp();
+    const cookie = await login(app);
+
+    const res = await app.request('/v1/operator/ended/never-existed-at-all', {
+      method: 'DELETE',
+      headers: { cookie },
+    });
+    expect(res.status).toBe(404);
+    // Widening the route to a second source must not widen what a caller can learn: the body is
+    // the same opaque line it always was, so the route is no more of an existence oracle than it
+    // was when the monitor was its only source.
+    expect(await res.json()).toEqual({ error: 'unknown ended cohort' });
 
     runner.stop();
   });
