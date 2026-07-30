@@ -1,4 +1,12 @@
 import { useState, type ReactNode } from 'react';
+// A DOMAIN predicate imported into the primitives layer, deliberately (05-19, `05-AUDIT.md`
+// entry 10). `typeToConfirmMatches` is the tested rule for the highest-friction confirmation in
+// this product, and `05-02-PLAN.md` required this component to CALL it; duplicating the
+// comparison here instead is what made that rule's seven assertions cover nothing that ships, so
+// a weakening to case-insensitive or prefix matching would have passed silently. The lifecycle
+// module has no runtime dependency beyond the shared package and imports nothing from here, so
+// no cycle results (proven by the package tsc + vite build).
+import { typeToConfirmMatches } from '../lib/lifecycle';
 
 /** A panel with the standard surface, border, and radius. */
 export function Card({
@@ -306,7 +314,12 @@ export function ConfirmPanel({
 }) {
   const [typed, setTyped] = useState('');
   const inputId = 'confirm-type-to-confirm';
-  const armed = typeToConfirm === undefined || typed.trim() === typeToConfirm.trim();
+  // ONE arming computation, going through the tested predicate. An absent `typeToConfirm` prop
+  // arms the button exactly as before (this panel is used at every rung, and only rung 4 asks for
+  // a typed value); everything else is the predicate's rule, including the one case the deleted
+  // duplicate got wrong - an empty or whitespace-only expected value armed the button immediately
+  // here, while the predicate refuses it.
+  const armed = typeToConfirm === undefined || typeToConfirmMatches(typed, typeToConfirm);
   return (
     <div className={`space-y-2 rounded-lg border px-3 py-2 text-sm ${CONFIRM_TONE_CLASS[tone]}`}>
       {/* Body size at weight 600: a confirm is an inline panel, not a page (UI-SPEC Typography). */}

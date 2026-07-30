@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { FINALIZABLE_PHASES } from '@btcr2-aggregation/shared';
 import {
@@ -223,5 +225,63 @@ describe('cohortShortId: a typeable short id, never a truncation glyph', () => {
 
   it('leaves an already-short id untouched', () => {
     expect(cohortShortId('abc12')).toBe('abc12');
+  });
+});
+
+/**
+ * The SHIPPED rung-4 gate calls the predicate the seven assertions above cover (05-19,
+ * `05-AUDIT.md` entry 10).
+ *
+ * Read Skeptic 1's narrowing before reading this as a live bug: it is NOT one. The duplicate
+ * inline comparison in `ConfirmPanel` and `typeToConfirmMatches` agree on every value the app can
+ * pass, because the single call site always passes an eight-character cohort-id prefix. They
+ * diverge only on an empty or whitespace-only EXPECTED value, where the inline expression armed
+ * immediately and the predicate never does, and that is unreachable today. What was genuinely
+ * broken is COVERAGE: the gate that ships had none, while the assertions above claimed to pin it
+ * (`05-02-PLAN.md` explicitly required the component to call the predicate), so weakening the
+ * shipped expression to case-insensitive or prefix matching would have kept the whole suite green.
+ *
+ * `packages/web` has no DOM harness, so this is a SOURCE-CONTAINMENT read in the style
+ * `packages/web/tests/terms.spec.ts` already uses. Its ceiling is worth stating rather than
+ * leaving a reader to infer: a weakening that KEEPS the predicate call and adds a disjunct
+ * (`typeToConfirmMatches(...) || typed.length > 0`) would still pass. What it genuinely catches is
+ * the arming computation moving back inline or away from the predicate, which is the regression
+ * that actually happened once.
+ */
+describe('ConfirmPanel arms through the tested predicate (05-19)', () => {
+  const PRIMITIVES_SRC = readFileSync(
+    fileURLToPath(new URL('../src/ui/primitives.tsx', import.meta.url)),
+    'utf8',
+  );
+
+  it('imports the predicate from the lifecycle module', () => {
+    expect(PRIMITIVES_SRC).toMatch(/import\s*\{[^}]*typeToConfirmMatches[^}]*\}\s*from\s*'\.\.\/lib\/lifecycle'/);
+  });
+
+  it('computes the armed flag through the predicate', () => {
+    expect(PRIMITIVES_SRC).toMatch(/const armed =[^;]*typeToConfirmMatches\(/);
+  });
+
+  it('has exactly ONE arming computation, so no duplicate comparison sits beside the call', () => {
+    // The duplicate is the whole defect: two rules for one gate means the spec covers the copy
+    // that does not ship. One `const armed =` and no surviving `typed.trim() === ` comparison.
+    expect(PRIMITIVES_SRC.split('const armed =').length - 1).toBe(1);
+    expect(PRIMITIVES_SRC).not.toContain('typed.trim() ===');
+  });
+
+  it('keeps the button disabled expression reading that single flag', () => {
+    expect(PRIMITIVES_SRC).toContain('disabled={busy || !armed}');
+  });
+});
+
+describe('the empty expected value keeps the gate disarmed (the one divergence the duplicate had)', () => {
+  it('never arms on an empty or whitespace-only expected value', () => {
+    // The inline comparison armed IMMEDIATELY here (`''.trim() === ''.trim()`), which is the only
+    // value where the two rules ever disagreed. Now that the component calls the predicate, this
+    // row covers the shipped gate rather than a copy of it.
+    expect(typeToConfirmMatches('', '')).toBe(false);
+    expect(typeToConfirmMatches('anything', '')).toBe(false);
+    expect(typeToConfirmMatches('', '   ')).toBe(false);
+    expect(typeToConfirmMatches('   ', '   ')).toBe(false);
   });
 });
