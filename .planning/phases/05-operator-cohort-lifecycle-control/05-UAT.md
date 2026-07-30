@@ -120,6 +120,27 @@ not a coverage gap: every entry has a passing test ref.
 Plans 05-06, 05-07, 05-16, 05-17, 05-18, 05-19 and 05-20 have no coverage block at all, so their
 testable deliverables were extracted from prose.
 
+## Retired: covered by automation
+
+The ledger the second gap-closure round (05-21 through 05-27) writes into, opened by 05-21.
+
+**The rule.** A plan appends one row per CLAUSE of a UAT test it now covers deterministically, and
+moves a test out of `## Tests` into this section only when EVERY clause of that test has a row. A
+test whose clauses are only partly covered stays in `## Tests`; 05-27 reconciles the whole ledger in
+one final pass and rewrites the `## Summary` counts from it. No plan in this round edits those counts
+directly.
+
+| UAT test | Clause now covered | Citation | Landed by |
+|----------|--------------------|----------|-----------|
+| 4 | Rung 4 (funded beacon) requires a typed cohort id before the confirm arms, and discloses the recovery-key situation | `packages/web/tests/lifecycle.spec.ts`, "CancelConfirm chooses the rung and wires its gate (D-03, rendered)" | 05-21 |
+| 4 | Rung 3 (ordinary cancel) asks for no typed id and keeps its confirm armed | `packages/web/tests/lifecycle.spec.ts`, same block, "keeps the ordinary cancel at low friction" | 05-21 |
+| 4 | Cancel is HIDDEN rather than disabled after broadcast, and the post-broadcast line explains itself | `packages/web/tests/lifecycle.spec.ts`, "LifecycleActions hides Cancel once the beacon transaction is out (D-04, rendered)" | 05-21 |
+| 8 | A service that set no terms shows no terms step at all: no scroll box, no acceptance checkbox | `packages/web/tests/terms-render.spec.tsx`, "a service that set NO terms renders NO terms step at all" | 05-21 |
+
+Neither test 4 nor test 8 is fully covered yet, so both stay in `## Tests` above. Test 4 still needs
+the 401 shared-session-expiry clause (05-24 closes it). Test 8 still needs the long-body-at-a-narrow-
+viewport clause, which is a genuine visual judgment and stays with a human.
+
 ## Summary
 
 total: 18
