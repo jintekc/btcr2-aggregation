@@ -250,7 +250,7 @@ describe('GET /v1/operator/cohorts (list) + DELETE (discard)', () => {
     expect(after.cohorts).toHaveLength(0);
   });
 
-  it('404s a discard of an unknown draft id', async () => {
+  it('404s a discard of an unknown draft id, with the exact opaque body (audit #32)', async () => {
     const { app } = operatorCohortApp();
     const cookie = await login(app);
     const res = await app.request('/v1/operator/cohorts/does-not-exist', {
@@ -258,6 +258,10 @@ describe('GET /v1/operator/cohorts (list) + DELETE (discard)', () => {
       headers: { cookie },
     });
     expect(res.status).toBe(404);
+    // Deep equality on the body, not just the status: this is one of three draft refusals that
+    // deliberately say the same uninformative thing, and the family is pinned as a whole in
+    // `packages/service/tests/draft-edit.spec.ts`.
+    expect(await res.json()).toEqual({ error: 'unknown draft' });
   });
 });
 
@@ -383,11 +387,14 @@ describe('POST /v1/operator/cohorts/:id/advertise (advertise a draft)', () => {
     runner.stop();
   });
 
-  it('404s advertising an unknown draft id', async () => {
+  it('404s advertising an unknown draft id, with the exact opaque body (audit #32)', async () => {
     const { app, runner } = operatorCohortApp();
     const cookie = await login(app);
     const res = await advertise(app, cookie, 'does-not-exist');
     expect(res.status).toBe(404);
+    // The third member of the same refusal family; see the discard row above and the
+    // cross-comparison in `packages/service/tests/draft-edit.spec.ts`.
+    expect(await res.json()).toEqual({ error: 'unknown draft' });
     runner.stop();
   });
 });

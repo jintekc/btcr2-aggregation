@@ -211,9 +211,20 @@ export type UpdateDraftResult =
   | { ok: false; unauthorized: true };
 
 /**
- * PATCH a draft's shape in place. On 200 returns the updated DTO; on a 400 surfaces the server's
- * specific message verbatim; on a 401 reports the session expiry; on anything else (notably the
- * 404 a non-draft id earns, D-13) falls back to the generic message.
+ * PATCH a draft's shape in place. On 200 returns the updated DTO; on a 401 reports the session
+ * expiry; on ANY other non-ok status the server's own `error` string is surfaced verbatim when the
+ * body parses as JSON carrying one, and the generic line is used only when it does not.
+ *
+ * That last clause is worth stating precisely, because it is easy to read this as 400-only. It is
+ * not: the 404 a non-draft id earns (D-13) carries `{ error: 'unknown draft' }`, so an operator who
+ * saves a draft that has since been advertised, ended, or discarded reads the service's own
+ * `unknown draft` rather than `Could not save the changes. Try again.`. The 413 is the case that
+ * really does fall through, because its body is not JSON.
+ *
+ * Whether `unknown draft` is the right sentence for an operator staring at a stale edit form is a
+ * COPY question, not a wiring one, and it is deliberately left open here. The server body is pinned
+ * where it is emitted (`packages/service/tests/draft-edit.spec.ts`), so a reword is a decision
+ * somebody has to make on purpose rather than something that can drift.
  */
 export async function updateDraft(
   baseUrl: string,

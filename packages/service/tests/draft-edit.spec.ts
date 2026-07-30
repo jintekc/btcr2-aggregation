@@ -533,11 +533,17 @@ describe('PATCH /v1/operator/cohorts/:id', () => {
     runner.stop();
   });
 
-  it('404s a non-draft id', async () => {
+  it('404s a non-draft id with the exact opaque body (audit #32)', async () => {
     const { app, runner } = draftEditApp();
     const cookie = await login(app);
     const res = await patchDraft(app, cookie, 'does-not-exist', { beaconType: 'CASBeacon', size: 2 });
     expect(res.status).toBe(404);
+    // The BODY, not only the status. This string is not internal: `updateDraft` in
+    // `packages/web/src/lib/operator.ts` parses it and the console renders the server's own
+    // sentence verbatim, so an operator who saves a draft that is no longer a draft reads exactly
+    // this. Deep equality, so an extra key explaining WHICH of the four non-draft states the id is
+    // in (unknown, advertised, in flight, terminal) fails here rather than shipping.
+    expect(await res.json()).toEqual({ error: 'unknown draft' });
     runner.stop();
   });
 
@@ -548,6 +554,70 @@ describe('PATCH /v1/operator/cohorts/:id', () => {
     const oversized = { beaconType: 'CASBeacon', size: 2, padding: 'x'.repeat(5 * 1024) };
     const res = await patchDraft(app, cookie, draft.draftId, oversized);
     expect(res.status).toBe(413);
+    runner.stop();
+  });
+});
+
+/**
+ * THE THREE DRAFT REFUSALS, PINNED AS A FAMILY (audit #32).
+ *
+ * Edit, discard and advertise all refuse an id that is not a draft with the SAME body. That
+ * uniformity is deliberate and it is the property worth protecting: an id can fail to be a draft
+ * for four different reasons (never existed, already advertised, in flight, terminal), and none of
+ * them is a question these actions need to answer, so all four read identically and all three
+ * actions say the same thing about them.
+ *
+ * Asserting each body on its own would NOT catch the interesting regression. A change that made one
+ * of the three describe the cohort's actual state ("already advertised", say) would still pass its
+ * own updated row while turning a uniform refusal into a state oracle; only comparing the three to
+ * EACH OTHER sees it. So the rows below do both: each body by deep equality, and then the three
+ * against one another.
+ */
+describe('the three draft refusals stay indistinguishable from each other (audit #32)', () => {
+  it('answers the same 404 body for edit, discard and advertise on the same unknown id', async () => {
+    const { app, runner } = draftEditApp();
+    const cookie = await login(app);
+    const unknownId = 'a-draft-id-this-service-never-issued';
+
+    const edited = await patchDraft(app, cookie, unknownId, { beaconType: 'CASBeacon', size: 2 });
+    const discarded = await app.request(`/v1/operator/cohorts/${unknownId}`, {
+      method: 'DELETE',
+      headers: { cookie },
+    });
+    const advertised = await app.request(`/v1/operator/cohorts/${unknownId}/advertise`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+
+    const shapes = await Promise.all(
+      [edited, discarded, advertised].map(async (res) => ({ status: res.status, body: await res.json() })),
+    );
+    // Status included in the comparison, so a refusal that kept the wording and moved to a 409 or a
+    // 403 is caught here too: the shape of the refusal is as much the contract as its words.
+    expect(shapes[1]).toEqual(shapes[0]);
+    expect(shapes[2]).toEqual(shapes[0]);
+    expect(shapes[0]).toEqual({ status: 404, body: { error: 'unknown draft' } });
+
+    runner.stop();
+  });
+
+  it('answers that same body for an ADVERTISED id, so the refusal never reveals the state', async () => {
+    // The sharpest case for the family property. This id genuinely exists and the service knows
+    // exactly what it is; it is simply not editable any more (D-13, next-cohort-only). The refusal
+    // must be byte-identical to the one an id it never heard of earns.
+    const { app, runner, operatorCohorts } = draftEditApp();
+    const cookie = await login(app);
+    const created = operatorCohorts.createDraft({ beaconType: 'CASBeacon', size: 2 });
+    const advertised = operatorCohorts.advertiseDraft(created.draftId) as OperatorCohortDTO;
+
+    const known = await patchDraft(app, cookie, advertised.draftId, { beaconType: 'CASBeacon', size: 2 });
+    const unknown = await patchDraft(app, cookie, 'never-issued-at-all', { beaconType: 'CASBeacon', size: 2 });
+
+    expect({ status: known.status, body: await known.json() }).toEqual({
+      status: unknown.status,
+      body: await unknown.json(),
+    });
+
     runner.stop();
   });
 });
