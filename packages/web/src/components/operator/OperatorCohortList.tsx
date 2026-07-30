@@ -3,6 +3,7 @@ import { Badge, Button, Card, ConfirmPanel, CopyField, SectionTitle, StatusDot }
 import { cosignCaption, cosignValue } from '../../lib/directory';
 import {
   canceledEndedLine,
+  chipPresentation,
   dismissDropsReadvertise,
   groupRenderRows,
   type ChipKey,
@@ -29,26 +30,6 @@ function beaconLabel(beaconType: OperatorCohortDTO['beaconType']): string {
   return beaconType === 'CASBeacon' ? 'CAS' : 'SMT';
 }
 
-/**
- * The FIXED status-chip tone map (D-04, 04-UI-SPEC Color). Tone + label + whether the
- * StatusDot pulses (a live, mid-flight cohort reads live via a pulsing accent dot; every
- * other state is a settled dot). This is the single source of truth for the chips, so a
- * chip's tone never drifts between rows.
- */
-const CHIP: Record<ChipKey, { tone: 'neutral' | 'accent' | 'good' | 'warn' | 'bad'; label: string; pulse: boolean }> = {
-  draft: { tone: 'neutral', label: 'Draft', pulse: false },
-  filling: { tone: 'accent', label: 'Filling', pulse: true },
-  'co-signing': { tone: 'accent', label: 'Co-signing', pulse: true },
-  'needs-funding': { tone: 'warn', label: 'Needs funding', pulse: false },
-  fallback: { tone: 'warn', label: 'Fallback', pulse: false },
-  anchored: { tone: 'good', label: 'Anchored', pulse: false },
-  failed: { tone: 'bad', label: 'Failed', pulse: false },
-  expired: { tone: 'bad', label: 'Expired', pulse: false },
-  // NEUTRAL, never bad (05-UI-SPEC tone map, D-05): the operator meant to end this cohort, so it
-  // must not read as a failure. Its label and its Ended group tell it apart from a Draft.
-  canceled: { tone: 'neutral', label: 'Canceled', pulse: false },
-};
-
 /** The four list groups, in render order (04-UI-SPEC list group headings). */
 const GROUP_ORDER: GroupKey[] = ['attention', 'active', 'drafts', 'ended'];
 const GROUP_HEADING: Record<GroupKey, string> = {
@@ -58,9 +39,15 @@ const GROUP_HEADING: Record<GroupKey, string> = {
   ended: 'Ended',
 };
 
-/** A status chip: a Badge carrying the fixed tone + a StatusDot that pulses only when live. */
+/**
+ * A status chip: a Badge carrying the fixed tone + a StatusDot that pulses only when live.
+ *
+ * Tone, label and pulse come from the exported definition in `../../lib/operator-rows`, never from
+ * a map local to this file: that module is reachable from a spec, and this component is not
+ * (05-AUDIT entry 9).
+ */
 function StatusChip({ chip }: { chip: ChipKey }) {
-  const c = CHIP[chip];
+  const c = chipPresentation(chip);
   return (
     <Badge tone={c.tone}>
       <StatusDot tone={c.tone} pulse={c.pulse} label={c.label} />

@@ -555,14 +555,26 @@ export async function fetchCohortDetail(baseUrl: string, id: string): Promise<Fe
  * The live status-chip key for one monitoring row (mirrors the service `CohortChip`, D-04).
  * A live cohort reads `filling` / `co-signing`; `needs-funding` is the live-cohort funding
  * placeholder the live-path plan 04-06 populates; an ended cohort reads its terminal fate
- * `fallback` (anchored via the k-of-n script path) / `anchored` / `canceled` (the operator
- * ended it deliberately, Phase 5 D-05) / `failed`. The client maps each key to a fixed
- * Badge/StatusDot tone (the UI-SPEC tone map), where `canceled` is NEUTRAL: nothing went wrong.
+ * `co-signed` / `co-signed-fallback` (signed but NOT confirmed on-chain) / `fallback`
+ * (CONFIRMED via the k-of-n script path) / `anchored` (CONFIRMED via the key path) /
+ * `canceled` (the operator ended it deliberately, Phase 5 D-05) / `failed`.
+ *
+ * The four completion fates are a two-by-two: CONFIRMATION picks the row (`anchored`/`fallback`
+ * versus `co-signed`/`co-signed-fallback`), the k-of-n SCRIPT PATH picks the column. Only the
+ * confirmed pair counts toward the anchored metric (05-AUDIT entry 9).
+ *
+ * Each key maps to a fixed Badge/StatusDot tone, defined once in
+ * {@link file://./operator-rows.ts} `CHIP_PRESENTATION`, where `canceled` is NEUTRAL: nothing
+ * went wrong.
  */
 export type CohortChip =
   | 'filling'
   | 'co-signing'
   | 'needs-funding'
+  /** The key-path co-sign succeeded; this service published nothing or has seen no confirmation. */
+  | 'co-signed'
+  /** The same, for a co-sign that took the ADR-042 k-of-n script path. */
+  | 'co-signed-fallback'
   | 'fallback'
   | 'anchored'
   | 'canceled'

@@ -2,8 +2,10 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
+  CHIP_KEYS,
   canceledEndedLine,
   chipForCohort,
+  chipPresentation,
   dismissDropsReadvertise,
   groupForChip,
   groupRenderRows,
@@ -113,6 +115,82 @@ describe('chipForCohort / groupForChip', () => {
     expect(groupForChip('draft')).toBe('drafts');
     expect(groupForChip('anchored')).toBe('ended');
     expect(groupForChip('expired')).toBe('ended');
+  });
+});
+
+/**
+ * The chip PRESENTATION, asserted rather than eyeballed (05-AUDIT entry 9).
+ *
+ * The tone map used to be a module-private `const` in `OperatorCohortList.tsx` whose only
+ * reference was `CHIP[chip]` inside `StatusChip`. `packages/web` renders no component in any spec
+ * and both end-to-end legs compare the SERVED chip string, never the rendered badge, so nothing
+ * could have caught a wrong tone: a `Record<ChipKey, ...>` forces only that a key EXISTS. The
+ * honest-word half of that defect could therefore have shipped with the new fate painted
+ * success-green under a label one character from the live pulsing chip, and the whole gate would
+ * still have been green. Moving the definition into the lib module is what makes these rows
+ * possible at all.
+ */
+describe('chipPresentation: the single, assertable definition of how a chip renders (05-AUDIT entry 9)', () => {
+  it('renders a completed key-path co-sign NEUTRAL and settled, never good and never pulsing', () => {
+    // Good tone would celebrate an anchor that does not exist; a pulse would say the cohort is
+    // still in flight. Both reds were observed by temporarily setting `tone: 'good', pulse: true`.
+    expect(chipPresentation('co-signed').tone).toBe('neutral');
+    expect(chipPresentation('co-signed').pulse).toBe(false);
+  });
+
+  it('renders a completed SCRIPT-PATH co-sign warn-toned, matching the fallback chip it sits beside', () => {
+    // Warn rather than neutral: the reason a script-path row wants a human's eye (not every seat
+    // signed) is unchanged by the confirmation question, so downgrading its tone would quietly
+    // take a signal away that the operator has today.
+    expect(chipPresentation('co-signed-fallback').tone).toBe('warn');
+    expect(chipPresentation('co-signed-fallback').pulse).toBe(false);
+  });
+
+  it('moved the map without rewriting it: the shipped tones are unchanged', () => {
+    expect(chipPresentation('anchored').tone).toBe('good');
+    expect(chipPresentation('fallback').tone).toBe('warn');
+    expect(chipPresentation('co-signing').pulse).toBe(true);
+    expect(chipPresentation('canceled').tone).toBe('neutral');
+  });
+
+  it('gives every chip its OWN label, across the whole set', () => {
+    // The `packages/web/tests/psbt.spec.ts` distinctness idiom, applied to the chip labels. A
+    // collapsed pair would tell the operator the wrong thing about a cohort, and here specifically
+    // a settled cohort that anchored NOTHING would read as the live `Co-signing` one. Running over
+    // the whole set rather than the new entries closes the class instead of the instance: no
+    // future chip can collide with an existing label either.
+    //
+    // Red observed by temporarily labelling the new entry `'Co-signing'`, the exact one-word-apart
+    // collision this defect's framing warns about.
+    const labels = CHIP_KEYS.map((key) => chipPresentation(key).label);
+    expect(new Set(labels).size).toBe(CHIP_KEYS.length);
+    for (const label of labels) {
+      expect(label).toBeTruthy();
+      // The UI-SPEC copy contract: no long dash in any authored string.
+      expect(label).not.toMatch(/—/);
+    }
+  });
+
+  it('covers every chip key, so the distinctness row cannot silently stop covering one', () => {
+    // Derived from the presentation record's own keys, so the type checker keeps the list complete.
+    expect(CHIP_KEYS).toContain('co-signed');
+    expect(CHIP_KEYS).toContain('co-signed-fallback');
+    expect(CHIP_KEYS.length).toBe(new Set(CHIP_KEYS).size);
+    for (const key of CHIP_KEYS) {
+      expect(chipPresentation(key)).toBeDefined();
+    }
+  });
+
+  it('confirmation decides the word, the script path decides the bucket', () => {
+    // All FOUR terminal groupings in ONE row, because that pairing IS the property. A row asserting
+    // only part of it would stay green through the tempting "simplify the two unconfirmed chips
+    // into one" refactor, which would silently move a script-path cohort out of Needs attention
+    // (where it renders today) and into Ended - taking a real operator signal away inside what was
+    // meant to be a defect fix. Red observed by routing `co-signed-fallback` to `'ended'`.
+    expect(groupForChip('co-signed')).toBe('ended');
+    expect(groupForChip('co-signed-fallback')).toBe('attention');
+    expect(groupForChip('fallback')).toBe('attention');
+    expect(groupForChip('anchored')).toBe('ended');
   });
 });
 

@@ -72,6 +72,78 @@ export function dismissDropsReadvertise(cohort?: OperatorCohortDTO): boolean {
   return cohort?.state === 'expired';
 }
 
+/**
+ * How ONE chip renders: its Badge/StatusDot tone, its label, and whether the dot pulses (a live,
+ * mid-flight cohort reads live via a pulsing dot; every settled state is a still dot).
+ *
+ * `tone` declares its own literal union rather than importing one, because `Tone` in
+ * {@link file://../ui/primitives.tsx} is not exported and this module must stay dependency-free
+ * (no react import, no primitives import, so every rule here is unit-testable in a package with no
+ * DOM harness). The union assigns structurally to the `Badge` / `StatusDot` props, so the type
+ * checker still catches any drift between the two declarations.
+ */
+export interface ChipPresentation {
+  tone: 'neutral' | 'accent' | 'good' | 'warn' | 'bad';
+  label: string;
+  pulse: boolean;
+}
+
+/**
+ * The FIXED status-chip tone map (D-04, 04-UI-SPEC Color): the SINGLE definition of every chip's
+ * tone, label and pulse, so a chip's appearance never drifts between rows.
+ *
+ * It lives HERE, in a lib module, rather than beside `StatusChip` in the component, and that move
+ * is the point rather than tidiness (05-AUDIT entry 9). As a module-private `const` in
+ * `OperatorCohortList.tsx` its only reference was `CHIP[chip]`, `packages/web` renders no component
+ * in any spec, and both end-to-end legs compare the SERVED chip string rather than the rendered
+ * badge. A `Record<ChipKey, ...>` constrains only the KEY set and never a value, so an entry could
+ * have shipped as a success-green badge labelled one character from the live pulsing chip and every
+ * other check would still have passed. Exported, it is assertable.
+ *
+ * Exactly ONE definition of a chip's presentation may exist in this package: a second inline map
+ * beside this one would recreate the tested-definition-beside-shipped-definition shape that
+ * 05-AUDIT entry 10 is made of. Consumers read it through {@link chipPresentation}, which is what
+ * `StatusChip` in {@link file://../components/operator/OperatorCohortList.tsx} calls, so the values
+ * a spec asserts are the values that render.
+ */
+export const CHIP_PRESENTATION: Record<ChipKey, ChipPresentation> = {
+  draft: { tone: 'neutral', label: 'Draft', pulse: false },
+  filling: { tone: 'accent', label: 'Filling', pulse: true },
+  'co-signing': { tone: 'accent', label: 'Co-signing', pulse: true },
+  'needs-funding': { tone: 'warn', label: 'Needs funding', pulse: false },
+  // NEUTRAL rather than good, and a SETTLED dot rather than the live pulsing one: the co-sign
+  // succeeded, and nothing confirmed on-chain, so there is nothing to celebrate and nothing still
+  // in flight. The label is deliberately NOT `Co-signed`, which sits one character from the live
+  // `Co-signing` chip above and would read as the same state at a glance on a scanned list; it is
+  // the word the participant surface already uses for this exact state (its anchor lifecycle runs
+  // Signed -> Broadcast -> Confirmed), so both sides of the product agree about what is known.
+  'co-signed': { tone: 'neutral', label: 'Signed', pulse: false },
+  // WARN, matching the `fallback` entry below, because the reason that row wants a human's eye has
+  // not changed: not every seat signed. Neutral would quietly downgrade that. It differs from
+  // `fallback` in exactly one respect, that nothing has confirmed on-chain yet, which is why it
+  // counts in neither metric column and why its label says signed rather than anchored.
+  'co-signed-fallback': { tone: 'warn', label: 'Signed via fallback', pulse: false },
+  fallback: { tone: 'warn', label: 'Fallback', pulse: false },
+  anchored: { tone: 'good', label: 'Anchored', pulse: false },
+  failed: { tone: 'bad', label: 'Failed', pulse: false },
+  expired: { tone: 'bad', label: 'Expired', pulse: false },
+  // NEUTRAL, never bad (05-UI-SPEC tone map, D-05): the operator meant to end this cohort, so it
+  // must not read as a failure. Its label and its Ended group tell it apart from a Draft.
+  canceled: { tone: 'neutral', label: 'Canceled', pulse: false },
+};
+
+/**
+ * Every chip key, derived from {@link CHIP_PRESENTATION}'s own keys rather than hand-listed, so
+ * the type checker keeps this list complete and a spec that iterates it cannot silently stop
+ * covering a chip.
+ */
+export const CHIP_KEYS = Object.keys(CHIP_PRESENTATION) as ChipKey[];
+
+/** How one chip renders. The accessor `StatusChip` consumes, so the shipped values are the asserted ones. */
+export function chipPresentation(chip: ChipKey): ChipPresentation {
+  return CHIP_PRESENTATION[chip];
+}
+
 /** The four list groups, in render order (04-UI-SPEC list group headings). */
 export type GroupKey = 'attention' | 'active' | 'drafts' | 'ended';
 
@@ -112,15 +184,25 @@ export function chipForCohort(cohort: OperatorCohortDTO, row?: CohortSummaryDTO)
 
 /**
  * Assign a chip to exactly ONE group (single membership, so a cohort never double-renders):
- * `needs-funding` / `fallback` / `failed` need a human, so they surface under Needs attention
- * (this also backs the drill-down cross-cohort attention badge, D-11); `filling` / `co-signing`
- * are live under Active; `draft` under Drafts; a clean `anchored`, an `expired` window, and a
- * `canceled` cohort are settled under Ended. `canceled` reaching Ended by the default fall-through
- * is deliberate and pinned by spec: an operator's own decision is settled, never attention-worthy.
- * The tone map in the component still colors each chip identically wherever it renders.
+ * `needs-funding` / `fallback` / `co-signed-fallback` / `failed` need a human, so they surface
+ * under Needs attention (this also backs the drill-down cross-cohort attention badge, D-11);
+ * `filling` / `co-signing` are live under Active; `draft` under Drafts; a clean `anchored`, a
+ * settled `co-signed`, an `expired` window, and a `canceled` cohort are settled under Ended.
+ * `canceled` and `co-signed` reaching Ended by the default fall-through is deliberate and pinned by
+ * spec: an operator's own decision is settled, and so is a completed key-path co-sign that needs
+ * nobody.
+ *
+ * The rule the two-by-two makes explicit (05-AUDIT entry 9): CONFIRMATION decides the WORD on the
+ * chip, the k-of-n SCRIPT PATH decides the BUCKET. So `co-signed-fallback` is listed here
+ * EXPLICITLY rather than left to the fall-through, which would send it to Ended and take the
+ * script-path row's Needs-attention bucketing away from the shipped hermetic default. That is the
+ * regression this shape exists to avoid, and all four terminal groupings are pinned together in one
+ * row of {@link file://../../tests/operator-rows.spec.ts}.
+ *
+ * {@link CHIP_PRESENTATION} above colors each chip identically wherever it renders.
  */
 export function groupForChip(chip: ChipKey): GroupKey {
-  if (chip === 'needs-funding' || chip === 'fallback' || chip === 'failed') {
+  if (chip === 'needs-funding' || chip === 'fallback' || chip === 'co-signed-fallback' || chip === 'failed') {
     return 'attention';
   }
   if (chip === 'filling' || chip === 'co-signing') {

@@ -68,7 +68,16 @@ gated in Phase 4 and is unchanged here.
       roster; a button would be a synthetic state (ADR 0017, alternatives considered).
 - [ ] While the cohort is co-signing, confirm `Finalize now` is offered. Let the round complete
       normally instead of using it (the finalize path itself is covered below and by
-      `pnpm e2e:fallback:operator`), and confirm the cohort ends `Anchored` in the Ended group.
+      `pnpm e2e:fallback:operator`), and confirm the cohort ends `Signed` in the Ended group.
+      NOT `Anchored`: this run is hermetic, so the cohort co-signed a fixture transaction and
+      anchored nothing, and `Anchored` would be a claim about Bitcoin this service cannot make.
+      That word is reserved for a beacon transaction this service watched confirm on-chain.
+      - Metrics consequence: on a hermetic run the `anchored` counter stays at 0 by construction,
+        however many cohorts you complete. Completions are counted by the Ended group, not by that
+        column. A `0` there is the honest reading, not a fault.
+      - Unchanged: a k-of-n script-path cohort still surfaces under `Needs attention`, exactly
+        where it does today. Its chip now reads `Signed via fallback` rather than claiming an
+        anchor, but nothing moved out of that group.
 
 **Reads true?**
 

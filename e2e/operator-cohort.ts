@@ -125,7 +125,18 @@ interface MonitorDetailDTO {
 /** One monitoring summary chip row (subset), from the `monitoring.rows` sibling of the list read. */
 interface MonitorSummaryRowDTO {
   cohortId: string;
-  chip: 'filling' | 'co-signing' | 'needs-funding' | 'fallback' | 'anchored' | 'canceled' | 'failed';
+  chip:
+    | 'filling'
+    | 'co-signing'
+    | 'needs-funding'
+    // The two honest UNCONFIRMED completions (05-AUDIT entry 9): signed, but nothing confirmed
+    // on-chain. Both legs below are hermetic, so `co-signed` is what they actually settle on.
+    | 'co-signed'
+    | 'co-signed-fallback'
+    | 'fallback'
+    | 'anchored'
+    | 'canceled'
+    | 'failed';
   seatsJoined: number;
   capacity: number;
 }
@@ -547,9 +558,10 @@ export async function runExpiryLeg(options: OperatorCohortOptions = {}): Promise
  * in, advertise a cohort, and let real headless participants join + co-sign it, THEN assert the
  * gated monitoring reads reflect that real activity end to end over the fixture path - the
  * per-cohort detail read (`GET /v1/operator/cohorts/:id`) shows the seated members and who
- * submitted, and the list read's `monitoring` sibling settles the cohort into the `anchored`
- * ended taxonomy. This is the hermetic, CI-facing evidence of record for the monitoring read
- * model (the live end-to-end funding proof is the owner's opt-in `pnpm uat:live` walkthrough).
+ * submitted, and the list read's `monitoring` sibling settles the cohort into the honest
+ * `co-signed` ended taxonomy (hermetic, so nothing anchors and the anchored counter stays at
+ * zero). This is the hermetic, CI-facing evidence of record for the monitoring read model (the
+ * live end-to-end funding proof is the owner's opt-in `pnpm uat:live` walkthrough).
  *
  * Robust-by-construction: the monitor folds every runner event into its OWN per-cohort entry at
  * event time (RESEARCH Pitfall 2), so the members/submissions/co-sign facts survive the session
@@ -674,9 +686,10 @@ export async function runMonitorLeg(options: OperatorCohortOptions = {}): Promis
     }
     log(`[assert] monitoring detail: ${seatedMembers.length} seated members, ${submitted.length} submissions, co-sign total ${detail.coSign.total}`);
 
-    // (2) The list read's monitoring sibling settles the cohort into the `anchored` ended
-    //     taxonomy (D-23): on the hermetic key-path co-sign the terminal fate is `anchored`
-    //     (no broadcaster to flip it to failed), and the anchored metric counts it.
+    // (2) The list read's monitoring sibling settles the cohort into the honest ended taxonomy
+    //     (D-23): this leg drives a HERMETIC key-path co-sign, so the terminal fate is `co-signed`
+    //     (the co-sign succeeded; no broadcaster ever published the beacon tx, so nothing could
+    //     confirm). `anchored` is reserved for a CONFIRMED anchor (Phase 4 D-18, 05-AUDIT entry 9).
     let ended: OperatorListWithMonitoringDTO;
     try {
       ended = await pollUntil(
@@ -684,21 +697,27 @@ export async function runMonitorLeg(options: OperatorCohortOptions = {}): Promis
           const res = await fetch(`${baseUrl}/v1/operator/cohorts`, { headers: { cookie } });
           return (await res.json()) as OperatorListWithMonitoringDTO;
         },
-        (body) => (body.monitoring?.rows ?? []).some((r) => r.cohortId === cohortId && r.chip === 'anchored'),
+        (body) => (body.monitoring?.rows ?? []).some((r) => r.cohortId === cohortId && r.chip === 'co-signed'),
         timeoutMs,
-        '[monitor] summary chip settles to anchored',
+        '[monitor] summary chip settles to co-signed',
       );
     } catch (err) {
-      fail(`[monitor] summary read never settled the cohort into the anchored ended taxonomy: ${err instanceof Error ? err.message : err}`);
+      fail(`[monitor] summary read never settled the cohort into the co-signed ended taxonomy: ${err instanceof Error ? err.message : err}`);
       return problems;
     }
     if (!ended.monitoring) {
       fail('[monitor] the list read should carry the additive `monitoring` sibling when the monitor is wired');
-    } else if (ended.monitoring.metrics.anchored < 1) {
-      fail(`[monitor] the anchored metric should count the completed cohort, got ${ended.monitoring.metrics.anchored}`);
+    } else if (ended.monitoring.metrics.anchored !== 0) {
+      // An HONESTY invariant, not a completion check: this service publishes nothing, so it must
+      // report zero anchored cohorts however many it completes. Completion is proven by the chip
+      // poll immediately above, which only settles once the co-sign has finished.
+      fail(
+        `[monitor] a hermetic service anchors nothing, so the anchored metric must stay 0, got ` +
+          `${ended.monitoring.metrics.anchored}`,
+      );
     }
     if (problems.length === 0) {
-      log(`[ok] monitor: the gated reads reflected members + submissions and settled cohort ${cohortId} as anchored`);
+      log(`[ok] monitor: the gated reads reflected members + submissions and settled cohort ${cohortId} as co-signed`);
     }
 
     return problems;
@@ -1298,7 +1317,9 @@ export async function runTestPeersLeg(options: OperatorCohortOptions = {}): Prom
     }
     log(`[assert] test peers: all ${badged.length} seated members are badged as test peers`);
 
-    /* ---- The list read settles the cohort into the anchored ended taxonomy. ---- */
+    /* ---- The list read settles the cohort into the honest co-signed ended taxonomy. ---- */
+    // Hermetic and key-path, like the monitoring leg above: the rehearsal really co-signs, and it
+    // publishes nothing, so `co-signed` is the fate a no-broadcast service actually produces.
     try {
       await withTimeout(
         pollUntil(
@@ -1306,16 +1327,16 @@ export async function runTestPeersLeg(options: OperatorCohortOptions = {}): Prom
             const res = await fetch(`${baseUrl}/v1/operator/cohorts`, { headers: { cookie } });
             return (await res.json()) as OperatorListWithMonitoringDTO;
           },
-          (body) => (body.monitoring?.rows ?? []).some((r) => r.cohortId === cohortId && r.chip === 'anchored'),
+          (body) => (body.monitoring?.rows ?? []).some((r) => r.cohortId === cohortId && r.chip === 'co-signed'),
           timeoutMs,
-          '[testpeers] summary chip settles to anchored',
+          '[testpeers] summary chip settles to co-signed',
         ),
         timeoutMs,
-        '[testpeers] anchored poll',
+        '[testpeers] co-signed poll',
       );
     } catch (err) {
       fail(
-        `[testpeers] the rehearsed cohort never settled as anchored: ` +
+        `[testpeers] the rehearsed cohort never settled as co-signed: ` +
           `${err instanceof Error ? err.message : String(err)}`,
       );
     }
@@ -1394,7 +1415,8 @@ async function main(): Promise<number> {
       '\nMONITOR E2E PASSED: an operator advertised a cohort, real participants joined + co-signed it ' +
         'hermetically, and the gated monitoring reads reflected that activity end to end - the per-cohort ' +
         'detail read showed the seated members and who submitted, and the list read settled the cohort into ' +
-        'the anchored ended taxonomy (SVC-03, D-47 fixture leg).',
+        'the honest co-signed ended taxonomy, with the anchored counter still at zero because a ' +
+        'hermetic service publishes nothing (SVC-03, D-47 fixture leg).',
     );
     return 0;
   }
@@ -1438,7 +1460,8 @@ async function main(): Promise<number> {
       '(an idle advertised cohort expires out of the participant directory but is surfaced to the ' +
       'operator as expired with a reason, and is then re-advertised back into the directory); PLUS ' +
       'the SVC-03 monitoring leg (the gated per-cohort detail read reflects the seated members and ' +
-      'submissions, and the list read settles the cohort into the anchored ended taxonomy, D-47); ' +
+      'submissions, and the list read settles the cohort into the honest co-signed ended ' +
+      'taxonomy while the anchored counter stays at zero, D-47); ' +
       'PLUS the SVC-04 cancel leg (canceling the slot-owning one of two advertised cohorts files a ' +
       'distinct canceled fate and leaves the sibling still joinable to a freshly constructed ' +
       'participant).',
