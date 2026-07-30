@@ -6,11 +6,14 @@ import type { Participant } from '@btcr2-aggregation/participant';
 import { createCohortIntents } from '../src/cohort-intent.js';
 import {
   addedTestPeersText,
+  BROADCAST_DISABLED_TEXT,
   canceledCohortText,
   createCohortMonitor,
   dismissedRecordText,
   finalizedCohortText,
   operatorAddedTestPeersText,
+  PAUSED_ADVERTISING_TEXT,
+  RESUMED_ADVERTISING_TEXT,
 } from '../src/monitor.js';
 import {
   addTestPeersFor,
@@ -898,6 +901,152 @@ describe('the operator actions log rides the existing gated monitoring read (ADR
     // A save that re-sends the value the service already holds changed nothing, so it says nothing.
     await save({ serviceName: 'Acme (maintenance)' });
     expect(monitor.operatorActions()).toHaveLength(1);
+
+    runner.stop();
+  });
+});
+
+/**
+ * The three route-level "changed nothing, record nothing" guards (05-AUDIT-2.md entry 13, defect
+ * #2): `hono-adapter.ts` reads the prior state BEFORE calling pause / resume / disable-broadcast,
+ * and records an operator action only on a real transition.
+ *
+ * ## The trap, which is the whole reason these sequences look the way they do
+ *
+ * The obvious test is two identical actions back to back. It is worthless here. The operator-actions
+ * ring in `monitor.ts` skips a consecutive duplicate ITSELF, so `pause -> pause` yields one entry
+ * with the route guard present AND with it deleted. Every existing sequence in the repo has that
+ * shape, including `kill-switch.spec.ts`'s "is idempotent and appends ONE operator-action entry",
+ * so all three guards were indistinguishable from having no guard at all.
+ *
+ * So each row below drives a DIFFERENT recorded action BETWEEN the two identical ones. That breaks
+ * the ring's consecutive-duplicate skip (the two entries would no longer be adjacent), which leaves
+ * the route guard as the only thing that can keep the count at one.
+ *
+ * Each row COUNTS occurrences of its own entry text rather than checking the array length, so the
+ * interleaved action landing in between cannot change the answer.
+ *
+ * What shipping without these would have cost: the operator-actions log is the audit trail for who
+ * stood broadcasting down and when. A guard lost to a refactor fills it with bogus duplicates, so
+ * the record of a one-way money-movement decision stops being a record of decisions.
+ */
+describe('a repeated no-op toggle records NOTHING, proven against the ring own duplicate skip (audit #2)', () => {
+  /** How many entries in the service-level log carry exactly this text. */
+  function countEntries(monitor: ReturnType<typeof lifecycleApp>['monitor'], text: string): number {
+    return monitor.operatorActions().filter((e) => e.text === text).length;
+  }
+
+  /** A settings rename: a recorded service-level action that is not any of the three toggles. */
+  function rename(
+    app: ReturnType<typeof lifecycleApp>['app'],
+    cookie: string,
+    name: string,
+  ): Promise<Response> {
+    return app.request('/v1/operator/settings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ serviceName: name }),
+    });
+  }
+
+  it('pauses, records something ELSE, then pauses again: still ONE pause entry', async () => {
+    const { app, runner, monitor } = lifecycleApp();
+    const cookie = await login(app);
+
+    await app.request('/v1/operator/advertising/pause', { method: 'POST', headers: { cookie } });
+    // The interleave. Without it the ring alone answers "one" whether or not the route guard exists.
+    await rename(app, cookie, 'Acme (draining)');
+    const repeat = await app.request('/v1/operator/advertising/pause', { method: 'POST', headers: { cookie } });
+
+    // The route is idempotent, so the repeat still succeeds and still reports the end state.
+    expect(repeat.status).toBe(200);
+    expect(await repeat.json()).toEqual({ paused: true });
+    expect(countEntries(monitor, PAUSED_ADVERTISING_TEXT)).toBe(1);
+    // The interleaved action really did land in between, so the two pauses were not adjacent.
+    expect(monitor.operatorActions().map((e) => e.text)).toEqual([
+      PAUSED_ADVERTISING_TEXT,
+      'Changed the service name.',
+    ]);
+
+    runner.stop();
+  });
+
+  it('records a pause on every GENUINE transition, so the row above is not passing vacuously', async () => {
+    const { app, runner, monitor } = lifecycleApp();
+    const cookie = await login(app);
+
+    await app.request('/v1/operator/advertising/pause', { method: 'POST', headers: { cookie } });
+    await app.request('/v1/operator/advertising/resume', { method: 'POST', headers: { cookie } });
+    await app.request('/v1/operator/advertising/pause', { method: 'POST', headers: { cookie } });
+
+    // TWO pauses, because the operator really did pause twice. The guard is about state, not about
+    // suppressing repeated text: a service paused, resumed and paused again has two pauses to show.
+    expect(countEntries(monitor, PAUSED_ADVERTISING_TEXT)).toBe(2);
+    expect(countEntries(monitor, RESUMED_ADVERTISING_TEXT)).toBe(1);
+
+    runner.stop();
+  });
+
+  it('resumes an already-unpaused service twice around another action: NO resume entry at all', async () => {
+    const { app, runner, monitor } = lifecycleApp();
+    const cookie = await login(app);
+
+    // The service boots unpaused, so both of these are no-ops.
+    await app.request('/v1/operator/advertising/resume', { method: 'POST', headers: { cookie } });
+    await rename(app, cookie, 'Acme (running)');
+    const repeat = await app.request('/v1/operator/advertising/resume', { method: 'POST', headers: { cookie } });
+
+    expect(repeat.status).toBe(200);
+    expect(await repeat.json()).toEqual({ paused: false });
+    expect(countEntries(monitor, RESUMED_ADVERTISING_TEXT)).toBe(0);
+    expect(monitor.operatorActions().map((e) => e.text)).toEqual(['Changed the service name.']);
+
+    runner.stop();
+  });
+
+  it('records a resume on a genuine transition, so the zero above is about the guard', async () => {
+    const { app, runner, monitor } = lifecycleApp();
+    const cookie = await login(app);
+
+    await app.request('/v1/operator/advertising/pause', { method: 'POST', headers: { cookie } });
+    await app.request('/v1/operator/advertising/resume', { method: 'POST', headers: { cookie } });
+
+    expect(countEntries(monitor, RESUMED_ADVERTISING_TEXT)).toBe(1);
+
+    runner.stop();
+  });
+
+  it('disables broadcast, cancels a cohort, then disables again: still ONE kill-switch entry', async () => {
+    const { app, runner, monitor } = lifecycleApp();
+    const cookie = await login(app);
+    const cohortId = await createAndAdvertise(app, cookie);
+
+    await app.request('/v1/operator/broadcast/disable', { method: 'POST', headers: { cookie } });
+    // A cancel is the interleaved action here: a recorded operator action of a different kind
+    // entirely, so nothing about it can be confused with a broadcast toggle.
+    await app.request(`/v1/operator/cohorts/${cohortId}/cancel`, { method: 'POST', headers: { cookie } });
+    const repeat = await app.request('/v1/operator/broadcast/disable', { method: 'POST', headers: { cookie } });
+
+    expect(repeat.status).toBe(200);
+    expect(await repeat.json()).toEqual({ broadcastDisabled: true });
+    expect(countEntries(monitor, BROADCAST_DISABLED_TEXT)).toBe(1);
+    expect(monitor.operatorActions().map((e) => e.text)).toEqual([
+      BROADCAST_DISABLED_TEXT,
+      canceledCohortText(cohortId),
+    ]);
+
+    runner.stop();
+  });
+
+  it('records the kill switch on its ONE genuine transition, so the row above is not vacuous', async () => {
+    const { app, runner, monitor } = lifecycleApp();
+    const cookie = await login(app);
+
+    await app.request('/v1/operator/broadcast/disable', { method: 'POST', headers: { cookie } });
+
+    // There is deliberately no counterpart route, so one transition is all this switch will ever
+    // have; the entry existing at all is what makes the interleaved row above measure something.
+    expect(countEntries(monitor, BROADCAST_DISABLED_TEXT)).toBe(1);
 
     runner.stop();
   });

@@ -451,3 +451,60 @@ describe('POST /v1/operator/advertising/pause + /resume', () => {
     }
   });
 });
+
+/**
+ * The refusal COPY itself (05-AUDIT-2.md entry 20, defect #1). Every assertion above compares the
+ * 409 body against the imported {@link ADVERTISING_PAUSED_REASON}, which is the right shape for
+ * asserting that the ROUTE emits this service's own reason but says nothing at all about what the
+ * reason SAYS: rewording the constant keeps every one of them green, and so does replacing it with
+ * the raw library-style string its own JSDoc says must never reach the wire. The e2e leg checks
+ * truthiness only.
+ *
+ * Both of this refusal's siblings are already guarded exactly this way, so this block is the
+ * treatment catching up rather than a new idea: `test-peers.spec.ts` pins `NO_SEATS_REASON` byte
+ * for byte, and `lifecycle-routes.spec.ts` guards `NOT_SIGNING_REASON` against the library's own
+ * phrasing.
+ *
+ * Why the wording is worth a test at all: this string is a 409 body an operator reads, interpolated
+ * into the console's action-error sentence. A raw library message reaching it would disclose
+ * internals (a cohort id, an internal phase name) inside an operator-facing sentence and would read
+ * as a malfunction rather than as this service's own drain mode doing what the operator asked for.
+ */
+describe('the advertising-paused refusal reason is exact, operator-facing contract copy', () => {
+  /**
+   * The shapes the reason's JSDoc says must never reach the wire, drawn from the library's own
+   * refusal phrasing (`Cannot start fallback for cohort {id}: phase is {phase}.`): a capitalized
+   * machine imperative, a cohort id followed by a colon, and an internal phase disclosure. The
+   * same discipline `lifecycle-routes.spec.ts` applies to `NOT_SIGNING_REASON`.
+   */
+  const RAW_LIBRARY_SHAPES = /Cannot |cohort .*:|phase is|INVALID_PHASE|advertiseCohort/i;
+
+  it('matches the operator-facing sentence byte for byte', () => {
+    expect(ADVERTISING_PAUSED_REASON).toBe('advertising is paused on this service');
+  });
+
+  it('is a lowercase clause that reads inside the console action-error sentence', () => {
+    // The console renders `Could not advertise: {reason}.`, so a capitalized standalone sentence
+    // would read as two sentences jammed together.
+    expect(ADVERTISING_PAUSED_REASON[0]).toBe(ADVERTISING_PAUSED_REASON[0].toLowerCase());
+    expect(ADVERTISING_PAUSED_REASON).not.toMatch(/\.$/);
+  });
+
+  it('carries no raw library phrasing', () => {
+    expect(ADVERTISING_PAUSED_REASON).not.toMatch(RAW_LIBRARY_SHAPES);
+  });
+
+  it('has a guard that actually fires, shown against an inline raw-library fixture', () => {
+    // The negative pattern is only worth anything if it can fail. Proven here against a
+    // representative raw library string supplied INLINE, never by editing the shipped constant:
+    // a guard verified by mutating the thing it guards is a guard nobody can trust afterwards.
+    const rawLibraryRefusal = 'Cannot advertise cohort 9f3c21ab: phase is Advertised.';
+    expect(rawLibraryRefusal).toMatch(RAW_LIBRARY_SHAPES);
+  });
+
+  it('carries no long dash', () => {
+    // Written as the escape rather than the character itself, so this file stays clean under the
+    // repo-wide `grep -rlP '\x{2014}'` scan that the guard exists to satisfy.
+    expect(ADVERTISING_PAUSED_REASON).not.toMatch(/\u2014/u);
+  });
+});
