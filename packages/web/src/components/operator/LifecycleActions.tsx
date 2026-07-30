@@ -219,8 +219,24 @@ export function LifecycleActions({ baseUrl, cohortId }: { baseUrl: string; cohor
   );
 }
 
-/** The confirmation panel for whichever rung this cohort's stakes call for (D-03). */
-function CancelConfirm({
+/**
+ * The confirmation panel for whichever rung this cohort's stakes call for (D-03).
+ *
+ * EXPORTED for one reason (05-21, `05-AUDIT-2.md` entry 1): this is the highest-stakes branch on
+ * this surface, and in the running app the panel is only reachable after a click. A static render
+ * cannot click, so the component the click reveals is rendered directly instead. It already takes
+ * pure props, holds no state and subscribes to no store, so exporting it costs one keyword and
+ * changes nothing about how `LifecycleActions` uses it.
+ *
+ * What that buys: deleting the type-to-confirm prop from the rung-4 panel, or adding it to the
+ * rung-3 one, now fails the suite. The previous round pinned only the CALLEE (the exact-match
+ * predicate in {@link file://../../lib/lifecycle.ts} and the arming expression in
+ * {@link file://../../ui/primitives.tsx}) and never the call site, so either mutation shipped
+ * green. The prop is named in prose rather than in backticks
+ * here on purpose: `lifecycle.spec.ts` asserts it occurs EXACTLY ONCE in this file, so that the
+ * rung-3 panel provably does not carry it.
+ */
+export function CancelConfirm({
   detail,
   cohortId,
   activeNetwork,

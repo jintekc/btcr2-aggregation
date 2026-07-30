@@ -79,6 +79,12 @@ For an expired row, `readvertiseExpired` is the only path that deletes a termina
 
 `ConfirmPanel` now computes `armed` through `typeToConfirmMatches` and the duplicated inline comparison is gone. Read the narrowing before reading this as a live bug: there was NO current misbehavior, because the single call site always passes an eight-character cohort-id prefix, on which the inline expression and the predicate agree. They diverge only on an empty or whitespace-only expected value, which is unreachable today. What was genuinely broken is that the shipped gate had zero coverage while a spec claimed to pin it, and that `05-02-PLAN.md` explicitly required the component to call the predicate. The seven existing assertions are unedited and now cover the code that renders.
 
+> **CORRECTION, 2026-07-30 (05-21).** The claim above, and the `provides` line "ConfirmPanel arming through typeToConfirmMatches, so the rung-4 spec is load-bearing", both OVERSTATE what 05-19 delivered. `05-AUDIT-2.md` entry 1 (claims #15 and #21) found the overstatement and it is confirmed.
+>
+> What 05-19 actually pinned is the CALLEE: `typeToConfirmMatches` itself, and the single arming expression inside `packages/web/src/ui/primitives.tsx`. It never pinned the CALL SITE. Nothing in the repo asserted that `packages/web/src/components/operator/LifecycleActions.tsx` passes `typeToConfirm` to the rung-4 panel, or that it withholds it from the rung-3 one. Deleting the prop from the funded-cancel panel, so an operator arms a cancel that can strand real money on the first click, would have shipped green; so would adding it to the ordinary cancel, giving that panel friction it was designed not to have. The structural reason is that no React component in this repo was rendered by any test until 05-21, and `packages/web` was not typechecked by `pnpm test` at all.
+>
+> The call site is pinned in 05-21, against real rendered markup, and both mutations were run and observed RED. See `05-21-SUMMARY.md`. Left in place rather than rewritten, so the record shows both what was claimed and what was found.
+
 ## Red-before-green, as observed
 
 Every red required by the plan was demonstrated and quoted.

@@ -15,6 +15,7 @@ import {
 import {
   AFTER_BROADCAST,
   CANCEL_LABEL,
+  CancelConfirm,
   KEEP_RUNNING,
   LifecycleActions,
   RECOVERY_OPERATOR_HELD,
@@ -368,6 +369,111 @@ describe('LifecycleActions hides Cancel once the beacon transaction is out (D-04
     const html = markup({ phase: 'Advertised' });
     expect(html).toContain(CANCEL_LABEL);
     expect(html).not.toContain(asRenderedText(AFTER_BROADCAST));
+  });
+});
+
+/**
+ * The rung-4 type-to-confirm gate, RENDERED at its CALL SITE (05-21, `05-AUDIT-2.md` entry 1).
+ *
+ * 05-19 pinned the CALLEE: `typeToConfirmMatches` and the single arming expression in
+ * `packages/web/src/ui/primitives.tsx`. It never pinned the call site, so deleting
+ * `typeToConfirm={short}` from the rung-4 panel (an operator arms a funded cancel on the first
+ * click, and can strand real money) or adding it to the rung-3 panel (an ordinary cancel gains
+ * friction it was designed not to have) both shipped green. `CancelConfirm` is exported for this
+ * block, because in the app the panel only appears after a click and a static render cannot click.
+ *
+ * Each rung asserts TWO independent facts, and the pair is the point. The gate's presence is what
+ * an operator SEES; the confirm button's disabled state is what actually stops the destructive
+ * act. Asserting only the first would pass if the gate rendered but armed nothing; asserting only
+ * the second would pass if the operator were given no instruction about what to type.
+ */
+describe('CancelConfirm chooses the rung and wires its gate (D-03, rendered)', () => {
+  const SHORT = cohortShortId(COHORT_ID);
+
+  function rungMarkup(over: Partial<CohortDetailDTO>): string {
+    return renderStatic(
+      createElement(CancelConfirm, {
+        detail: detail(over),
+        cohortId: COHORT_ID,
+        activeNetwork: 'regtest',
+        busy: false,
+        onConfirm: () => {},
+        onCancel: () => {},
+      }),
+    );
+  }
+
+  /** The one rendered `<button>` carrying `label`, so a disabled read lands on the right control. */
+  function buttonWith(html: string, label: string): string {
+    const buttons = html.match(/<button\b[^>]*>.*?<\/button>/g) ?? [];
+    const found = buttons.filter((b) => b.includes(label));
+    expect(found, `exactly one button labelled ${label}`).toHaveLength(1);
+    return found.join('');
+  }
+
+  /**
+   * Whether the confirm button is disabled, read off the ATTRIBUTE and never the class list: the
+   * shared `Button` base carries `disabled:cursor-not-allowed disabled:opacity-40` on every render,
+   * so a plain substring check for "disabled" would be true no matter what.
+   */
+  function confirmDisabled(html: string, label: string): boolean {
+    return /<button[^>]*\sdisabled=""/.test(buttonWith(html, label));
+  }
+
+  /** The rendered type-to-confirm gate: the instruction label, its input, and the value to type. */
+  function gateRendered(html: string): boolean {
+    return (
+      html.includes('for="confirm-type-to-confirm"') &&
+      html.includes('id="confirm-type-to-confirm"') &&
+      html.includes(SHORT)
+    );
+  }
+
+  for (const state of ['funded', 'awaiting-confirmation', 'dead-end'] as const) {
+    it(`asks for the typed cohort id and starts DISARMED for a ${state} cohort`, () => {
+      const html = rungMarkup({ funding: funding({ state }) });
+      expect(html).toContain(RUNG4_HEADING);
+      expect(gateRendered(html)).toBe(true);
+      // Nothing typed yet, so the destructive act is genuinely gated, not merely narrated.
+      expect(confirmDisabled(html, RUNG4_CONFIRM)).toBe(true);
+    });
+  }
+
+  it('keeps the ordinary cancel at low friction: no typed id, and the confirm is already armed', () => {
+    const html = rungMarkup({ phase: 'Advertised' });
+    expect(html).toContain(RUNG3_HEADING);
+    expect(html).not.toContain(RUNG4_HEADING);
+    expect(gateRendered(html)).toBe(false);
+    expect(html).not.toContain('confirm-type-to-confirm');
+    expect(confirmDisabled(html, CANCEL_LABEL)).toBe(false);
+  });
+
+  it('states the recovery-key situation on the rung-4 panel, in whichever form applies', () => {
+    // The 04 D-40 disclosure: whether the money at this beacon address is recoverable is exactly
+    // what an operator needs BEFORE the confirm can arm, and only the STATE ever crosses the wire.
+    const held = rungMarkup({ funding: funding({ state: 'funded', recoveryKeyState: 'operator-held' }) });
+    expect(held).toContain(asRenderedText(RECOVERY_OPERATOR_HELD));
+    expect(held).not.toContain(asRenderedText(RECOVERY_THROWAWAY));
+
+    const throwaway = rungMarkup({ funding: funding({ state: 'funded', recoveryKeyState: 'throwaway' }) });
+    expect(throwaway).toContain(asRenderedText(RECOVERY_THROWAWAY));
+    expect(throwaway).not.toContain(asRenderedText(RECOVERY_OPERATOR_HELD));
+  });
+
+  it('offers the same way out of both rungs', () => {
+    expect(rungMarkup({ funding: funding({ state: 'funded' }) })).toContain(KEEP_RUNNING);
+    expect(rungMarkup({ phase: 'Advertised' })).toContain(KEEP_RUNNING);
+  });
+
+  it('has exactly ONE type-to-confirm call site in the whole component', () => {
+    // The rendered rows above are the primary proof; this pins the invariant they rest on, in the
+    // source-read idiom this file already uses for `ui/primitives.tsx`. One call site means the
+    // gate cannot be present at BOTH rungs, which no single rendered row can show.
+    const src = readFileSync(
+      fileURLToPath(new URL('../src/components/operator/LifecycleActions.tsx', import.meta.url)),
+      'utf8',
+    );
+    expect(src.split('typeToConfirm').length - 1).toBe(1);
   });
 });
 
