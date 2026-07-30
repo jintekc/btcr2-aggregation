@@ -129,6 +129,37 @@ that chooses the real builder or the fixture and the broadcast handoff itself, s
 cohort is genuinely created on the fixture path rather than merely left unpublished, and it fails
 closed for a cohort with no advertise stamp.
 
+**Amended consequence (D-14 narrowed, T-05-16-05).** The rule is consulted at THREE handoffs, not
+two. The third is the display funding watch, added after an audit found that a cohort standing down
+still polled esplora for its beacon address and still published a `waiting` funding view, so the
+console kept asking the operator to send real sats to a beacon this service would never spend, and
+the anonymous funding read kept telling every seated participant that the cohort anchors on-chain.
+See `05-AUDIT.md` entry 2. A cohort off the live path now starts no watch: no chain read, no
+funding view, and therefore no funding surface at all.
+
+That fix narrows a clause this decision previously stated too broadly. Two parts of "the health
+strip is unaffected" survive and one does not:
+
+- LIVE esplora READS genuinely do stay up after the switch engages. Resolution and the anchor
+  observation are untouched, so "its chain reads really are still live" remains true.
+- The MODE chip genuinely does keep reporting how this service booted. The monitor caches the mode
+  at construction and nothing re-derives it, which is the property decision 4 exists to hold.
+- The strip's esplora-REACHABILITY bit does not survive. `monitor.noteEsploraObservation` has
+  exactly ONE caller in the service, the funding watch's `onState` in `packages/service/src/index.ts`,
+  so once a service's remaining cohorts are all post-switch that bit is never written again and
+  reports its last value (optimistically `true`, its initial value, if nothing ever wrote it). The
+  switch is one-way per session, so a restart is the only escape.
+
+This is ACCEPTED and disclosed, not mitigated. Synthesizing an observation on the stand-down path
+is refused outright: there is no esplora read there, so any reading would be an observation nobody
+made, which is a worse honesty defect than the stale bit it would paper over. The honest
+alternative, a mode-level reachability probe independent of any cohort's beacon address, is a
+PRODUCT decision rather than a defect fix (it adds a new always-on third-party indexer call with
+its own lifecycle and disclosure surface) and is deliberately not taken in a gap round. The
+consequence is pinned by a specification row over a real broadcasting service, stated in
+`05-16-SUMMARY.md`, and noted beside the kill-switch item in `05-UAT-CHECKLIST.md` so no owner is
+asked to bless a badge the service is no longer refreshing.
+
 ### 5. A per-cohort discovery window can only shorten.
 
 An operator may set a discovery window on a draft. A value above the runner-level cohort lifetime

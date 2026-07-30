@@ -43,6 +43,14 @@ const ACTIVE_NETWORK = 'signet';
 const BROADCAST_DISABLED_TEXT = 'Disabled broadcast for new cohorts.';
 
 /**
+ * Two plausible signet taproot beacon addresses. Nothing here decodes them; they exist so a
+ * counted esplora read names WHICH cohort's beacon was polled, which is what turns "some read
+ * happened" into "the pre-switch cohort's beacon was read and the post-switch one's was not".
+ */
+const BEACON_BEFORE = 'tb1pbeforebeforebeforebeforebeforebeforebeforebeforebeforebefo';
+const BEACON_AFTER = 'tb1pafterafterafterafterafterafterafterafterafterafterafterafte';
+
+/**
  * A counting esplora stub: no network, and every call is observable.
  *
  * `getUtxos` is COUNTED for the same reason `send` is (05-AUDIT entry 2): the funding leg of the
@@ -387,10 +395,6 @@ describe('the beacon-tx handoff decides per cohort (stubbed broadcaster, no chai
  * The counted `getUtxos` on {@link stubBitcoin} is the axis that was missing.
  */
 describe('the funding watch stands down with the switch (05-AUDIT entry 2)', () => {
-  /** A plausible signet taproot beacon address; nothing here decodes it. */
-  const BEACON_AFTER = 'tb1pafterafterafterafterafterafterafterafterafterafterafterafte';
-  const BEACON_BEFORE = 'tb1pbeforebeforebeforebeforebeforebeforebeforebeforebeforebefo';
-
   it('reads NO utxo and records NO funding view for a cohort advertised AFTER the switch', async () => {
     const service = liveService();
     const logs: string[] = [];
@@ -440,5 +444,172 @@ describe('the funding watch stands down with the switch (05-AUDIT entry 2)', () 
     expect(
       logs.some((line) => line.includes('after-fund') && /funding/i.test(line)),
     ).toBe(true);
+  });
+
+  it('KEEPS the funding watch for a cohort advertised BEFORE the switch engaged', async () => {
+    // The non-regression direction, and the row a guard written too broadly fails. That cohort's
+    // beacon really will be spent, so suppressing its funding prompt would be the inverse defect:
+    // an operator who is never asked to fund a cohort that genuinely needs funding watches it
+    // lapse for want of an instruction the console decided not to give.
+    const service = liveService();
+    try {
+      service.runner.emit('cohort-advertised', { cohortId: 'before-fund' } as never);
+      await new Promise((r) => setTimeout(r, 2));
+      service.settings.disableBroadcast();
+
+      service.runner.emit('keygen-complete', {
+        cohortId: 'before-fund',
+        beaconAddress: BEACON_BEFORE,
+      } as never);
+      await settle();
+
+      expect(service.utxoReads).toContain(BEACON_BEFORE);
+      // The PRESENCE of the key, not its contents, so this row stays stable if the funding view
+      // gains fields later.
+      expect(service.monitor.detail('before-fund').funding).toBeDefined();
+      expect(service.monitor.publicFunding('before-fund')).toEqual({ awaitingFunding: true });
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it('watches EVERY cohort while the switch is off (the unchanged default path)', async () => {
+    const service = liveService();
+    try {
+      service.runner.emit('cohort-advertised', { cohortId: 'off-1' } as never);
+      service.runner.emit('cohort-advertised', { cohortId: 'off-2' } as never);
+      service.runner.emit('keygen-complete', {
+        cohortId: 'off-1',
+        beaconAddress: BEACON_BEFORE,
+      } as never);
+      service.runner.emit('keygen-complete', {
+        cohortId: 'off-2',
+        beaconAddress: BEACON_AFTER,
+      } as never);
+      await settle();
+
+      expect(service.utxoReads).toContain(BEACON_BEFORE);
+      expect(service.utxoReads).toContain(BEACON_AFTER);
+      expect(service.monitor.detail('off-1').funding).toBeDefined();
+      expect(service.monitor.detail('off-2').funding).toBeDefined();
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it('serves awaitingFunding TRUE for the pre-switch cohort and FALSE for the post-switch one, in one request pair', async () => {
+    // DIFFERENTIAL, and deliberately so. The pre-switch control is what makes this row measure the
+    // guard rather than the fixture: an app with no funding watch behind it answers
+    // `{ awaitingFunding: false }` for every well-formed id, switch engaged or not, before the fix
+    // and after it. That is why this case is built over the SAME `liveService()` instance (a real
+    // funding watch really is at stake for one of the two ids) and NOT over `killSwitchApp()`,
+    // whose monitor sits beside a bare runner with no `createService` behind it. Standing a watch
+    // in with `monitor.noteFunding` is refused for the mirror-image reason: it would make the
+    // post-switch id answer TRUE, leaving "record nothing" as the only way to green the row, which
+    // is the vacuous case again.
+    //
+    // `operatorAuth` is omitted on purpose: `GET /v1/funding/:cohortId` is mounted in the PUBLIC
+    // block BEFORE the operator gate, so no session and no login is needed, and omitting it keeps
+    // the case about the funding read rather than about auth.
+    //
+    // Pre-fix the post-switch half answered `{ awaitingFunding: true }`, which is the participant
+    // -facing half of 05-AUDIT entry 2: this one boolean is the sole input to the `liveCohort`
+    // latch in `packages/web/src/stores/participant.ts`, and that latch is what makes
+    // `CohortPage.tsx` tell a seated participant that their cohort anchors on-chain and awaits the
+    // operator's funding. Closing it here closes it for the participant with no web-side change.
+    const service = liveService();
+    const app = createHonoApp(service.transport, {
+      monitor: service.monitor,
+      runtimeSettings: service.settings,
+      networkName: ACTIVE_NETWORK,
+    });
+    try {
+      service.runner.emit('cohort-advertised', { cohortId: 'pair-before' } as never);
+      await new Promise((r) => setTimeout(r, 2));
+      service.settings.disableBroadcast();
+      await new Promise((r) => setTimeout(r, 2));
+      service.runner.emit('cohort-advertised', { cohortId: 'pair-after' } as never);
+
+      service.runner.emit('keygen-complete', {
+        cohortId: 'pair-before',
+        beaconAddress: BEACON_BEFORE,
+      } as never);
+      service.runner.emit('keygen-complete', {
+        cohortId: 'pair-after',
+        beaconAddress: BEACON_AFTER,
+      } as never);
+      await settle();
+
+      // The pre-switch cohort is kept IN FLIGHT and still waiting for the duration of the pair:
+      // `publicFunding` answers false for a canceled record and for a view carrying a terminal
+      // verdict, so ending it first would flip the control half to false and quietly turn this
+      // differential row back into the vacuous one.
+      const beforeRes = await app.request('/v1/funding/pair-before');
+      const afterRes = await app.request('/v1/funding/pair-after');
+      expect(beforeRes.status).toBe(200);
+      expect(afterRes.status).toBe(200);
+      expect(await beforeRes.json()).toEqual({ awaitingFunding: true });
+      expect(await afterRes.json()).toEqual({ awaitingFunding: false });
+    } finally {
+      await service.stop();
+    }
+  });
+});
+
+/**
+ * The ONE cost this fix introduces, registered rather than assumed away (T-05-16-05).
+ *
+ * `monitor.noteEsploraObservation` has exactly one caller in the whole service: the funding
+ * watch's `onState` in `index.ts`. Standing the watch down therefore means that on a service whose
+ * remaining cohorts are all post-switch, `serviceHealth().esploraReachable` is never written
+ * again and keeps reporting its last value (optimistically `true`, its initial value, if nothing
+ * ever wrote it) while `HealthStrip.tsx` keeps painting the good-tone badge. The switch is one-way
+ * per session, so a restart is the only escape.
+ *
+ * This row is NOT red before green and is NOT defect coverage. It is a documentation pin with
+ * teeth on ONE side, in the shape `T-05-17-06` uses for the cost its own fix introduces.
+ * What it catches: any future change that makes the post-switch health read something OTHER than
+ * the booted mode plus a `true` bit, which a third `unknown` state, a probe reporting `false`, or
+ * a re-derived mode would all do, forcing the reader back to this comment and to the amended
+ * kill-switch consequences in `docs/adr/0017-runtime-lifecycle-control.md`.
+ * What it does NOT catch: someone adding a feeder that happens to observe successfully, since that
+ * also reports `true`.
+ *
+ * Fabricating a reading on the stand-down path is forbidden: there is no esplora read there, so
+ * any note would be an observation nobody made, which is a worse honesty defect than the stale bit
+ * it would paper over. D-14's "health strip unaffected" survives for the MODE chip and not for
+ * this one, which is why the owner is told so beside the item in `05-UAT-CHECKLIST.md`.
+ */
+describe('a stood-down service keeps reporting its last esplora reading (T-05-16-05)', () => {
+  it('reports the booted mode and an unrefreshed esplora bit when only post-switch cohorts remain', async () => {
+    const service = liveService();
+    try {
+      service.settings.disableBroadcast();
+      await new Promise((r) => setTimeout(r, 2));
+      service.runner.emit('cohort-advertised', { cohortId: 'health-after' } as never);
+      service.runner.emit('keygen-complete', {
+        cohortId: 'health-after',
+        beaconAddress: BEACON_AFTER,
+      } as never);
+      await settle();
+
+      const health = service.monitor.serviceHealth();
+      // The mode is untouched: this service really did boot live, and its resolve / anchor esplora
+      // reads really are still live. That half of D-14 holds.
+      expect(health.mode).toBe('live');
+      expect(health.broadcastDisabled).toBe(true);
+      // ...and the bit nothing is maintaining any more. `true` here is the value it was
+      // INITIALISED to, unchanged because nothing observed anything, not a reading. Note that this
+      // assertion, like the two above it, holds in BOTH directions: it read `true` before the
+      // guard landed too (the watch's first poll against the stub succeeded). That is exactly why
+      // this row is a disclosure and not defect coverage.
+      expect(health.esploraReachable).toBe(true);
+      // The only line here that depends on the guard, and it is what makes the disclosure concrete
+      // rather than abstract: nothing observed anything, so the `true` above stands behind no
+      // observation at all.
+      expect(service.utxoReads).toEqual([]);
+    } finally {
+      await service.stop();
+    }
   });
 });

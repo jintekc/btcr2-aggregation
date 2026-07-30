@@ -161,6 +161,13 @@ gated in Phase 4 and is unchanged here.
 - [ ] Engage it. Confirm the confirmation is danger-toned and states the consequence, that the
       health strip STILL reports the live mode the service booted with, and that a separate line
       says broadcast is off for this session.
+      **Which chip on that strip is still live:** you are confirming the MODE chip and the
+      broadcast-off line, and only those. The `Esplora reachable` badge beside them is NOT being
+      refreshed for cohorts advertised after the switch, because the funding watch was its only
+      feeder and a stood-down cohort no longer starts one. It reports whatever it last read, or its
+      optimistic initial value if nothing ever wrote it. Do not treat that badge as evidence of
+      anything here. See the amended kill-switch consequences in
+      `docs/adr/0017-runtime-lifecycle-control.md` (T-05-16-05).
 - [ ] Confirm the control is REPLACED, not merely disabled: there is no path back from the console,
       and the copy names the boot environment as the way to re-enable.
 - [ ] Confirm a cohort advertised BEFORE the switch still broadcasts, and a cohort advertised AFTER
