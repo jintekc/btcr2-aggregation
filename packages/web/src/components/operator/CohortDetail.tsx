@@ -145,8 +145,16 @@ function PendingRow({ member }: { member: CohortMemberDTO }) {
  * destroyed by adding a peer. On a LIVE broadcasting service an extra line inside the SAME confirm
  * states that the peers co-sign for real and their DIDs are anchored on the named network, so the
  * operator learns it before committing rather than from a block explorer afterwards.
+ *
+ * EXPORTED so a static render can reach it (`05-AUDIT-2.md` entry 14). The disabled binding on the
+ * control and the refusal reason beside it are ONE fact rendered in two places, and in the running
+ * app that pair is only reachable inside a drill-down that needs a whole seeded cohort, so nothing
+ * ever asserted it: deleting `disabled={remaining === 0}` shipped green, leaving the operator a
+ * clickable control that always 409s. The component already takes pure props and holds only its own
+ * confirm-open state, so exporting it costs one keyword and a static render of the component itself
+ * is the cheapest honest witness. Pinned in `packages/web/tests/service-controls.spec.ts`.
  */
-function TestPeerAction({
+export function TestPeerAction({
   baseUrl,
   cohortId,
   remaining,

@@ -1,5 +1,6 @@
 import { createElement } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { TestPeerAction } from '../src/components/operator/CohortDetail';
 import { BROADCAST_OFF_CHIP, HealthStrip, MODE_LABEL } from '../src/components/operator/HealthStrip';
 import {
   broadcastControlState,
@@ -9,6 +10,15 @@ import {
   serviceControlsView,
 } from '../src/components/operator/ServiceControls';
 import {
+  ADD_TEST_PEERS_BODY,
+  ADD_TEST_PEERS_BUSY,
+  ADD_TEST_PEERS_CANCEL_LABEL,
+  ADD_TEST_PEERS_LABEL,
+  addTestPeersConfirmLabel,
+  addTestPeersHeading,
+  addTestPeersHelp,
+  liveTestPeersLine,
+  NO_SEATS_LEFT_REASON,
   ADVERTISING_PAUSED_LINE,
   ADVERTISING_RUNNING_LINE,
   RESTART_HONESTY_LINE,
@@ -440,5 +450,139 @@ describe('the health strip renders the SERVED mode and reads nothing else (rende
     expect(chipRendered(html, MODE_LABEL.live)).toBe(true);
     expect(chipRendered(html, 'Advertising paused')).toBe(true);
     expect(chipRendered(html, CHECKING_MODE)).toBe(false);
+  });
+});
+
+/**
+ * The TEST-PEER surface (`05-AUDIT-2.md` entry 14, SVC-04, D-17, 05-UI-SPEC E11).
+ *
+ * Two defects meet here, and they are the same fact attacked from two directions: the whole
+ * test-peer copy family could be reworded undetected, and `disabled={remaining === 0}` could be
+ * deleted undetected. The only pins that existed read the SEPARATE service-side constant, and
+ * `packages/web` does not depend on `packages/service`, so the browser bundle's own copy was
+ * unguarded. The settings family has had a literal pin plus an em-dash guard since 05-17; this
+ * block gives the test-peer family the same treatment.
+ */
+describe('the test-peer copy family is exact contract copy (UI-SPEC E11)', () => {
+  it('states the control label, the body and the two confirm labels in words', () => {
+    expect(ADD_TEST_PEERS_LABEL).toBe('Fill remaining seats with test peers');
+    expect(ADD_TEST_PEERS_BODY).toBe(
+      'They join the remaining seats and co-sign like any other participant. They are badged as test peers everywhere on this console.',
+    );
+    expect(ADD_TEST_PEERS_CANCEL_LABEL).toBe('Cancel');
+    expect(ADD_TEST_PEERS_BUSY).toBe('Adding…');
+  });
+
+  it('interpolates the seat count into all three counted lines', () => {
+    // Pinned through their OUTPUT, so a change to an interpolation is caught as well as a change
+    // to the words around it. The count is what the service would enforce a moment later, so a
+    // heading that named a different number than the button would be a real defect.
+    expect(addTestPeersHelp(3)).toBe(
+      'Adds 3 in-process test participants so you can rehearse this service on your own. They use throwaway keys created inside this process.',
+    );
+    expect(addTestPeersHeading(3)).toBe('Add 3 test peers to this cohort?');
+    expect(addTestPeersConfirmLabel(3)).toBe('Add 3 test peers');
+  });
+
+  it('names the network in the live-cohort line, because those peers co-sign for real', () => {
+    expect(liveTestPeersLine('regtest')).toBe(
+      'This is a live cohort, so test peers co-sign for real and their DIDs are anchored on regtest.',
+    );
+  });
+
+  it('states the seat-exhausted refusal reason, which the service must repeat byte for byte', () => {
+    // THE CONTRACT, in words: this is the sentence an operator reads BEFORE clicking, and the
+    // service's own 409 refusal reason is the sentence they would read if they clicked anyway.
+    // UI-SPEC E11 requires them to be one string rather than two that can drift.
+    //
+    // The counterpart lives in `packages/service/src/operator-cohorts.ts` as its own
+    // `NO_SEATS_LEFT_REASON`, pinned by `packages/service/tests/test-peers.spec.ts` (the 409 body
+    // assertion) and again by `packages/service/tests/lifecycle-routes.spec.ts`. It is deliberately
+    // NOT imported here: `packages/web` does not depend on `packages/service`, and adding that
+    // dependency to make a byte-identity claim testable would couple the browser bundle to the
+    // server for the sake of a test. Two independent literal pins of the same sentence is the
+    // shape this repo already uses for the threshold error.
+    expect(NO_SEATS_LEFT_REASON).toBe('This cohort has no seats left.');
+  });
+
+  it('carries no long dash anywhere in the family (house style, checker-blocked at the source)', () => {
+    const family = [
+      ADD_TEST_PEERS_LABEL,
+      ADD_TEST_PEERS_BODY,
+      ADD_TEST_PEERS_CANCEL_LABEL,
+      ADD_TEST_PEERS_BUSY,
+      NO_SEATS_LEFT_REASON,
+      addTestPeersHelp(3),
+      addTestPeersHeading(3),
+      addTestPeersConfirmLabel(3),
+      liveTestPeersLine('regtest'),
+    ];
+    for (const copy of family) {
+      expect(copy).not.toContain(LONG_DASH);
+    }
+  });
+});
+
+/**
+ * The seat-exhausted refusal, RENDERED (`05-AUDIT-2.md` entry 14, defect #10).
+ *
+ * The disabled binding and the reason beside it are one fact in two places, so both directions are
+ * asserted on each row and the two rows are each other's anti-vacuity control: one asserts exactly
+ * what the other denies, so neither can pass against a component that renders nothing.
+ *
+ * The seat count is a PROP, so this block needs no store fixture for the fact under test. The
+ * component's three incidental store reads (`addTestPeers`, `addingTestPeers`, `testPeerError`)
+ * are served by the file-scoped fake as `undefined`, which is the unseeded posture: no in-flight
+ * marker and no error paragraph, which is exactly the state this row is about.
+ */
+describe('TestPeerAction refuses a full cohort in the markup, not only in words (rendered)', () => {
+  beforeEach(() => {
+    operatorFixture.current = {};
+    participantFixture.current = { network: 'regtest' };
+  });
+
+  function peerMarkup(remaining: number): string {
+    return renderStatic(
+      createElement(TestPeerAction, {
+        baseUrl: 'http://svc.example',
+        cohortId: 'cohort-1',
+        remaining,
+        live: false,
+        network: 'regtest',
+      }),
+    );
+  }
+
+  /** The one rendered `<button>` carrying `label`, so a disabled read lands on the right control. */
+  function buttonWith(html: string, label: string): string {
+    const buttons = html.match(/<button\b[^>]*>.*?<\/button>/g) ?? [];
+    const found = buttons.filter((b) => b.includes(label));
+    expect(found, `exactly one button labelled ${label}`).toHaveLength(1);
+    return found.join('');
+  }
+
+  /**
+   * Whether the control is disabled, read off the ATTRIBUTE and never the class list: the shared
+   * `Button` base carries `disabled:cursor-not-allowed disabled:opacity-40` on every render, so a
+   * plain substring check for "disabled" would be true no matter what the binding says.
+   */
+  function controlDisabled(html: string): boolean {
+    return /<button[^>]*\sdisabled=""/.test(buttonWith(html, ADD_TEST_PEERS_LABEL));
+  }
+
+  it('renders the control DISABLED beside the refusal reason when no seats are left', () => {
+    const html = peerMarkup(0);
+    expect(html).toContain(asRenderedText(NO_SEATS_LEFT_REASON));
+    expect(html).not.toContain(asRenderedText(addTestPeersHelp(0)));
+    // Disabled rather than hidden: the act is a real one that simply has nothing left to do here,
+    // and an operator who cannot see the control cannot learn why it is unavailable.
+    expect(controlDisabled(html)).toBe(true);
+  });
+
+  it('renders the control ENABLED beside the counted help line while seats remain', () => {
+    const html = peerMarkup(2);
+    expect(html).toContain(asRenderedText(addTestPeersHelp(2)));
+    expect(html).not.toContain(asRenderedText(NO_SEATS_LEFT_REASON));
+    expect(controlDisabled(html)).toBe(false);
   });
 });
