@@ -4,7 +4,7 @@ import { buildCohortConfig, createIdentity, resolveNetwork } from '@btcr2-aggreg
 import type { BitcoinConnection } from '@did-btcr2/bitcoin';
 import type { AggregationResult } from '@did-btcr2/aggregation/service';
 import type { Transaction } from '@scure/btc-signer';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { cohortKeepsLiveWiring, createService } from '../src/index.js';
 import { createCohortMonitor } from '../src/monitor.js';
 import { createHonoApp } from '../src/hono-adapter.js';
@@ -42,13 +42,24 @@ const ACTIVE_NETWORK = 'signet';
 /** The exact service-level operator-actions entry for the kill switch (05-UI-SPEC E13). */
 const BROADCAST_DISABLED_TEXT = 'Disabled broadcast for new cohorts.';
 
-/** A counting esplora stub: no network, and every call is observable. */
-function stubBitcoin(): { bitcoin: BitcoinConnection; sent: string[] } {
+/**
+ * A counting esplora stub: no network, and every call is observable.
+ *
+ * `getUtxos` is COUNTED for the same reason `send` is (05-AUDIT entry 2): the funding leg of the
+ * kill switch is only assertable through the chain reads it does or does not make. A watch that
+ * was never created reads nothing, and that absence is the whole property. Each read records the
+ * address it was asked about, so a case can also say WHICH cohort's beacon was polled.
+ */
+function stubBitcoin(): { bitcoin: BitcoinConnection; sent: string[]; utxoReads: string[] } {
   const sent: string[] = [];
+  const utxoReads: string[] = [];
   const bitcoin = {
     rest: {
       address: {
-        getUtxos: async () => [],
+        getUtxos: async (address: string) => {
+          utxoReads.push(address);
+          return [];
+        },
       },
       transaction: {
         send: async (rawHex: string) => {
@@ -59,7 +70,7 @@ function stubBitcoin(): { bitcoin: BitcoinConnection; sent: string[] } {
       },
     },
   } as unknown as BitcoinConnection;
-  return { bitcoin, sent };
+  return { bitcoin, sent, utxoReads };
 }
 
 /**
@@ -88,9 +99,9 @@ function anchoredResult(cohortId: string): AggregationResult {
  * a chain: the cohorts below are driven by emitting the runner's own events, which is exactly the
  * push input the broadcast handoff and the advertise-stamp listener consume.
  */
-function liveService(): ReturnType<typeof createService> & { sent: string[] } {
+function liveService(): ReturnType<typeof createService> & { sent: string[]; utxoReads: string[] } {
   const identity = createIdentity(resolveNetwork(ACTIVE_NETWORK));
-  const { bitcoin, sent } = stubBitcoin();
+  const { bitcoin, sent, utxoReads } = stubBitcoin();
   const service = createService({
     identity,
     config: buildCohortConfig(2, 'CASBeacon', ACTIVE_NETWORK),
@@ -102,8 +113,11 @@ function liveService(): ReturnType<typeof createService> & { sent: string[] } {
     cohortTtlMs: 60_000,
     operatorPassword: PASSWORD,
     operatorCookieSecure: false,
+    // Poll far slower than any case here runs, so a watch that IS created contributes exactly one
+    // read (its immediate first poll) and the counted numbers stay deterministic.
+    fundingPollIntervalMs: 60_000,
   });
-  return Object.assign(service, { sent });
+  return Object.assign(service, { sent, utxoReads });
 }
 
 /** Let the fire-and-forget broadcast handler run to its (stubbed) completion. */
@@ -348,5 +362,83 @@ describe('the beacon-tx handoff decides per cohort (stubbed broadcaster, no chai
     expect(service.sent).toHaveLength(1);
 
     await service.stop();
+  });
+});
+
+/**
+ * The FUNDING leg of the same switch (05-AUDIT entry 2, D-14).
+ *
+ * The shipped spec had no funding assertion at all, which is precisely why a defect on the flag
+ * this file exists for survived it: the display funding watch in
+ * {@link file://../src/funding-watch.ts} was wired at `keygen-complete` with no kill-switch test,
+ * so a cohort that correctly stood down (fixture tx, nothing published) still polled esplora and
+ * still recorded a `waiting` funding view. That view draws the copyable `bitcoin:` URI and the
+ * "send at least N sats in one single payment" instruction on the operator drill-down, beside the
+ * disclosure that funds sent to a throwaway-recovery beacon are unrecoverable.
+ *
+ * The PARTICIPANT-side consequence this pins is the reason the anonymous read is asserted rather
+ * than only the gated projection: `publicFunding` is the single input to the `liveCohort` latch in
+ * `packages/web/src/stores/participant.ts`, and that latch is what makes `CohortPage.tsx` tell a
+ * seated participant "This cohort anchors on-chain" plus "Waiting for the operator to fund this
+ * cohort's beacon address". Both are false for a stood-down cohort. Closing it at the source (no
+ * funding view recorded) closes it for the console AND the participant with no web-side change,
+ * so the served value is what these rows assert.
+ *
+ * The counted `getUtxos` on {@link stubBitcoin} is the axis that was missing.
+ */
+describe('the funding watch stands down with the switch (05-AUDIT entry 2)', () => {
+  /** A plausible signet taproot beacon address; nothing here decodes it. */
+  const BEACON_AFTER = 'tb1pafterafterafterafterafterafterafterafterafterafterafterafte';
+  const BEACON_BEFORE = 'tb1pbeforebeforebeforebeforebeforebeforebeforebeforebeforebefo';
+
+  it('reads NO utxo and records NO funding view for a cohort advertised AFTER the switch', async () => {
+    const service = liveService();
+    const logs: string[] = [];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      logs.push(args.map(String).join(' '));
+    });
+    try {
+      service.settings.disableBroadcast();
+      await new Promise((r) => setTimeout(r, 2));
+      service.runner.emit('cohort-advertised', { cohortId: 'after-fund' } as never);
+
+      service.runner.emit('keygen-complete', {
+        cohortId: 'after-fund',
+        beaconAddress: BEACON_AFTER,
+      } as never);
+
+      // Red WITHOUT any flush: `createFundingWatch` evaluates `getUtxos(...)` SYNCHRONOUSLY (the
+      // call happens before the `await` suspends the loop), so a watch that was created has
+      // already read the chain by the time this line runs. Pre-fix this observed 1 read.
+      expect(service.utxoReads).toEqual([]);
+
+      // The next two rows need the flush, and the reason must not be glossed: `noteFunding` runs
+      // only once that first `getUtxos` promise RESOLVES, so asserted in the emit's own tick they
+      // are true against the unfixed code too and would prove nothing. With the flush they are
+      // genuine: pre-fix the detail carried a full `waiting` funding view and `publicFunding`
+      // answered `{ awaitingFunding: true }`.
+      await settle();
+      expect(service.utxoReads).toEqual([]);
+      expect(service.monitor.detail('after-fund').funding).toBeUndefined();
+      expect(service.monitor.publicFunding('after-fund')).toEqual({ awaitingFunding: false });
+
+      // ...and still nothing once the cohort has ENDED. The retained funding view is the durable
+      // half of the defect: the summary chip reverts on settle, but the drill-down card and this
+      // anonymous read kept asserting "awaiting funding" for a finished, never-published cohort.
+      service.runner.emit('signing-complete', anchoredResult('after-fund') as never);
+      await settle();
+      expect(service.utxoReads).toEqual([]);
+      expect(service.monitor.detail('after-fund').funding).toBeUndefined();
+      expect(service.monitor.publicFunding('after-fund')).toEqual({ awaitingFunding: false });
+    } finally {
+      logSpy.mockRestore();
+      await service.stop();
+    }
+
+    // An operator reading the process output learns WHY a funding stage they expected is absent,
+    // rather than meeting a silently missing card.
+    expect(
+      logs.some((line) => line.includes('after-fund') && /funding/i.test(line)),
+    ).toBe(true);
   });
 });

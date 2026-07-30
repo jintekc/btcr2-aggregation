@@ -34,6 +34,7 @@ import {
   operatorAddedTestPeersText,
   OPERATOR_FINALIZED_TEXT,
   TEST_PEER_REGISTRATION_SKIPPED_TEXT,
+  type CohortMonitor,
   type FundingView,
   type ServiceMode,
 } from './monitor.js';
@@ -519,6 +520,16 @@ export interface Service {
    * stops, which is the only way to prove a rehearsal left no subscription behind.
    */
   readonly testPeers: TestPeerRegistry;
+  /**
+   * This service's cohort monitoring fold (SVC-03, D-19), exposed for exactly the reason
+   * {@link settings} and {@link testPeers} are: a harness needs to observe a PROJECTION without
+   * binding a port or holding an operator session. It is what makes the kill switch's funding leg
+   * assertable at all (05-AUDIT entry 2) - the funding surface is a projection over this fold, and
+   * an assertion routed through a monitor built beside a bare runner would answer the same thing
+   * whether or not a funding watch existed behind it. Read-only in practice: it is the same
+   * instance the gated detail read serves, so a harness sees exactly what the console sees.
+   */
+  readonly monitor: CohortMonitor;
   /** Start listening. Pass port 0 (default) for an ephemeral port. */
   start(port?: number, host?: string): Promise<StartedService>;
   /** Stop the runner, transport, and HTTP server. */
@@ -1368,6 +1379,7 @@ export function createService(opts: CreateServiceOptions): Service {
     broadcaster,
     settings: runtimeSettings,
     testPeers,
+    monitor,
     start(port = 0, host = '127.0.0.1'): Promise<StartedService> {
       transport.start();
       return new Promise<StartedService>((resolve, reject) => {
