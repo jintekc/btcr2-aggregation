@@ -11,6 +11,7 @@ import {
   groupRenderRows,
 } from '../src/lib/operator-rows';
 import { DISMISS_READVERTISE_LINE } from '../src/stores/operator';
+import type { ChipKey } from '../src/lib/operator-rows';
 import type { CohortSummaryDTO, OperatorCohortDTO } from '../src/lib/operator';
 
 /**
@@ -28,6 +29,16 @@ import type { CohortSummaryDTO, OperatorCohortDTO } from '../src/lib/operator';
  *
  * NEW spec under `packages/web/tests/` (tests-outside-src convention).
  */
+
+/**
+ * The forbidden long dash, spelled once as an escape (the 05-22 idiom, adopted here in 05-23).
+ *
+ * A guard written as `not.toMatch(/<the character itself>/)` has to CONTAIN the character it
+ * forbids, so every repo-wide scan reads this file as a violation. Comparing against an escaped
+ * constant is byte-identical in behavior, changes no assertion's meaning, and lets
+ * `grep -rlP '\x{2014}'` over this file return nothing.
+ */
+const LONG_DASH = '\u2014';
 
 function cohort(over: Partial<OperatorCohortDTO> = {}): OperatorCohortDTO {
   return {
@@ -167,7 +178,7 @@ describe('chipPresentation: the single, assertable definition of how a chip rend
     for (const label of labels) {
       expect(label).toBeTruthy();
       // The UI-SPEC copy contract: no long dash in any authored string.
-      expect(label).not.toMatch(/—/);
+      expect(label).not.toContain(LONG_DASH);
     }
   });
 
@@ -191,6 +202,78 @@ describe('chipPresentation: the single, assertable definition of how a chip rend
     expect(groupForChip('co-signed-fallback')).toBe('attention');
     expect(groupForChip('fallback')).toBe('attention');
     expect(groupForChip('anchored')).toBe('ended');
+  });
+});
+
+/**
+ * What each chip SAYS, pinned word for word (`05-AUDIT-2.md` entry 15, defects #17 and #23).
+ *
+ * The block above pins every chip's tone and pulse per chip and its label only as a distinct SET.
+ * Distinctness is a real property and it stays, but it is not a property about WORDS: relabelling
+ * `co-signed` from `Signed` to `Anchored (co-signed)` keeps the set distinct, keeps the tone
+ * neutral, keeps the dot still, carries no long dash, and is empty of nothing. It ships green. That
+ * is the precise defect 05-20 was written to close, and `05-20-PLAN.md:33` claimed the label of
+ * every chip was "ASSERTED, not eyeballed" when only distinctness shipped; the correction is
+ * recorded in `05-20-SUMMARY.md`.
+ *
+ * The expected labels below are RETYPED, not imported. Importing `CHIP_PRESENTATION` and asserting
+ * a value equals its own entry would compare the constant against itself and prove nothing. An
+ * independent statement of what the label is is the whole point.
+ */
+
+/**
+ * The label every chip must carry, as an independent literal table.
+ *
+ * Typed as a `Record<ChipKey, string>` rather than a plain object or an array of pairs, following
+ * the completeness discipline `CHIP_KEYS` itself exists for (and the `Record<ServiceMode, true>`
+ * matrix in `packages/web/tests/service-controls.spec.ts`): a twelfth chip added to
+ * `CHIP_PRESENTATION` is then a COMPILE error here rather than a chip that quietly ships with no
+ * expected label. `packages/web/tests` is inside the root `tsc -b` since 05-21, so that compile
+ * error is caught by `pnpm test` rather than only by the web build.
+ */
+const EXPECTED_LABEL: Record<ChipKey, string> = {
+  draft: 'Draft',
+  filling: 'Filling',
+  'co-signing': 'Co-signing',
+  'needs-funding': 'Needs funding',
+  'co-signed': 'Signed',
+  'co-signed-fallback': 'Signed via fallback',
+  fallback: 'Fallback',
+  anchored: 'Anchored',
+  failed: 'Failed',
+  expired: 'Expired',
+  canceled: 'Canceled',
+};
+
+describe('every chip label is pinned word for word (05-AUDIT-2 #17/#23)', () => {
+  it('renders the exact shipped label for every key in CHIP_KEYS', () => {
+    for (const key of CHIP_KEYS) {
+      // The runtime half of the completeness rule: the type makes a MISSING entry a compile error,
+      // and this makes a chip whose shipped key set drifted from the type produce a readable
+      // failure naming the chip rather than an `undefined` compared against a string.
+      expect(EXPECTED_LABEL[key]).toBeTruthy();
+      expect(chipPresentation(key).label).toBe(EXPECTED_LABEL[key]);
+    }
+    // Guards the loop itself: an empty CHIP_KEYS would satisfy every assertion inside it.
+    expect(CHIP_KEYS.length).toBe(Object.keys(EXPECTED_LABEL).length);
+  });
+
+  it('lets NO unconfirmed or in-flight chip claim an on-chain anchor', () => {
+    // A chip that says a cohort anchored is a claim about Bitcoin. These three are reached with
+    // nothing confirmed on chain (two settled co-signs and one round still in flight), so none of
+    // them is entitled to make it. This is deliberately a SECOND, independent check beside the
+    // exact pin above: a relabel into an anchor claim then has to defeat both, and the anchor guard
+    // keeps holding through any future honest rewording that the exact pin would be updated for.
+    expect(chipPresentation('co-signed').label).not.toMatch(/anchor/i);
+    expect(chipPresentation('co-signed-fallback').label).not.toMatch(/anchor/i);
+    expect(chipPresentation('co-signing').label).not.toMatch(/anchor/i);
+  });
+
+  it('DOES let the confirmed chip name an anchor, so the guard above is not a blanket ban', () => {
+    // Without this row the guard could be satisfied by banning the word everywhere, including on
+    // the one chip that is reached only from a CONFIRMED beacon transaction and whose entire job
+    // is to say so. The ban is about who may make the claim, not about the word.
+    expect(chipPresentation('anchored').label).toMatch(/anchor/i);
   });
 });
 
@@ -261,11 +344,18 @@ describe('dismissDropsReadvertise: the disclosure predicate (05-19)', () => {
 
 describe('DISMISS_READVERTISE_LINE says what the dismissal costs (05-19)', () => {
   it('names the cohort list and uses the word re-advertise', () => {
-    // CONTAINMENT rather than exact-string equality, in the shape of the shipped `DISMISS_BODY`
-    // pin: the wording is the author's, the two FACTS are the contract. Pinning the whole
-    // sentence would make a future rewording fail for no reason; pinning nothing would let
-    // `'This also clears the row.'` satisfy every other assertion in this file while still never
-    // telling the operator that their only re-advertise path is being destroyed.
+    // CONTAINMENT rather than exact-string equality: the wording is the author's, the two FACTS
+    // are the contract. Pinning the whole sentence HERE would make a future rewording fail for no
+    // reason; pinning nothing would let `'This also clears the row.'` satisfy every other
+    // assertion in this file while still never telling the operator that their only re-advertise
+    // path is being destroyed.
+    //
+    // Correction (05-23, carrying 05-22's recorded note): this comment used to justify itself as
+    // being "in the shape of the shipped `DISMISS_BODY` pin", which stopped being true when 05-22
+    // promoted `DISMISS_BODY` to exact equality and gave `DISMISS_READVERTISE_LINE` its own exact
+    // pin in `packages/web/tests/service-controls.spec.ts`. Both constants are now pinned WORD FOR
+    // WORD there; these two containments stay here because they name which two facts are
+    // load-bearing, which one long string does not say.
     expect(DISMISS_READVERTISE_LINE).toContain('re-advertise');
     expect(DISMISS_READVERTISE_LINE).toContain('cohort list');
   });

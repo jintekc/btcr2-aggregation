@@ -181,6 +181,30 @@ and the component reads it. What is NOT verified: that the rendered badge uses t
 `StatusChip` that called `chipPresentation(chip)` and then hard-coded a tone on `Badge` would still
 pass. This must not be reported as "the rendered tone is verified".
 
+### Correction, 2026-07-30 (05-23, from `05-AUDIT-2.md` entry 15)
+
+**"Its values are asserted" above, and `05-20-PLAN.md:33`'s stronger claim that the tone, pulse AND
+label of every chip are "ASSERTED, not eyeballed", were both too broad about the LABEL.** What this
+plan actually shipped:
+
+- **Tone and pulse: asserted per chip**, by exact equality, on the chips this plan touched plus the
+  moved-unchanged row. That half of the claim stands.
+- **Labels: pinned only as a distinct SET**, plus truthiness and a long-dash guard
+  (`packages/web/tests/operator-rows.spec.ts`, the `gives every chip its OWN label` row). No row
+  asserted what any chip SAYS.
+
+The consequence is the exact defect this plan was written to close. Relabelling `co-signed` from
+`Signed` to `Anchored (co-signed)` keeps the set distinct, keeps the tone neutral, keeps the dot
+still and carries no long dash, so it shipped green: an unconfirmed co-sign could still claim an
+on-chain anchor. `05-20-PLAN.md:257`'s "the labels are pinned distinct" is accurate; line 33's
+"label ... ASSERTED" is what overstated it.
+
+**Closed in 05-23**, which adds an exact per-chip label table (retyped literals, typed as
+`Record<ChipKey, string>` so a new chip without an expected label is a compile error) plus an
+independent anchor-wording guard on the three unconfirmed or in-flight chips and a positive
+assertion on `anchored`. The original text above and in `05-20-PLAN.md` is left as written; this
+note is the correction.
+
 ## Bounding assertions, each identified as a non-regression guard rather than defect coverage
 
 - `monitor.detail(id).fallback.used` is still true for a hermetic script-path cohort. This half was
