@@ -477,12 +477,21 @@ export interface ParticipantState {
    * candidate "cohort ended" -> a terminal fail with a best-effort D-25 reason. A row present
    * in a signing phase is normal (D-26 in-flight rows). Driven by the post-seat directory poll.
    *
-   * `baseUrl` is OPTIONAL and is used for one thing only: once the gone streak has ALREADY
+   * `baseUrl` is REQUIRED and is used for one thing only: once the gone streak has ALREADY
    * declared the cohort dead, ask the public fate read whether the operator canceled it, and
-   * upgrade the terminal copy if so (SVC-04, D-02). Omitting it keeps the inherited behavior
-   * byte for byte - the honest fallback, and no network call at all.
+   * upgrade the terminal copy if so (SVC-04, D-02).
+   *
+   * It was OPTIONAL until 05-24, and the optionality was itself the defect
+   * (`05-AUDIT-2.md` entry 9). There is no real call path that has an origin to poll the
+   * directory from and yet no origin to ask the fate read with, so "omit it" only ever
+   * described a caller that FORGOT: the one shipped call site could drop the argument and
+   * still typecheck, silently degrading the cancel attribution to the honest fallback
+   * forever. Required makes that a compile error instead, which the gate now actually
+   * catches because `packages/web` joined the root `tsc -b` in 05-21. Same reasoning 05-10
+   * used for the cancel fact reaching {@link terminalReason}: a forgotten call site should
+   * be a compile error rather than a wrong sentence shown to a participant.
    */
-  handlePostSeatSnapshot(rows: DirectoryCohortDTO[], baseUrl?: string): void;
+  handlePostSeatSnapshot(rows: DirectoryCohortDTO[], baseUrl: string): void;
   /**
    * Start over from any terminal state (D-10): clear the round record AND erase the
    * in-memory identity (returning to no-identity), tearing down every poll/deferred. The

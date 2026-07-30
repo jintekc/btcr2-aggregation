@@ -453,8 +453,18 @@ describe('participant store - postSeatCohortGone (pure)', () => {
   });
 });
 
+// The origin the post-seat handler carries so a completed gone streak can ask the public fate
+// read why (SVC-04, D-02). It became a REQUIRED parameter in 05-24 (`05-AUDIT-2.md` entry 9),
+// so these rows pass it; every assertion below is exactly as it was written.
+const POST_SEAT_BASE = 'http://svc.example';
+
 describe('participant store - handlePostSeatSnapshot (post-seat cohort-gone)', () => {
   beforeEach(() => {
+    // The fate read now genuinely fires once the streak below completes, so `fetch` is stubbed
+    // to keep these rows hermetic rather than reaching a real host. A 404 reads as `unreachable`,
+    // which upgrades nothing, so the streak behavior these rows assert is byte-unchanged. The
+    // read's OWN behavior is exercised in `packages/web/tests/participant-fate.spec.ts`.
+    vi.stubGlobal('fetch', () => Promise.resolve(new Response('nope', { status: 404 })));
     useParticipant.setState({
       status: 'live',
       seated: true,
@@ -468,47 +478,48 @@ describe('participant store - handlePostSeatSnapshot (post-seat cohort-gone)', (
 
   afterEach(() => {
     useParticipant.getState().leave();
+    vi.unstubAllGlobals();
   });
 
   it('does not false-fail on a single gone read (CR-01: cohort-complete may still be racing)', () => {
-    useParticipant.getState().handlePostSeatSnapshot([]);
+    useParticipant.getState().handlePostSeatSnapshot([], POST_SEAT_BASE);
     // One gone read is ambiguous (a completed cohort's row drops at the same moment
     // cohort-complete fires on another channel); the round stays live so the SSE can win.
     expect(useParticipant.getState().status).toBe('live');
   });
 
   it('lands the honest D-25 fallback terminal only after the bounded gone streak (Finding 2)', () => {
-    useParticipant.getState().handlePostSeatSnapshot([]);
+    useParticipant.getState().handlePostSeatSnapshot([], POST_SEAT_BASE);
     expect(useParticipant.getState().status).toBe('live');
     // The SECOND consecutive gone read with no intervening completion declares the cohort dead.
-    useParticipant.getState().handlePostSeatSnapshot([]);
+    useParticipant.getState().handlePostSeatSnapshot([], POST_SEAT_BASE);
     const s = useParticipant.getState();
     expect(s.status).toBe('failed');
     expect(s.error).toMatch(/didn't say why/i);
   });
 
   it('resets the gone streak on a present read (a live cohort restarts the streak)', () => {
-    useParticipant.getState().handlePostSeatSnapshot([]);
-    useParticipant.getState().handlePostSeatSnapshot([dirRow('abc', 'SigningStarted')]);
+    useParticipant.getState().handlePostSeatSnapshot([], POST_SEAT_BASE);
+    useParticipant.getState().handlePostSeatSnapshot([dirRow('abc', 'SigningStarted')], POST_SEAT_BASE);
     // The present read cleared the streak, so the next gone read is again the FIRST: still live.
-    useParticipant.getState().handlePostSeatSnapshot([]);
+    useParticipant.getState().handlePostSeatSnapshot([], POST_SEAT_BASE);
     expect(useParticipant.getState().status).toBe('live');
   });
 
   it('is a no-op while the cohort is still listed in a signing phase (D-26 in-flight row)', () => {
-    useParticipant.getState().handlePostSeatSnapshot([dirRow('abc', 'SigningStarted')]);
+    useParticipant.getState().handlePostSeatSnapshot([dirRow('abc', 'SigningStarted')], POST_SEAT_BASE);
     expect(useParticipant.getState().status).toBe('live');
   });
 
   it('clears a transient unreachable signal on a successful present read', () => {
     useParticipant.setState({ unreachable: true });
-    useParticipant.getState().handlePostSeatSnapshot([dirRow('abc', 'SigningStarted')]);
+    useParticipant.getState().handlePostSeatSnapshot([dirRow('abc', 'SigningStarted')], POST_SEAT_BASE);
     expect(useParticipant.getState().unreachable).toBe(false);
   });
 
   it('is a no-op before seating (the pre-seat join poll owns that window, never handleDirectorySnapshot)', () => {
     useParticipant.setState({ seated: false });
-    useParticipant.getState().handlePostSeatSnapshot([]);
+    useParticipant.getState().handlePostSeatSnapshot([], POST_SEAT_BASE);
     expect(useParticipant.getState().status).toBe('live');
   });
 });
