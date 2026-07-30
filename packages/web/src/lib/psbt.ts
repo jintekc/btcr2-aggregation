@@ -27,7 +27,7 @@ export type PsbtVerdict =
        */
       txid: string;
     }
-  | { ok: false; reason: 'unparseable' | 'mismatched' | 'unsigned' }
+  | { ok: false; reason: 'unparseable' | 'mismatched' | 'unsigned' | 'bad-sighash' }
   // Carries the fee it rejected, because the sentence for this one names the actual number: a
   // participant cannot check a fee in their wallet without being told which fee we objected to.
   | { ok: false; reason: 'fee-out-of-band'; feeSats: bigint };
@@ -44,8 +44,15 @@ export type PsbtVerdict =
  * On this path the app never signs; the participant's own wallet does. The app's duty is the
  * REVERSE of signing, and it is the only thing standing between an untrusted PSBT and a
  * broadcast: prove that what came back is byte for byte the transaction that went out
- * (T-05-12-01). A tampered input, output, amount, address or OP_RETURN payload all change those
- * bytes, so all of them are caught by one comparison.
+ * (T-05-12-01). The comparison anchor is the WITNESS-FREE serialization, so it pins the version,
+ * the inputs, the outputs, the amounts, the scripts and the locktime: a tampered input, output,
+ * amount, address or OP_RETURN payload all move those bytes and are all caught by that one
+ * comparison. What it provably cannot see is the SIGHASH FLAG, which lives in the PSBT field and
+ * in the witness and in neither of those bytes, so it gets its own check below
+ * (`.planning/phases/05-operator-cohort-lifecycle-control/05-AUDIT.md` entry 3, where a
+ * SIGHASH_NONE-signed PSBT was executed against this validator and returned ok with a valid txid).
+ * Those are the two dimensions, and this docstring names both rather than claiming the byte
+ * comparison closes everything.
  *
  * TWO traps decide the implementation and both are counter-intuitive enough to state here.
  *
@@ -65,8 +72,10 @@ export type PsbtVerdict =
  *  1. parse - anything that is not a PSBT throws inside `fromPSBT`, so nothing else is knowable;
  *  2. template match - the load-bearing check; a strict byte comparison already subsumes the fee
  *     check, since any fee change moves the change output and therefore the bytes;
- *  3. signature presence - `finalize()` throws `finalize/taproot: unknown input` on an unsigned
- *     input, so an unsigned PSBT must be recognized BEFORE any finalize is attempted;
+ *  3. signature presence, then the sighash pin - `finalize()` throws `finalize/taproot: unknown
+ *     input` on an unsigned input, so an unsigned PSBT must be recognized BEFORE any finalize is
+ *     attempted, and a signature that does not commit to this transaction's outputs must be
+ *     refused before one too, so no broadcastable bytes are ever produced for it;
  *  4. fee band - defence in depth, kept as its own branch so an out-of-band fee gets its own
  *     sentence rather than being folded into the generic mismatch;
  *  5. finalize and extract - only now, and only for a PSBT that has passed everything above.
@@ -93,8 +102,16 @@ export function validateSignedPsbt(
       return { ok: false, reason: 'mismatched' };
     }
     // (3) No taproot key signature means finalize would throw, so say so instead.
-    if (!tx.getInput(0)?.tapKeySig) {
+    const tapKeySig = tx.getInput(0)?.tapKeySig;
+    if (!tapKeySig) {
       return { ok: false, reason: 'unsigned' };
+    }
+    // (3b) BIP341: a 64-byte signature is SIGHASH_DEFAULT; a 65-byte one carries an explicit flag
+    // in its trailing byte, and only SIGHASH_ALL (0x01) commits to every output. Anything else is
+    // refused HERE, before any finalize, so a signature that does not bind this transaction's
+    // outputs never becomes broadcastable hex.
+    if (tapKeySig.length === 65 && tapKeySig[64] !== 0x01) {
+      return { ok: false, reason: 'bad-sighash' };
     }
     // (4) The template match already pins the fee; this branch survives so a looser future
     // comparison, or a template built with a different fee, still gets its own honest sentence.

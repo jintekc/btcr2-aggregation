@@ -60,6 +60,11 @@ const VERDICT_UNSIGNED = "That PSBT isn't signed yet.";
 const VERDICT_MISMATCHED =
   "That PSBT doesn't match the transaction this page created. Download it again and sign that one.";
 const VERDICT_UNPARSEABLE = "That doesn't look like a PSBT. Expected base64 text or a .psbt file.";
+// This PSBT parses and matches the template, so the unparseable and mismatched sentences would
+// both send the participant back to re-export, which fixes nothing. The problem is the signature
+// type, so the sentence names that and asks for a re-sign.
+const VERDICT_BAD_SIGHASH =
+  'Your wallet signed that transaction in a way that does not lock in where the money goes. Sign it again using your wallet default signature type.';
 const verdictFeeOutOfBand = (feeSats: string, expectedSats: string): string =>
   `That transaction's fee is ${feeSats} sats, well above the expected ${expectedSats} sats. Check it in your wallet before broadcasting.`;
 const verdictOk = (paysSats: string, feeSats: string): string =>
@@ -120,6 +125,8 @@ export function psbtVerdictMessage(verdict: PsbtVerdict | null): string | null {
       return VERDICT_UNSIGNED;
     case 'mismatched':
       return VERDICT_MISMATCHED;
+    case 'bad-sighash':
+      return VERDICT_BAD_SIGHASH;
     case 'fee-out-of-band':
       return verdictFeeOutOfBand(verdict.feeSats.toString(), REGISTRATION_FEE_SATS.toString());
     default:
