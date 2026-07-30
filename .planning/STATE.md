@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Completed 05-22-PLAN.md
-last_updated: "2026-07-30T21:51:29.843Z"
+stopped_at: Completed 05-23-PLAN.md
+last_updated: "2026-07-30T22:08:43.234Z"
 last_activity: 2026-07-30
-last_activity_desc: "gap round 2 wave 2 complete (05-22): mode chip, kill-switch mode guard, test-peer refusal and dismissal body all mutation-proven"
+last_activity_desc: "gap round 2 wave 3 complete (05-23): every chip label pinned word for word plus an anchor-claim guard, both advertise call sites rendered paused, the draft edit form proven to seed from its own draft"
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 57
-  completed_plans: 52
+  completed_plans: 53
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 23 of 27 (gap-closure round 2, 05-21..05-27: 2 of 7 done)
+Plan: 24 of 27 (gap-closure round 2, 05-21..05-27: 3 of 7 done)
 Status: Ready to execute
-Last activity: 2026-07-30 - gap round 2 wave 2 complete (05-22): mode chip, kill-switch mode guard, test-peer refusal and dismissal body all mutation-proven
+Last activity: 2026-07-30 - gap round 2 wave 3 complete (05-23): every chip label pinned word for word plus an anchor-claim guard, both advertise call sites rendered paused, the draft edit form proven to seed from its own draft
 
-Progress: [█████████░] 91%
+Progress: [█████████░] 93%
 
 ## Performance Metrics
 
@@ -113,6 +113,7 @@ Progress: [█████████░] 91%
 | Phase 05 P20 | 50m | 2 tasks | 9 files |
 | Phase 05 P21 | ~35m | 3 tasks | 12 files |
 | Phase 05 P22 | 30m | 3 tasks | 4 files |
+| Phase 05 P23 | ~50m | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -200,6 +201,8 @@ Recent decisions affecting current work (Phase 2):
 - [Phase ?]: 05-22: a chip label is matched as a COMPLETE chip (>label</span>) rather than by substring, because 'Live' is a substring of 'Live (no broadcast)' and the mode matrix's both-directions property is unassertable with toContain.
 - [Phase ?]: 05-22: the forbidden long dash is spelled once as an escaped constant in service-controls.spec.ts, so a house-style guard no longer contains the character it forbids and the repo-wide scan over that file returns nothing.
 - [Phase ?]: 05-22: NO_SEATS_LEFT_REASON is pinned by two independent literals (web and service) rather than by an import, because packages/web does not depend on packages/service and adding that edge for a test would couple the browser bundle to the server.
+- [Phase ?]: 05-23: DraftEditForm's timing fields sit inside a closed Expander, so the render block fakes that ONE primitive open (importOriginal spread) and pins the real one via vi.importActual in the same file, rather than extracting a formFromDraft helper the component could stop calling.
+- [Phase ?]: 05-23: a chip's label now carries two independent checks, an exact retyped literal and an anchor-wording ban, with a positive assertion on the anchored chip so the ban is not blanket.
 
 ### Pending Todos
 
@@ -239,7 +242,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-30T21:51:00.252Z
-Stopped at: Completed 05-22-PLAN.md
+Last session: 2026-07-30T22:08:35.231Z
+Stopped at: Completed 05-23-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
