@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Completed 05-25-PLAN.md
-last_updated: "2026-07-30T22:40:46.623Z"
+stopped_at: Completed 05-26-PLAN.md
+last_updated: "2026-07-30T23:02:06.948Z"
 last_activity: 2026-07-30
-last_activity_desc: "gap round 2 wave 4 complete (05-24): a fault can no longer accuse an operator of cancelling, the page origin is undroppable by compile error, a wrong-chain endpoint is refused, and a mid-session logout drops the console to login"
+last_activity_desc: "gap round 2 wave 6 complete (05-26): the discovery-window ceiling is proven SEEDED by a real boot, three no-op route guards are distinguished from having no guard, the live test-peer caveat is driven through the shipped spawn path, and the frozen terms hash has externally verifiable answers"
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 57
-  completed_plans: 55
+  completed_plans: 56
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 26 of 27 (gap-closure round 2, 05-21..05-27: 4 of 7 done)
+Plan: 27 of 27 (gap-closure round 2, 05-21..05-27: 6 of 7 done)
 Status: Ready to execute
-Last activity: 2026-07-30 - gap round 2 wave 4 complete (05-24): a fault can no longer accuse an operator of cancelling, the page origin is undroppable by compile error, a wrong-chain endpoint is refused, and a mid-session logout drops the console to login
+Last activity: 2026-07-30 - gap round 2 wave 6 complete (05-26): the discovery-window ceiling is proven SEEDED by a real boot, three no-op route guards are distinguished from having no guard, the live test-peer caveat is driven through the shipped spawn path, and the frozen terms hash has externally verifiable answers
 
-Progress: [██████████] 96%
+Progress: [██████████] 98%
 
 ## Performance Metrics
 
@@ -116,6 +116,7 @@ Progress: [██████████] 96%
 | Phase 05 P23 | ~50m | 3 tasks | 7 files |
 | Phase 05 P24 | ~45m | 3 tasks | 6 files |
 | Phase 05 P25 | ~40m | 3 tasks | 6 files |
+| Phase 05 P26 | 55m | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -211,6 +212,9 @@ Recent decisions affecting current work (Phase 2):
 - [Phase ?]: 05-25: the expired terminal record is reached with runner.stopCohort rather than the whole-runner stop, so the dismissal's still-in-flight phase guard is consulted against a live session
 - [Phase ?]: 05-25: the three draft refusals are asserted identical to EACH OTHER, not just each to its own literal, so a refusal that grew a state hint is a divergence rather than a row somebody updates
 - [Phase ?]: 05-25: the web client's unknown-draft 404 wording is a copy question, flagged for 05-27 rather than resolved; the docstring was corrected, the code was not
+- [Phase ?]: 05-26: the boot seed of the discovery-window ceiling is pinned by booting a real createService and reading its exposed settings holder, never by injecting the knob; the six hand-injected rows stay green under the deletion mutation, which is the demonstration that they were the hole
+- [Phase ?]: 05-26: a no-op route guard is proven by interleaving a DIFFERENT recorded action between two identical ones, because the monitor ring's own consecutive-duplicate skip makes back-to-back duplicates green with or without the guard
+- [Phase ?]: 05-26: the frozen terms-hash format now has externally known SHA-256 vectors (including a non-ASCII one pinning the UTF-8 step); all 13 pre-existing assertions stayed green under a sha3_256 swap, reproducing audit defect #6 exactly
 
 ### Pending Todos
 
@@ -250,7 +254,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-30T22:40:46.609Z
-Stopped at: Completed 05-25-PLAN.md
+Last session: 2026-07-30T23:01:57.497Z
+Stopped at: Completed 05-26-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
