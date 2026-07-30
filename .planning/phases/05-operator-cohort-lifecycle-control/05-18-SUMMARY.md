@@ -85,6 +85,23 @@ nothing left to trip over.
 No boot check was added to `demo-server.ts`. A second rule at the env layer is a second
 rule that can drift from this one.
 
+> **Correction, 2026-07-30 (05-26).** The account above is accurate about the CLAMP and
+> inaccurate about the WIRING, and the difference matters. `05-18-PLAN.md:112` named
+> `packages/service/src/index.ts` as the place "the ceiling is provably available at seed
+> time", and 05-18 pinned nothing there. Every row it added, and every ceiling row that
+> already existed, hand-injects `discoveryWindowCeilingMs` into `createRuntimeSettings`,
+> and the route home in `lifecycle-routes.spec.ts` builds a ceiling-free holder. So the
+> one line that supplies the ceiling on the product path,
+> `discoveryWindowCeilingMs: opts.cohortTtlMs` in `createService`, was covered by nothing:
+> deleting it left all six ceiling rows green. Had it gone, this service would have served
+> an over-ceiling boot default as its own `env default` with `changed: false` while
+> `armWindowTimer` armed no timer at all, and `PUT /v1/operator/settings` would have
+> accepted a discovery window the runner's TTL overrules. The boot seed is pinned in
+> **05-26** by a block that boots a real `createService` and reads the holder back through
+> the service handle's exposed settings, never touching the knob; deleting the seed now
+> reddens three rows while the six hand-injected ones stay green. Recorded as
+> `05-AUDIT-2.md` entry 12 (defect #5).
+
 ### Task 2: the runbook, the compose file, and ADR 0017 (`a44c9b9`)
 
 `docs/DEPLOY.md`: the quick start now sets `OPERATOR_PASSWORD` FIRST (with the reason:

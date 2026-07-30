@@ -1,12 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { AggregationServiceRunner, HttpServerTransport } from '@did-btcr2/aggregation/service';
 import { resolveBtcr2SenderPk } from '@did-btcr2/method';
-import { createIdentity, resolveNetwork } from '@btcr2-aggregation/shared';
+import { buildCohortConfig, createIdentity, resolveNetwork } from '@btcr2-aggregation/shared';
 import { createCohortIntents } from '../src/cohort-intent.js';
 import { createHonoApp } from '../src/hono-adapter.js';
-import { createOperatorCohorts } from '../src/operator-cohorts.js';
+import { createService } from '../src/index.js';
+import { createOperatorCohorts, discoveryWindowCeilingError } from '../src/operator-cohorts.js';
 import { createRuntimeSettings, type RuntimeSettingsSeed } from '../src/runtime-settings.js';
 
 /**
@@ -450,6 +451,110 @@ describe('createRuntimeSettings CLAMPS an over-ceiling discovery-window seed (05
     // clamp against and inventing one would truncate a window the service can actually honor.
     expect(warnings).toEqual([]);
     expect(settings.defaultDiscoveryWindowMs.value).toBe(60 * 60_000);
+  });
+});
+
+/**
+ * The WIRING half of the same ceiling (05-AUDIT-2.md entry 12, defect #5). Every row above, and
+ * every row in the two save-path blocks before them, hand-injects `discoveryWindowCeilingMs` into
+ * `createRuntimeSettings`. They are all correct about the RULE and none of them touches the one
+ * line that supplies the ceiling on the product path: `index.ts` seeds it from the runner's own
+ * `cohortTtlMs` when it builds this service's holder. Delete that one property and every row above
+ * stays green, because every one of them supplies the knob itself.
+ *
+ * So this block never touches the knob at all. It boots a REAL service through {@link createService}
+ * with nothing but a cohort TTL and a discovery-window default, and reads the holder back through
+ * the service handle's own exposed {@link Service.settings}, which exists (see its docstring at
+ * `index.ts`) precisely so a harness can observe a runtime value without an HTTP route. If the boot
+ * seed goes away, these rows are the ones that notice.
+ *
+ * What shipping without them would have cost: an over-ceiling `DEFAULT_DISCOVERY_WINDOW_MS` served
+ * as this service's `env default` with `changed: false`, captioned to the operator as configuration
+ * they can rely on, while `armWindowTimer` returns early at or above the TTL so no app timer is ever
+ * armed and the cohort lapses with the generic expired fate instead of the app's window-expired
+ * reason. And `PUT /v1/operator/settings` would accept a discovery window the runner's TTL overrules.
+ */
+describe('a real createService boot SUPPLIES the discovery-window ceiling (audit #5)', () => {
+  const THIRTY_MIN = 30 * 60_000;
+  const SIXTY_MIN = 60 * 60_000;
+
+  /**
+   * Boot a real service. Nothing binds a port and nothing is mocked: the settings holder is built
+   * during `createService` itself, so the boot seed is exercised without ever starting the server.
+   * The runner and transport are torn down through the service's own `stop()`.
+   */
+  async function bootedSettings(
+    opts: { cohortTtlMs?: number; defaultDiscoveryWindowMs?: number },
+    body: (settings: ReturnType<typeof createService>['settings']) => void,
+  ): Promise<void> {
+    const service = createService({
+      identity: createIdentity(resolveNetwork('signet')),
+      config: buildCohortConfig(2, 'CASBeacon', 'signet'),
+      ...opts,
+    });
+    try {
+      body(service.settings);
+    } finally {
+      await service.stop();
+    }
+  }
+
+  it('clamps an over-ceiling boot default to the runner cohort TTL, in BOTH halves of the field', async () => {
+    await bootedSettings({ cohortTtlMs: THIRTY_MIN, defaultDiscoveryWindowMs: SIXTY_MIN }, (settings) => {
+      // `value` is what every new draft inherits; `envDefault` is what the console captions as this
+      // service's environment default. Neither may hold a window the runner's own TTL overrules.
+      expect(settings.defaultDiscoveryWindowMs.value).toBe(THIRTY_MIN);
+      expect(settings.defaultDiscoveryWindowMs.envDefault).toBe(THIRTY_MIN);
+      expect(settings.defaultDiscoveryWindowMs.changed).toBe(false);
+    });
+  });
+
+  it('serves a boot default BELOW the TTL unchanged, so the ceiling clamps rather than overwrites', async () => {
+    const FIVE_MIN = 5 * 60_000;
+    await bootedSettings({ cohortTtlMs: THIRTY_MIN, defaultDiscoveryWindowMs: FIVE_MIN }, (settings) => {
+      // The control for the row above. Without it a seed the boot simply replaced with the TTL
+      // would satisfy the clamp assertion just as happily as a seed it bounded.
+      expect(settings.defaultDiscoveryWindowMs.value).toBe(FIVE_MIN);
+      expect(settings.defaultDiscoveryWindowMs.envDefault).toBe(FIVE_MIN);
+    });
+  });
+
+  it('refuses a settings save above the TTL, naming the real maximum the console renders', async () => {
+    await bootedSettings({ cohortTtlMs: THIRTY_MIN }, (settings) => {
+      const error = settings.applySettings({ defaultDiscoveryWindowMs: 45 * 60_000 });
+      // The SAME sentence `validateDraft` gives a per-draft over-ceiling window, so the operator
+      // reads one rule about this service rather than two that happen to agree.
+      expect(error).toBe(discoveryWindowCeilingError(THIRTY_MIN));
+      expect(error).toMatch(/30 minutes/);
+      expect(settings.defaultDiscoveryWindowMs.value).toBe(THIRTY_MIN);
+    });
+  });
+
+  it('accepts a save at EXACTLY the TTL, so the boundary is pinned rather than assumed', async () => {
+    await bootedSettings({ cohortTtlMs: THIRTY_MIN, defaultDiscoveryWindowMs: 5 * 60_000 }, (settings) => {
+      // Equal is not over. A ceiling that fired at equality would refuse the very value the default
+      // boot seeds, since the unset case seeds the window and the ceiling from the same TTL.
+      expect(settings.applySettings({ defaultDiscoveryWindowMs: THIRTY_MIN })).toBeUndefined();
+      expect(settings.defaultDiscoveryWindowMs.value).toBe(THIRTY_MIN);
+    });
+  });
+
+  it('warns LOUDLY on the clamped boot, naming both numbers on the real console', async () => {
+    // A real boot passes no `warn` sink, so the warning goes to `console.warn` behind the module's
+    // own `[settings]` prefix. 05-18 promised this two-number line and UAT test 1 passed it by eye;
+    // this is the row that makes the promise a fact rather than an observation somebody made once.
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await bootedSettings({ cohortTtlMs: THIRTY_MIN, defaultDiscoveryWindowMs: SIXTY_MIN }, () => {});
+      const lines = spy.mock.calls.map((call) => String(call[0]));
+      const clampWarning = lines.filter((line) => /defaultDiscoveryWindowMs/.test(line));
+      expect(clampWarning).toHaveLength(1);
+      expect(clampWarning[0]).toMatch(/\[settings\]/);
+      expect(clampWarning[0]).toMatch(String(SIXTY_MIN));
+      expect(clampWarning[0]).toMatch(String(THIRTY_MIN));
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
