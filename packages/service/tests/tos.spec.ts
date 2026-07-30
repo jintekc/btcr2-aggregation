@@ -13,10 +13,14 @@ import {
   type TermsAcceptance,
 } from '@btcr2-aggregation/shared';
 import { bytesToHex } from '@noble/hashes/utils';
-import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, describe, expect, it, vi } from 'vitest';
+import { MAX_ACCEPTANCES, createAcceptanceLedger, type AcceptanceLedger } from '../src/acceptance-ledger.js';
 import { createHonoApp } from '../src/hono-adapter.js';
 import { createRuntimeSettings } from '../src/runtime-settings.js';
-import { MemoryArtifactStore, exportSidecar } from '../src/store.js';
+import { FileSystemArtifactStore, MemoryArtifactStore, exportSidecar } from '../src/store.js';
 
 /**
  * The PUBLIC participation-terms acceptance route `POST /v1/terms/acceptance` (SVC-05, D-19).
@@ -54,7 +58,9 @@ const COHORT_ID = 'cohort-abc-123';
  * resolver, the runtime settings holder that owns the terms text, an artifact store, and this
  * service's DID.
  */
-function acceptanceApp(opts: { terms?: string; store?: MemoryArtifactStore } = {}) {
+function acceptanceApp(
+  opts: { terms?: string; store?: MemoryArtifactStore; acceptanceLedger?: AcceptanceLedger } = {},
+) {
   const service = createIdentity(resolveNetwork(ACTIVE_NETWORK));
   const transport = new HttpServerTransport({ resolveSenderPk: resolveBtcr2SenderPk, heartbeatIntervalMs: 0 });
   const store = opts.store ?? new MemoryArtifactStore();
@@ -65,6 +71,7 @@ function acceptanceApp(opts: { terms?: string; store?: MemoryArtifactStore } = {
     resolveSenderPk: resolveBtcr2SenderPk,
     runtimeSettings,
     store,
+    acceptanceLedger: opts.acceptanceLedger,
   });
   return { app, store, runtimeSettings, serviceDid: service.did };
 }
@@ -82,6 +89,28 @@ function acceptanceFor(
     termsHash: termsHashHex(terms),
     participantDid: participant.did,
     acceptedAt: '2026-07-29T12:00:00.000Z',
+  });
+}
+
+/**
+ * The same acceptance at a DIFFERENT wall-clock instant.
+ *
+ * `acceptanceFor` hard-codes one `acceptedAt`, so calling it twice yields a BYTE-IDENTICAL
+ * envelope (that is exactly what the identical-repost row wants). A REPLACEMENT row wants the
+ * other input: the same dedup key with different bytes, which is what varying `acceptedAt` gives.
+ */
+function acceptanceAt(
+  serviceDid: string,
+  participant: Identity,
+  acceptedAt: string,
+  cohortId = COHORT_ID,
+): TermsAcceptance {
+  return buildTermsAcceptance({
+    serviceDid,
+    cohortId,
+    termsHash: termsHashHex(TERMS),
+    participantDid: participant.did,
+    acceptedAt,
   });
 }
 
@@ -354,6 +383,196 @@ describe('a terms edit never changes what a stored acceptance means (T-05-13-02)
     // And a fresh acceptance of the OLD terms is now refused: the binding runs both ways.
     const stale = acceptanceFor(serviceDid, participant, TERMS, 'cohort-later');
     expect((await post(app, { acceptance: stale, signature: signWith(stale, participant) })).status).toBe(400);
+  });
+});
+
+describe('the acceptance namespace is BOUNDED, so an anonymous caller cannot grow it forever', () => {
+  /**
+   * `05-AUDIT.md` entries 1 and 5: the route stores a record keyed by the canonical hash of the
+   * WHOLE record, so one differing `acceptedAt` minted a new key rather than overwriting, nothing
+   * ever deleted an acceptance, and the store is process-wide on a single-box coordinator whose
+   * cohort state is already memory-only. A skeptic reproduced it in-process with one freshly
+   * minted k1 identity, never registered and never seated: 300 acceptances naming a nonexistent
+   * cohort produced 300 distinct stored records.
+   *
+   * The rows below are the axis the shipped spec never had. Every existing refusal row asserts the
+   * store is still EMPTY, which proves growth by FAILING is closed (T-05-13-04); none of them ever
+   * posted more than a handful of SUCCEEDING acceptances and then looked at the size of the
+   * namespace.
+   */
+
+  /** Post `count` valid acceptances that differ only in the COHORT they name, so each is a distinct dedup key. */
+  async function fillDistinctKeys(
+    ctx: ReturnType<typeof acceptanceApp>,
+    participant: Identity,
+    count: number,
+  ): Promise<string[]> {
+    const hashes: string[] = [];
+    for (let i = 0; i < count; i += 1) {
+      const acceptance = acceptanceFor(
+        ctx.serviceDid,
+        participant,
+        TERMS,
+        `cohort-${String(i).padStart(4, '0')}`,
+      );
+      hashes.push(termsAcceptanceHashHex(acceptance));
+      const res = await post(ctx.app, { acceptance, signature: signWith(acceptance, participant) });
+      expect(res.status).toBe(200);
+    }
+    return hashes;
+  }
+
+  it(`retains EXACTLY ${MAX_ACCEPTANCES} acceptances across distinct dedup keys, evicting oldest-first`, async () => {
+    // Exactly, never "at most": an upper bound is also satisfied by a fix that retains nothing.
+    // The batch varies the COHORT ID, so every record is a distinct dedup key. A batch varying
+    // only `acceptedAt` would share ONE dedup key and correctly leave ONE record, which would
+    // make this criterion fail against a correct implementation.
+    const ctx = acceptanceApp({ terms: TERMS });
+    const participant = createIdentity(resolveNetwork(ACTIVE_NETWORK));
+    const total = MAX_ACCEPTANCES + 20;
+    const hashes = await fillDistinctKeys(ctx, participant, total);
+
+    expect(await stored(ctx.store)).toHaveLength(MAX_ACCEPTANCES);
+    // Oldest-first: the first acceptance posted is gone, the most recent ones are not.
+    expect(await ctx.store.get('acceptance', hashes[0])).toBeUndefined();
+    expect(await ctx.store.get('acceptance', hashes[19])).toBeUndefined();
+    expect(await ctx.store.get('acceptance', hashes[20])).toBeDefined();
+    expect(await ctx.store.get('acceptance', hashes[total - 1])).toBeDefined();
+  });
+
+  it('leaves ONE record when a participant re-accepts for the same cohort, and it is the LATER one', async () => {
+    const ctx = acceptanceApp({ terms: TERMS });
+    const participant = createIdentity(resolveNetwork(ACTIVE_NETWORK));
+    const first = acceptanceAt(ctx.serviceDid, participant, '2026-07-29T12:00:00.000Z');
+    const second = acceptanceAt(ctx.serviceDid, participant, '2026-07-29T13:00:00.000Z');
+
+    expect((await post(ctx.app, { acceptance: first, signature: signWith(first, participant) })).status).toBe(200);
+    expect((await post(ctx.app, { acceptance: second, signature: signWith(second, participant) })).status).toBe(200);
+
+    expect(await stored(ctx.store)).toEqual([[termsAcceptanceHashHex(second), second]]);
+    // The replaced record is really REMOVED, not merely orphaned behind a newer one.
+    expect(await ctx.store.get('acceptance', termsAcceptanceHashHex(first))).toBeUndefined();
+  });
+
+  it('leaves an IDENTICAL repost intact and still readable, rather than deleting what it just stored', async () => {
+    // T-05-17-06, the trap this fix sets for itself. The store key is the hash of the WHOLE
+    // record while the dedup key is participant plus cohort, so a byte-identical repost arrives
+    // with `previous === hashHex`. A ledger that returns `previous` unconditionally hands the
+    // route the hash it stored one line earlier, the route deletes it, and the caller gets a 200
+    // carrying a hash that resolves to nothing. This is not an exotic input: `acceptanceFor`
+    // hard-codes `acceptedAt`, so the default helper produces it when called twice, and it is
+    // what an idempotent client sends after the 8 second fetch timeout in `web/src/lib/config.ts`.
+    const ctx = acceptanceApp({ terms: TERMS });
+    const participant = createIdentity(resolveNetwork(ACTIVE_NETWORK));
+    const acceptance = acceptanceFor(ctx.serviceDid, participant);
+    const envelope = { acceptance, signature: signWith(acceptance, participant) };
+
+    const first = await post(ctx.app, envelope);
+    const second = await post(ctx.app, envelope);
+    expect(second).toEqual(first);
+    expect(second.body).toEqual({ hash: termsAcceptanceHashHex(acceptance) });
+
+    expect(await stored(ctx.store)).toHaveLength(1);
+    // And the hash the participant is holding still resolves through the public read.
+    const read = await ctx.app.request(`/cas/acceptance/${termsAcceptanceHashHex(acceptance)}`);
+    expect(read.status).toBe(200);
+    expect(await read.json()).toEqual(acceptance);
+  });
+
+  it('keeps the ledger and the store in agreement after replays, replacements and overflow', async () => {
+    // The bound this plan claims is only real if the number the ledger believes it retains IS the
+    // size of the namespace. A ledger that drops a hash it still holds (or holds one it dropped)
+    // would desynchronize silently, and the "exactly MAX_ACCEPTANCES" row above would then be
+    // asserting a coincidence.
+    const acceptanceLedger = createAcceptanceLedger();
+    const ctx = acceptanceApp({ terms: TERMS, acceptanceLedger });
+    const participant = createIdentity(resolveNetwork(ACTIVE_NETWORK));
+    const other = createIdentity(resolveNetwork(ACTIVE_NETWORK));
+
+    // A byte-identical replay, three times over.
+    const replayed = acceptanceFor(ctx.serviceDid, participant, TERMS, 'cohort-replay');
+    const replayEnvelope = { acceptance: replayed, signature: signWith(replayed, participant) };
+    await post(ctx.app, replayEnvelope);
+    await post(ctx.app, replayEnvelope);
+    await post(ctx.app, replayEnvelope);
+
+    // A same-key replacement, varying only `acceptedAt`.
+    for (const at of ['2026-07-29T09:00:00.000Z', '2026-07-29T10:00:00.000Z', '2026-07-29T11:00:00.000Z']) {
+      const a = acceptanceAt(ctx.serviceDid, other, at, 'cohort-replace');
+      await post(ctx.app, { acceptance: a, signature: signWith(a, other) });
+    }
+
+    // And enough distinct keys to push the whole thing over the bound.
+    await fillDistinctKeys(ctx, participant, MAX_ACCEPTANCES + 5);
+
+    expect(acceptanceLedger.retained()).toHaveLength((await stored(ctx.store)).length);
+    expect(await stored(ctx.store)).toHaveLength(MAX_ACCEPTANCES);
+  });
+
+  it('never collapses two DIFFERENT participants accepting for the same cohort', async () => {
+    const ctx = acceptanceApp({ terms: TERMS });
+    const one = createIdentity(resolveNetwork(ACTIVE_NETWORK));
+    const two = createIdentity(resolveNetwork(ACTIVE_NETWORK));
+    const a = acceptanceFor(ctx.serviceDid, one);
+    const b = acceptanceFor(ctx.serviceDid, two);
+    await post(ctx.app, { acceptance: a, signature: signWith(a, one) });
+    await post(ctx.app, { acceptance: b, signature: signWith(b, two) });
+
+    expect(await stored(ctx.store)).toHaveLength(2);
+  });
+
+  it('never collapses ONE participant accepting for two different cohorts', async () => {
+    const ctx = acceptanceApp({ terms: TERMS });
+    const participant = createIdentity(resolveNetwork(ACTIVE_NETWORK));
+    const a = acceptanceFor(ctx.serviceDid, participant, TERMS, 'cohort-one');
+    const b = acceptanceFor(ctx.serviceDid, participant, TERMS, 'cohort-two');
+    await post(ctx.app, { acceptance: a, signature: signWith(a, participant) });
+    await post(ctx.app, { acceptance: b, signature: signWith(b, participant) });
+
+    expect(await stored(ctx.store)).toHaveLength(2);
+  });
+});
+
+describe('an artifact store can DROP a record, which is what makes a bound expressible', () => {
+  const roots: string[] = [];
+  afterAll(async () => {
+    await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
+  });
+
+  async function fsStore(): Promise<FileSystemArtifactStore> {
+    const root = await mkdtemp(join(tmpdir(), 'btcr2-acceptance-'));
+    roots.push(root);
+    return new FileSystemArtifactStore(root);
+  }
+
+  it('removes a stored artifact from the in-memory store, and no-ops for an absent hash', async () => {
+    const store = new MemoryArtifactStore();
+    await store.put('acceptance', 'aabb', { hello: 'world' });
+    await store.delete('acceptance', 'aabb');
+    expect(await store.get('acceptance', 'aabb')).toBeUndefined();
+    expect(await store.has('acceptance', 'aabb')).toBe(false);
+    // Deleting what is not there is a no-op, never a throw: retention housekeeping must not be
+    // able to turn a successfully recorded acceptance into a refusal.
+    await expect(store.delete('acceptance', 'ccdd')).resolves.toBeUndefined();
+  });
+
+  it('removes a stored artifact from the filesystem store, and no-ops for an absent hash', async () => {
+    const store = await fsStore();
+    await store.put('acceptance', 'aabb', { hello: 'world' });
+    await store.delete('acceptance', 'aabb');
+    expect(await store.get('acceptance', 'aabb')).toBeUndefined();
+    expect(await store.has('acceptance', 'aabb')).toBe(false);
+    await expect(store.delete('acceptance', 'ccdd')).resolves.toBeUndefined();
+    // A whole namespace that was never written is also absent, not an error.
+    await expect(store.delete('proof', 'eeff')).resolves.toBeUndefined();
+  });
+
+  it('leaves the OTHER namespaces untouched: the four resolution kinds never call delete', async () => {
+    const store = new MemoryArtifactStore();
+    await store.put('acceptance', 'aabb', { kind: 'acceptance' });
+    await store.put('proof', 'aabb', { kind: 'proof' });
+    await store.delete('acceptance', 'aabb');
+    expect(await store.get('proof', 'aabb')).toEqual({ kind: 'proof' });
   });
 });
 
