@@ -489,6 +489,12 @@ describe('the acceptance namespace is BOUNDED, so an anonymous caller cannot gro
     const participant = createIdentity(resolveNetwork(ACTIVE_NETWORK));
     const other = createIdentity(resolveNetwork(ACTIVE_NETWORK));
 
+    // Enough distinct keys to push the namespace over the bound FIRST, so the replay and the
+    // replacement below land at the newest end and survive to the assertion. Order matters here:
+    // with the replay posted first, a later overflow would evict the very key a desynchronized
+    // ledger had gone wrong on, and the two counts would agree again by accident.
+    await fillDistinctKeys(ctx, participant, MAX_ACCEPTANCES + 5);
+
     // A byte-identical replay, three times over.
     const replayed = acceptanceFor(ctx.serviceDid, participant, TERMS, 'cohort-replay');
     const replayEnvelope = { acceptance: replayed, signature: signWith(replayed, participant) };
@@ -501,9 +507,6 @@ describe('the acceptance namespace is BOUNDED, so an anonymous caller cannot gro
       const a = acceptanceAt(ctx.serviceDid, other, at, 'cohort-replace');
       await post(ctx.app, { acceptance: a, signature: signWith(a, other) });
     }
-
-    // And enough distinct keys to push the whole thing over the bound.
-    await fillDistinctKeys(ctx, participant, MAX_ACCEPTANCES + 5);
 
     expect(acceptanceLedger.retained()).toHaveLength((await stored(ctx.store)).length);
     expect(await stored(ctx.store)).toHaveLength(MAX_ACCEPTANCES);

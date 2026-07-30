@@ -55,6 +55,11 @@ import {
   type TestPeerSpawner,
 } from './test-peers.js';
 import { mountStaticSite } from './static-site.js';
+import {
+  acceptanceDedupKey,
+  createAcceptanceLedger,
+  type AcceptanceLedger,
+} from './acceptance-ledger.js';
 import { mountArtifactRoutes, putAcceptance, type ArtifactStore } from './store.js';
 import { resolveBtcr2, UnconfirmedSignalError } from './resolve.js';
 import { validatePinRequest, type IpfsNode, type PinOutcome } from './ipfs.js';
@@ -247,6 +252,31 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  *    the resolver recomputes that document's hash against the DID, so a forged one cannot be
  *    substituted.
  * 6. **Only then is the record stored**, under its own canonical hash.
+ * 7. **And only AFTER storing is retention reconciled**, which is what keeps this namespace
+ *    BOUNDED. A caller who mints throwaway k1 DIDs locally is a VERIFIED caller (a signature
+ *    proves authenticity, never authorization), so before the bound existed an anonymous flood of
+ *    valid acceptances grew this service's process-wide store forever: one differing `acceptedAt`
+ *    minted a new storage key rather than overwriting, and nothing ever deleted an acceptance
+ *    (`05-AUDIT.md` entries 1 and 5, D-19, T-05-17-01). The ledger keeps ONE acceptance per
+ *    participant-and-cohort and at most `MAX_ACCEPTANCES` ({@link file://./acceptance-ledger.ts})
+ *    in total, oldest-first, the same
+ *    discipline every other retained structure in this service already follows. It EVICTS and
+ *    never refuses: a cap that started refusing would let an attacker fill it and lock legitimate
+ *    joiners out of the SVC-05 join gate itself (T-05-17-02), and it would break the uniform
+ *    refusal contract by adding a seventh reason a caller could provoke.
+ *
+ *    WHAT THE BOUND COSTS (T-05-17-07), stated here because eviction is not free. Since the
+ *    namespace is bounded and this route is anonymous, a flood of throwaway-DID acceptances with
+ *    distinct dedup keys evicts earlier retained acceptances, so the hash a real participant is
+ *    holding from the join step can stop resolving at `GET /cas/acceptance/<hash>`. That is
+ *    accepted rather than designed around, and what bounds it is what the namespace is FOR:
+ *    nothing server-side reads it. `putAcceptance` is its only writer and `mountArtifactRoutes`
+ *    its only reader, so an evicted record cannot refuse a join, cannot fail a cohort, and cannot
+ *    change any protocol decision. The loss is proof durability, not function. The alternative
+ *    that would close it is refusing past a cap, which trades this for lockout of the gate itself
+ *    and is strictly worse. The operational mitigation is the proxy-layer request throttle in
+ *    `docs/DEPLOY.md`, the same one that covers the residual per-request schnorr-verify cost
+ *    (T-05-17-04), rather than an in-process per-IP limit this service cannot make proxy-aware.
  *
  * Deliberately NOT checked: whether the cohort id names a cohort this service knows. Refusing an
  * unknown cohort would make this anonymous route an enumeration oracle for the very thing the
@@ -260,9 +290,10 @@ async function recordTermsAcceptance(
     termsText?: string;
     serviceDid?: string;
     resolveSenderPk?: ResolveSenderPk;
+    acceptanceLedger: AcceptanceLedger;
   },
 ): Promise<string> {
-  const { store, termsText, serviceDid, resolveSenderPk } = deps;
+  const { store, termsText, serviceDid, resolveSenderPk, acceptanceLedger } = deps;
   if (!store) {
     throw new Error('no artifact store is wired, so an acceptance cannot be stored');
   }
@@ -345,6 +376,29 @@ async function recordTermsAcceptance(
   // the bytes the signature covers, or the artifact stops being checkable by anyone else.
   const hash = termsAcceptanceHashHex(record);
   await putAcceptance(store, hash, record);
+
+  // Step 7, retention. Store-then-reconcile: the ledger is told what was just stored and answers
+  // with the hashes this service should no longer keep (the record this one replaces, plus the
+  // oldest one if the bound was exceeded).
+  //
+  // The filter is BELT AND BRACES on the one mistake that would turn this route into an
+  // unauthenticated delete primitive: `remember` already guarantees it never returns the hash it
+  // is retaining (T-05-17-06), and the filter guarantees that a future change to the ledger
+  // cannot make this call site delete the record it stored one line above and hand the
+  // participant a 200 whose hash resolves to nothing.
+  const drop = acceptanceLedger
+    .remember(acceptanceDedupKey(record.participantDid, record.cohortId), hash)
+    .filter((stale) => stale !== hash);
+  for (const stale of drop) {
+    try {
+      await store.delete('acceptance', stale);
+    } catch (err) {
+      // The participant's record IS stored and their join must not fail because housekeeping did.
+      // Logged rather than thrown: a retention failure means this service keeps MORE than it
+      // meant to, which is an operator-visible condition, not a caller-visible one.
+      console.error(`[adapter] failed to retire a superseded acceptance: ${String(err)}`);
+    }
+  }
   return hash;
 }
 
@@ -354,6 +408,16 @@ export interface HonoAppOptions {
   webDistDir?: string;
   /** Content-addressed artifact store backing the read-only `GET /cas/*` routes. */
   store?: ArtifactStore;
+  /**
+   * The bounded retention ledger behind `POST /v1/terms/acceptance` (SVC-05, T-05-17-01).
+   *
+   * Optional and normally omitted: {@link createHonoApp} builds one per call, closure-scoped like
+   * the rest of this app's per-call state, so two services in one process never share a bound.
+   * A caller supplies one only to ASSERT over it, which is what the ledger-store agreement row in
+   * `tos.spec.ts` needs: the bound is only meaningful if the count the ledger believes it retains
+   * really is the size of the acceptance namespace.
+   */
+  acceptanceLedger?: AcceptanceLedger;
   /**
    * The Bitcoin network name this coordinator targets, served on `GET /v1/config`
    * so the browser derives its addresses/DIDs at runtime instead of from the
@@ -492,6 +556,7 @@ export function createHonoApp(
   const {
     webDistDir,
     store,
+    acceptanceLedger = createAcceptanceLedger(),
     networkName,
     serviceName,
     serviceDid,
@@ -736,6 +801,7 @@ export function createHonoApp(
           termsText: runtimeSettings?.termsText.value,
           serviceDid,
           resolveSenderPk,
+          acceptanceLedger,
         });
         return c.json({ hash });
       } catch (err) {

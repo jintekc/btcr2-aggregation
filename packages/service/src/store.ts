@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Env, Hono } from 'hono';
 import type {
@@ -77,6 +77,21 @@ export interface ArtifactStore {
   has(kind: ArtifactKind, hashHex: string): Promise<boolean>;
   /** All `[hashHex, value]` pairs in the `kind` namespace (order unspecified). */
   entries(kind: ArtifactKind): Promise<Array<[string, unknown]>>;
+  /**
+   * Remove `hashHex` from the `kind` namespace. A no-op (never a throw) when it is absent.
+   *
+   * Exists for BOUNDED namespaces, and today `acceptance` is the only one that uses it: the
+   * anonymous `POST /v1/terms/acceptance` route retires a replaced or evicted record so that
+   * namespace cannot grow without limit (SVC-05, T-05-17-01). The four RESOLUTION namespaces
+   * (announcement, proof, update, genesis) never call it: a resolver's artifacts must outlive the
+   * cohort that produced them, so nothing here prunes them and this method's existence does not
+   * change that.
+   *
+   * Absence is a no-op on purpose. Retention housekeeping runs AFTER a record has been
+   * successfully stored, so a delete that threw would be able to turn a successful acceptance into
+   * a refusal for the participant who just made it.
+   */
+  delete(kind: ArtifactKind, hashHex: string): Promise<void>;
 }
 
 /** In-memory artifact store. The default for tests and the hermetic, no-persist path. */
@@ -109,6 +124,11 @@ export class MemoryArtifactStore implements ArtifactStore {
 
   async entries(kind: ArtifactKind): Promise<Array<[string, unknown]>> {
     return [...this.#map(kind).entries()];
+  }
+
+  async delete(kind: ArtifactKind, hashHex: string): Promise<void> {
+    // `Map.delete` is already a no-op for an absent key, which is the contract.
+    this.#map(kind).delete(normalizeHexKey(hashHex));
   }
 }
 
@@ -157,6 +177,23 @@ export class FileSystemArtifactStore implements ArtifactStore {
 
   async has(kind: ArtifactKind, hashHex: string): Promise<boolean> {
     return existsSync(this.#file(kind, hashHex));
+  }
+
+  async delete(kind: ArtifactKind, hashHex: string): Promise<void> {
+    try {
+      await unlink(this.#file(kind, hashHex));
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      // ENOENT = already absent (including a namespace directory that was never written).
+      // ENAMETOOLONG = a key too long to name a file, so it can never have existed => also
+      // absent. Both are the no-op this method promises. Genuine operator faults (EACCES,
+      // EPERM, ...) still surface, so a store the service cannot prune is not silently pretended
+      // to be pruned.
+      if (code === 'ENOENT' || code === 'ENAMETOOLONG') {
+        return;
+      }
+      throw err;
+    }
   }
 
   async entries(kind: ArtifactKind): Promise<Array<[string, unknown]>> {
