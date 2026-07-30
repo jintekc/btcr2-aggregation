@@ -55,6 +55,24 @@ function walletSign(base64: string, identity: Identity = OURS): Uint8Array {
   return tx.toPSBT(0);
 }
 
+/**
+ * What a TAMPERED return leg hands back: the same PSBT, signed under a non-default sighash
+ * flavour. This is the exact shape of the attack in `05-AUDIT.md` entry 3: something between this
+ * page and the signer rewrites `PSBT_IN_SIGHASH_TYPE`, the signer honours it, and the returned
+ * `tapKeySig` is 65 bytes whose trailing byte is that flag. The witness-free bytes are untouched,
+ * which is precisely why the template comparison cannot see this.
+ */
+function walletSignWithSighash(
+  base64: string,
+  flag: number,
+  identity: Identity = OURS,
+): Uint8Array {
+  const tx = Transaction.fromPSBT(psbtBase64ToBytes(base64)!, { allowUnknownOutputs: true });
+  tx.updateInput(0, { sighashType: flag });
+  tx.sign(identity.keys.raw.secret!, [flag]);
+  return tx.toPSBT(0);
+}
+
 describe('validateSignedPsbt', () => {
   it('returns the unparseable verdict for anything that is not a PSBT', () => {
     const { templateHex } = ourTemplate();
@@ -129,6 +147,23 @@ describe('validateSignedPsbt', () => {
     );
     // finalize() on an unsigned taproot input throws; the ordering must reach this branch first.
     expect(verdict).toEqual({ ok: false, reason: 'unsigned' });
+  });
+
+  it('returns the bad-sighash verdict for a signature that does not commit to the outputs', () => {
+    // SIGHASH_NONE (0x02): the signature commits to the input set and to NO output, so any mempool
+    // observer can respend the same input with the same witness and redirect the change. The
+    // witness-free bytes are identical to the template, so this is invisible to check (2).
+    const { base64, templateHex } = ourTemplate();
+    const verdict = validateSignedPsbt(
+      walletSignWithSighash(base64, 0x02),
+      templateHex,
+      REGISTRATION_FEE_SATS,
+      NETWORK,
+    );
+    expect(verdict).toEqual({ ok: false, reason: 'bad-sighash' });
+    // Refused BEFORE any finalize, so no broadcastable bytes are ever produced for it.
+    expect('rawHex' in verdict).toBe(false);
+    expect('txid' in verdict).toBe(false);
   });
 
   it('returns the ok verdict for a correctly signed round trip, despite differing raw hex', () => {
@@ -229,7 +264,7 @@ describe('validateSignedPsbt', () => {
 });
 
 describe('psbtVerdictMessage', () => {
-  it('gives each of the five verdicts its OWN sentence, and none before anything comes back', () => {
+  it('gives each of the six verdicts its OWN sentence, and none before anything comes back', () => {
     const { base64, templateHex } = ourTemplate();
     const ok = validateSignedPsbt(walletSign(base64), templateHex, REGISTRATION_FEE_SATS, NETWORK);
     const messages = [
@@ -238,10 +273,15 @@ describe('psbtVerdictMessage', () => {
       psbtVerdictMessage({ ok: false, reason: 'mismatched' }),
       psbtVerdictMessage({ ok: false, reason: 'unparseable' }),
       psbtVerdictMessage({ ok: false, reason: 'fee-out-of-band', feeSats: 9000n }),
+      psbtVerdictMessage({ ok: false, reason: 'bad-sighash' }),
     ];
-    // Five outcomes, five distinct strings: a collapsed pair would tell a participant the wrong
-    // thing about a transaction they are about to broadcast.
-    expect(new Set(messages).size).toBe(5);
+    // Six outcomes, six distinct strings: a collapsed pair would tell a participant the wrong
+    // thing about a transaction they are about to broadcast. The bad-sighash sentence in
+    // particular must NOT collapse onto the unparseable one, which is what the switch's `default`
+    // arm would do: that PSBT parses perfectly, and saying otherwise sends the participant to
+    // re-export instead of to re-sign.
+    expect(new Set(messages).size).toBe(6);
+    expect(messages[5]).not.toBe(messages[3]);
     for (const m of messages) {
       expect(m).toBeTruthy();
       // The UI-SPEC copy contract: no long dash in any authored string.
