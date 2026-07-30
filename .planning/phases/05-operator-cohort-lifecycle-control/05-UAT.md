@@ -146,17 +146,34 @@ directly.
 | 2 | The same validation messages appear on the create and the edit path, and they are the service's own sentences byte for byte | `packages/web/tests/cohort-form.spec.ts`, "the shape-error copy, pinned independently of the constants that carry it" (both forms delegate to the one shared module, so one pin covers both paths) | 05-23 |
 | 6 | A paused service disables its advertise controls, on BOTH the draft and the expired call site, with the reason rendered beside each | `packages/web/tests/operator-rows-render.spec.tsx`, "a paused service disables BOTH advertise controls and says why", plus "pause is DRAIN MODE, not a kill switch" for the narrowness | 05-23 |
 | 12 | A completed co-sign round reads as `Signed` rather than as anything naming an anchor, and the k-of-n script-path cohort keeps its own distinct label | `packages/web/tests/operator-rows.spec.ts`, "every chip label is pinned word for word" (exact per-chip labels plus the anchor-wording guard on the unconfirmed pair and the in-flight chip) | 05-23 |
+| 4 | A mid-session 401 routes through the single shared session-expiry path, on BOTH lifecycle verbs, dropping to login and resetting the console view | `packages/web/tests/operator.spec.ts`, "routes a mid-session 401 on CANCEL through the one shared session-expiry path" plus the FINALIZE twin (each asserts auth, reason, view and the verb's own busy flag) | 05-24 |
+| 4 | A failed action renders the action-error line and leaves every cohort fact untouched, with no optimistic chip | `packages/web/tests/operator.spec.ts`, "narrates the opaque cancel 404 as nothing more than a failed action", with "preserves the server's own reason on a refused (409) finalize" pinning the deliberate asymmetry between the two refusals | 05-24 |
+| 5 | The chain endpoint disclosure's documented E16 verdicts are each produced by the shipped check: `ok`, `mismatch` naming both chains, `browser-rejected`, `unreachable` and `malformed` | `packages/web/tests/tx-client.spec.ts`, the `checkEndpoint` and `setting and clearing an endpoint` blocks (every verdict driven through the store, plus the two marker rows and per-row request counts). HERMETIC LIMIT: these produce each verdict against a stubbed endpoint. A real CORS refusal and a real wrong-chain third-party host are NOT covered and stay with test 15 | 05-24 |
+| 10 | The participant's terminal card names the cancel and never narrates it as a stall or a timeout | `packages/web/tests/terminal-reason.spec.ts`, "narrates a cancel as a cancel on the EXACT input that produces stall copy today" plus "never narrates a cancel as a stall, a failure, or an expiry" | 05-24 |
+| 10 | Both narration variants read correctly, and the specific one is reachable ONLY from a real answer: the operator attribution on a service-reported cancel, the honest fallback on anything else | `packages/web/tests/participant-fate.spec.ts`, "names the operator on a 200 whose body carries the boolean true" against the four refusal rows in "a fault cannot fabricate a cancel accusation", each asserting the rendered sentence and not only the flag | 05-24 |
+| 15 | A wrong-chain endpoint is refused with a mismatch naming BOTH chains | `packages/web/tests/tx-client.spec.ts`, "judges the endpoint against THIS participant's chain, not a chain the code picked" (the store's own network on one side, the endpoint's on the other) | 05-24 |
 
-No test above is fully covered yet, so all of them stay in `## Tests`. Test 4 still needs the 401
-shared-session-expiry clause (05-24 closes it). Test 8 still needs the long-body-at-a-narrow-viewport
-clause, which is a genuine visual judgment and stays with a human. Test 6 still needs the public
-paused notice and the narrow-width chip wrap. Test 9 still needs the live-cohort registration
-disclosure (05-26 closes it). Test 11 still needs the expired-row fate read (05-25 closes it). Test
-17 still needs a real `LIVE=1 BROADCAST=1` boot, which no unit gate can stand up. Test 2 still needs
-the over-ceiling refusal naming this service's real maximum (05-26 closes it) and the `Cancel edit`
-closes-without-destroying clause, which is behind a click. Test 12 still carries an owner JUDGMENT,
-"confirm the new wording reads as honest rather than as a regression", which no assertion can make
-for them; 05-27 narrows it rather than removing it.
+No test above is fully covered yet, so all of them stay in `## Tests`. Test 8 still needs the
+long-body-at-a-narrow-viewport clause, which is a genuine visual judgment and stays with a human.
+Test 6 still needs the public paused notice and the narrow-width chip wrap. Test 9 still needs the
+live-cohort registration disclosure (05-26 closes it). Test 11 still needs the expired-row fate read
+(05-25 closes it). Test 17 still needs a real `LIVE=1 BROADCAST=1` boot, which no unit gate can stand
+up. Test 2 still needs the over-ceiling refusal naming this service's real maximum (05-26 closes it)
+and the `Cancel edit` closes-without-destroying clause, which is behind a click. Test 12 still
+carries an owner JUDGMENT, "confirm the new wording reads as honest rather than as a regression",
+which no assertion can make for them; 05-27 narrows it rather than removing it.
+
+Test 4's remaining clauses are the ceremony ladder's rung-2 k-of-n consequence wording and the
+in-flight disable-both-buttons behavior, which is behind a click.
+
+**Test 10 was checked clause by clause for full retirement in 05-24 and is NOT retired.** Two of its
+three clauses now have rows above. The third, "the next-step line reads correctly", is uncovered:
+`TERMINAL_NEXT_STEP_LINE` in `packages/web/src/components/cohort/CohortPage.tsx:18` is exported and
+rendered at `:212`, and no test in the repo reads it, so its wording could change unnoticed. That
+file is not in 05-24's `files_modified`, so the pin was not added here rather than guessed at.
+Whoever closes it should pin the sentence and render the terminal card, which would also cover the
+one thing no store row can: that the named cancel and the next-step line appear TOGETHER on the card
+a participant actually sees.
 
 ## Summary
 

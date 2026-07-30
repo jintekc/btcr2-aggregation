@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fetchCohortDetail, type CohortDetailDTO } from '../src/lib/operator';
-import { useOperator, EXPORT_FAILED, SESSION_EXPIRED } from '../src/stores/operator';
+import {
+  useOperator,
+  actionFailedWith,
+  ACTION_FAILED,
+  EXPORT_FAILED,
+  SESSION_EXPIRED,
+} from '../src/stores/operator';
 
 /**
  * Hermetic coverage of the monitoring drill-down tracer end (SVC-03, D-16/D-25/D-03):
@@ -207,5 +213,103 @@ describe('operator store exportCohort (D-34 export, review WR-06)', () => {
     expect(useOperator.getState().actionError).toBe(EXPORT_FAILED);
     // A transport fault is NOT a session change: the operator stays signed in.
     expect(useOperator.getState().auth).toBe('logged-in');
+  });
+});
+
+/**
+ * The two LIFECYCLE verbs, which until now no test invoked at all (`05-AUDIT-2.md` entry 4).
+ *
+ * `05-02-SUMMARY.md:133-137` recorded the 401 path as code-verified with no store-level
+ * harness, and deferred it to a browser walkthrough that was never added. So replacing
+ * `get().expireSession(); return;` in either verb with a generic `actionError` assignment
+ * would have shipped green, and the console would have gone on showing a drill-down of a
+ * cohort to an operator who is in fact logged out and can no longer act on any of it.
+ *
+ * Four facts per 401 row, and the set is what makes it a real pin. The auth state alone would
+ * pass a change that logged the operator out but left the stale drill-down open, which is the
+ * exact consequence entry 4 names; the busy flag alone would pass one that cleared the button
+ * and left the session claim untouched.
+ *
+ * The 404 and the 409 rows are not padding. They are what proves the 401 branch is a BRANCH
+ * rather than the only path a failure can take, and the 409 pins the asymmetry 05-03
+ * deliberately built: cancel's 404 is an opaque anti-oracle answer that explains nothing on
+ * purpose, while finalize's 409 explains a phase race the operator could not have seen, so one
+ * passes the server's reason through and the other must not.
+ */
+describe('operator store cancelCohort and finalizeCohort (SVC-04, D-16, audit entry 4)', () => {
+  beforeEach(resetStore);
+
+  /** Answer every request with one status and body, as the gated route would. */
+  function stubStatus(status: number, body = 'no'): void {
+    vi.stubGlobal('fetch', () => Promise.resolve(new Response(body, { status })));
+  }
+
+  it('routes a mid-session 401 on CANCEL through the one shared session-expiry path', async () => {
+    useOperator.getState().openCohort('cohort-1');
+    useOperator.setState({ cancelling: 'cohort-1' });
+    stubStatus(401);
+    await useOperator.getState().cancelCohort(BASE, 'cohort-1');
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-out');
+    expect(s.error).toBe(SESSION_EXPIRED);
+    // The drill-down closes with the session: a stale detail view of a cohort this operator can
+    // no longer see or act on is worse than no view at all.
+    expect(s.view).toEqual({ kind: 'list' });
+    // No control is left claiming to be mid-cancel when the next sign-in renders.
+    expect(s.cancelling).toBeUndefined();
+  });
+
+  it('routes a mid-session 401 on FINALIZE through the same path, clearing its own flag', async () => {
+    useOperator.getState().openCohort('cohort-1');
+    useOperator.setState({ finalizing: 'cohort-1' });
+    stubStatus(401);
+    await useOperator.getState().finalizeCohort(BASE, 'cohort-1');
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-out');
+    expect(s.error).toBe(SESSION_EXPIRED);
+    expect(s.view).toEqual({ kind: 'list' });
+    expect(s.finalizing).toBeUndefined();
+  });
+
+  it('narrates the opaque cancel 404 as nothing more than a failed action', async () => {
+    // The route answers one indistinguishable 404 for unknown, never-advertised and
+    // already-settled, precisely so it is not an existence oracle. The console must not dress
+    // that up into a claim: the session is untouched, nothing about the cohort changed, and no
+    // optimistic chip is painted, because the Canceled fate only ever arrives from the served
+    // projection.
+    useOperator.getState().openCohort('cohort-1');
+    stubStatus(404, 'unknown cohort');
+    await useOperator.getState().cancelCohort(BASE, 'cohort-1');
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-in');
+    expect(s.error).toBeUndefined();
+    expect(s.actionError).toBe(ACTION_FAILED);
+    expect(s.cancelling).toBeUndefined();
+    // The drill-down stays exactly where it was, and no cohort fact was invented.
+    expect(s.view).toEqual({ kind: 'detail', cohortId: 'cohort-1' });
+    expect(s.cohorts).toEqual([]);
+    expect(s.detail).toBeUndefined();
+  });
+
+  it('preserves the server\'s own reason on a refused (409) finalize', async () => {
+    // The deliberate asymmetry with cancel above. A refused finalize is usually a RACE, the
+    // polled phase having gone stale between the render and the click, so the operator is told
+    // which of the honest reasons applies rather than a bare "that didn't work".
+    useOperator.getState().openCohort('cohort-1');
+    vi.stubGlobal('fetch', () =>
+      Promise.resolve(
+        new Response(JSON.stringify({ error: 'cohort is not in a signing phase' }), {
+          status: 409,
+        }),
+      ),
+    );
+    await useOperator.getState().finalizeCohort(BASE, 'cohort-1');
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-in');
+    expect(s.actionError).toBe(actionFailedWith('cohort is not in a signing phase'));
+    expect(s.actionError).toContain('cohort is not in a signing phase');
+    // Still a refusal, so nothing about the cohort changed and the busy flag is released.
+    expect(s.actionError).toContain('Nothing about this cohort changed.');
+    expect(s.finalizing).toBeUndefined();
   });
 });
