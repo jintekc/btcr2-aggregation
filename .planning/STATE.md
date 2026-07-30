@@ -4,16 +4,16 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
-status: verifying
-stopped_at: Gap plans 05-15..05-20 planned and reviewed
-last_updated: "2026-07-29T18:16:36.335Z"
-last_activity: 2026-07-28
+status: executing
+stopped_at: "Completed 05-15-PLAN.md (audit defect 1: sighash pin)"
+last_updated: "2026-07-30T14:16:51.738Z"
+last_activity: 2026-07-30
 last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 5
-  completed_phases: 5
-  total_plans: 44
-  completed_plans: 44
+  completed_phases: 4
+  total_plans: 50
+  completed_plans: 45
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 14 of 14
-Status: Built and gated green; 6 gap plans (05-15..05-20) PLANNED for the 8 audit defects, not yet executed; human UAT (05-UAT.md) still pending
-Last activity: 2026-07-28 — Phase 05 execution started
+Plan: 15 of 20 (gap-closure round 05-15..05-20)
+Status: Ready to execute
+Last activity: 2026-07-30 — Phase 05 execution started
 
-Progress: [██████████] 100%
+Progress: [█████████░] 90%
 
 ## Performance Metrics
 
@@ -105,6 +105,7 @@ Progress: [██████████] 100%
 | Phase 05 P12 | 40 min | 3 tasks | 12 files |
 | Phase 05 P13 | 35 min | 3 tasks | 12 files |
 | Phase 05 P14 | 25 min | 2 tasks | 6 files |
+| Phase 05 P15 | 8min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -171,6 +172,8 @@ Recent decisions affecting current work (Phase 2):
 - [Phase 05]: [Phase 05] 05-13: the join gate lives inside the store's join(), not only in the surface that renders the checkbox, so a future second entry point or a component that forgets is refused BY CONSTRUCTION rather than seating someone with no acceptance on record; the recorded reference is COHORT-KEYED, which is why it can live outside INITIAL_OUTCOME safely (an acceptance for cohort A fails the id comparison for cohort B, so correctness is a property of the comparison rather than of remembering to clear a slice on every teardown path). The checkbox is LOCAL and the acceptance is SERVED: keeping them apart is what makes checked-but-not-yet-recorded a state the join button can show. Operator terms render as a plain React text child inside max-h-64 overflow-auto with whitespace-pre-wrap break-words, and the spec walks the component SOURCE for four dangerous HTML props plus any anchor or href, because the property being defended is that they do not EXIST in the file, which no rendered snapshot can prove. The app-level enforcement limit is stated on the step, in the route comment, and asserted in a test so it cannot be softened. No new package: the record reuses an existing canonicalizer, an already-bundled sha256, and the participant's existing key.
 - [Phase 05]: [Phase 05] 05-14 (phase capstone): ADR 0017 records the FIVE decisions a later phase would undo BY ACCIDENT, each led by the verified library fact that forced it - declare intent before stopCohort (which emits nothing and rejects through the SAME channel as a whole-runner shutdown, so classifying a terminal cause from error-message text is now a written PROHIBITION), repair the single advert slot after every settle (one slot, replay-only-current, cleared on dispose), env-seeds with runtime-overrides and NO persistence (recorded as a decision with its reason so a future settings file has to argue against a stated rationale, backed by the source pin in runtime-settings.spec.ts), the one-way broadcast switch (ADR 0010 layering: runtime power points only toward safety), and the shorten-only per-cohort discovery window (no timing value in aggregation@0.4.0 is per-cohort). ADR 0017 AMENDS ADR 0016 and states Supersedes nothing: the operator actions log rides the existing gated poll as an additive sibling key and NO new event-stream channel exists, which is the property a later phase most plausibly breaks by reaching for SSE again.
 - [Phase 05]: [Phase 05] 05-14: docs/UPSTREAM-LIMITS.md lifts the six Phase-4 live-UAT limits out of a phase artifact into one referenceable document and ADDS the seventh (the missing per-seat release API this phase re-parked), each with observed behavior, the pinned version, the effect on a running service, and the app-side workaround; it states at the TOP that filing is still QUEUED and not done by this phase, because a consolidated list otherwise reads like a filed batch. DEPLOY documents every runtime control in the order an operator meets them plus a dedicated 'What survives a restart' section, and the participant-facing features (chain-endpoint override with the CORS constraint named as the thing that will actually generate support questions and reported distinctly from unreachable, the wallet PSBT path, participation terms with the app-level enforcement boundary in its own paragraph). NO specific external wallet is named as compatible anywhere in docs/ (RESEARCH A1/A2 are search-derived, not tested here), and the PART-06 external-wallet leg is marked NON-BLOCKING in the checklist for the same reason. Six new env vars documented AND mirrored into docker-compose.yml with the same defaults; SERVICE_NAME's now-false 'no edit surface' row was corrected. New pnpm e2e:gate runs all thirteen hermetic e2e legs as one command (named e2e:gate, not e2e:hermetic, which would have claimed legs it omits). Full gate green with nothing weakened: 969 tests, lint, web build, thirteen legs individually and through the script. The owner's checklist pass is the remaining gate and was NOT run.
+- [Phase ?]: 05-15: pinned the ACCEPTED taproot sighash set (64-byte SIGHASH_DEFAULT, or 65 bytes trailing 0x01) rather than blacklisting SIGHASH_NONE, because five non-default flavours passed and each breaks a different guarantee
+- [Phase ?]: 05-15: the accepted-set rule lives in one exported isAcceptedTapKeySig with exactly one call site, exported because the library refuses other lengths first so the default-refuse branch is only pinnable at the predicate
 
 ### Pending Todos
 
@@ -210,7 +213,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-29T18:15:44.230Z
-Stopped at: Completed 05-14-PLAN.md
+Last session: 2026-07-30T14:16:51.699Z
+Stopped at: Completed 05-15-PLAN.md (audit defect 1: sighash pin)
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
