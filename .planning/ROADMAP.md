@@ -196,7 +196,7 @@ Plans:
 
 **Slip order** (CONTEXT D-22, three tiers): CORE never slips - SVC-04 lifecycle control (plans 01 through 07 and 10). SECOND - the four absorbed parked items (plans 08 and 09). SLIP-FIRST - the three folded scoping one-pagers (plans 11, 12, and 13), which re-park cleanly to Phase 6 or the next milestone if the phase runs long.
 
-**Plans**: 20/20 plans executed
+**Plans**: 20/27 plans executed (20 shipped, 7 planned in the second gap round)
 Plans:
 **Wave 1**
 
@@ -274,6 +274,36 @@ Plans:
 
 - [x] 05-20-PLAN.md - Reserve the Anchored chip for confirmed anchors (SVC-04, Gap wave 4)
 
+**Second gap round** (planned 2026-07-30 from the 24 confirmed defects in `05-AUDIT-2.md`; run with `/gsd-execute-phase 5 --gaps-only`). Waves restart at 1 again and are SINGLETONS: every plan transiently mutates shipped source to prove its new assertions are load-bearing, so no two may run concurrently. Fixes both of the audit's structural causes first.
+
+**Gap round 2, wave 1**
+
+- [ ] 05-21-PLAN.md - TRACER: typecheck `packages/web` in `pnpm test` + render web components via `react-dom/server`, proven on the funded-cancel gate, the post-broadcast suppression, and the terms empty state (SVC-04/SVC-05, defects #15/#21/#8/#7, wave 1)
+
+**Gap round 2, wave 2** *(blocked on 05-21: the render harness)*
+
+- [ ] 05-22-PLAN.md - Operator console render pins: the mode chip, the test-peer refusal, the dismissal body, the kill-switch mode guard (SVC-04, defects #25/#22/#10/#20/#27, wave 2)
+
+**Gap round 2, wave 3**
+
+- [ ] 05-23-PLAN.md - Chip labels, paused-row advertise guards, shape-error copy, draft edit seeding (SVC-04, defects #17/#23/#1-web/#30/#31, wave 3)
+
+**Gap round 2, wave 4**
+
+- [ ] 05-24-PLAN.md - Participant fate read, chain-endpoint network parameter, operator 401 paths (SVC-04/PART-05, defects #13/#14/#18/#16, wave 4)
+
+**Gap round 2, wave 5**
+
+- [ ] 05-25-PLAN.md - Draft window round trip, refusal bodies, expired-dismissal fate (SVC-04, defects #29/#32/#19, wave 5)
+
+**Gap round 2, wave 6**
+
+- [ ] 05-26-PLAN.md - Boot-seeded ceiling, no-op action guards, live test-peer disclosure, paused reason, terms-hash known answer (SVC-04/SVC-05, defects #5/#2/#11/#1-server/#6, wave 6)
+
+**Gap round 2, wave 7** *(blocked on the whole round: reads the UAT ledger)*
+
+- [ ] 05-27-PLAN.md - Browser witness, honest-success pin, Secure-cookie row, and the single `05-UAT.md` reconciliation (SVC-04/SVC-05/PART-05/PART-06, defects #27-e2e/#3/#28, wave 7)
+
 **UI hint**: yes
 
 ### Phase 6: Two-Stranger End-to-End + Real-Aggregator Framing
@@ -301,5 +331,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 2. Participant Discovery + Browse-and-Pick Join | 9/9 | Complete    | 2026-07-16 |
 | 3. Participant Submit, Co-Sign, Track, and Resolve | 9/9 | Complete    | 2026-07-22 |
 | 4. Operator Cohort Monitoring | 8/8 | Complete    | 2026-07-27 |
-| 5. Operator Cohort Lifecycle Control | 20/20 | In Progress|  |
+| 5. Operator Cohort Lifecycle Control | 20/27 | In Progress|  |
 | 6. Two-Stranger End-to-End + Real-Aggregator Framing | 0/TBD | Not started | - |
