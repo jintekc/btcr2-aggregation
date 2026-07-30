@@ -39,6 +39,34 @@ import { BROADCAST_LABEL, WalletSignPanel } from './WalletSignPanel';
  * All copy is mode-honest and em-dash-free per the UI-SPEC Copywriting Contract.
  */
 
+/**
+ * The honest-success sentence of the resolve round-trip (D-28/D-29), exported so it can be pinned.
+ *
+ * ## Why this is a builder rather than an inline JSX arm
+ *
+ * This sentence is the HONEST-SUCCESS half of a pair whose dishonest half is already guarded:
+ * `e2e/browser-participant-cohort.ts` FAILS if this copy appears on a structurally hermetic run,
+ * where a reflected round trip is impossible. That guard is one-directional. Renaming this
+ * sentence, or deleting the arm that renders it, makes that hermetic leg MORE green rather than
+ * less, so the only automated opinion about it rewards its disappearance
+ * (`05-AUDIT-2.md` entry 19, defect #28).
+ *
+ * A positive pin is what stops that. The pair is the point: the hermetic leg fails if the success
+ * copy appears where it cannot be true, and `packages/web/tests/completion-summary.spec.ts` fails
+ * if the success copy stops existing at all.
+ *
+ * The extraction is STRUCTURAL and changed no words: the rendered sentence, its interpolated
+ * version clause and that clause's leading space are byte-identical to the JSX arm this replaced.
+ * Real closure still needs a live regtest browser leg, because every browser harness in this repo
+ * is hermetic by construction and so cannot reach this arm at all; that leg is FILED, not built
+ * (`.planning/todos/pending/2026-07-30-live-regtest-browser-leg-for-the-reflected-outcome.md`).
+ */
+export function reflectedRoundTripSentence(version?: string): string {
+  return `Your update is reflected. The resolved DID document now lists this cohort's beacon service${
+    version ? ` (version ${version})` : ''
+  }.`;
+}
+
 export function CompletionSummary({ baseUrl, onBrowse }: { baseUrl: string; onBrowse: () => void }) {
   const result = useParticipant((s) => s.result);
   const anchor = useParticipant((s) => s.anchor);
@@ -166,8 +194,7 @@ export function CompletionSummary({ baseUrl, onBrowse }: { baseUrl: string; onBr
           </p>
         ) : roundTrip === 'reflected' ? (
           <p className="rounded-md border border-good/40 bg-good/10 px-3 py-2 text-sm text-good">
-            Your update is reflected. The resolved DID document now lists this cohort&apos;s beacon service
-            {version ? ` (version ${version})` : ''}.
+            {reflectedRoundTripSentence(version)}
           </p>
         ) : roundTrip === 'hermetic-genesis' ? (
           <p className="text-sm text-muted">

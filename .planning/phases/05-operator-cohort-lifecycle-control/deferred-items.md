@@ -25,3 +25,29 @@ participants, whose runner then rejects a re-join) deserves its own plan and its
 **Suggested home:** a later Phase 5 plan that already touches the lifecycle wiring, or Phase 6.
 The repair machinery (`advert-republish.ts` plus `repairAdvertSlot`) is already in place; only
 the additional trigger and its slot-ownership bookkeeping would be new.
+
+## The reflected round-trip outcome needs a live regtest browser leg, and only has a unit pin
+
+**Found during:** 05-27 Task 2 (the positive pin on the honest-success sentence)
+**Where:** `packages/web/src/components/cohort/CompletionSummary.tsx`, the `roundTrip === 'reflected'`
+arm; `e2e/browser-participant-cohort.ts`, the negative assertion that fails if that copy appears.
+
+**Consequence:** the sentence that tells a participant their update actually landed has never been
+seen rendered by a real page against a real chain, and cannot be: every browser harness in this repo
+is hermetic by construction, so with no chain there is no beacon signal to discover and
+`roundTripOutcome` can never return `reflected`. If the arm degraded, a live participant whose
+update really did land would read the warn-toned "not found in the resolved document yet" box as a
+failure.
+
+**What 05-27 did instead:** pinned the sentence, its single call site and its rendering
+(`packages/web/tests/completion-summary.spec.ts`), which closes the rename and the deletion. The
+mutation that deletes the arm was observed reddening exactly those rows while the hermetic browser
+leg still PASSED, which is the audit's premise reproduced.
+
+**Why it was not fixed here:** the leg needs new infrastructure (a Chromium page on the Polar/regtest
+`e2e/live-uat.ts` harness plus a new opt-in `package.json` script entry), and a funded regtest node
+to run at all. That is a plan of its own, not a task inside a coverage round.
+
+**Suggested home:** filed as
+`.planning/todos/pending/2026-07-30-live-regtest-browser-leg-for-the-reflected-outcome.md`, with the
+exact shape written out. FILED, not built, not scheduled.
