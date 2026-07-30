@@ -33,6 +33,40 @@ export type PsbtVerdict =
   | { ok: false; reason: 'fee-out-of-band'; feeSats: bigint };
 
 /**
+ * Is this taproot key signature one that commits to every output of the transaction it signs?
+ *
+ * The rule is a POSITIVE accepted set, deliberately, and it has exactly one definition and one
+ * call site (inside {@link validateSignedPsbt}). Blacklisting the one flag an early write-up named
+ * would have left four other flavours passing, each dangerous in its own way: NONE (0x02) and
+ * NONE|ANYONECANPAY (0x82) commit to no output at all, so the change can be redirected by any
+ * mempool observer; SINGLE (0x03) and SINGLE|ANYONECANPAY (0x83) commit to output 0 but leave the
+ * `OP_RETURN` at vout 1 rewritable, which silently destroys or substitutes the DID registration
+ * signal; ALL|ANYONECANPAY (0x81) commits to the outputs but lets an attacker append inputs
+ * (`.planning/phases/05-operator-cohort-lifecycle-control/05-AUDIT.md` entry 3). An accepted set
+ * refuses all of them, and refuses whatever nobody thought to enumerate, by default.
+ *
+ * Two shapes are accepted, per BIP341. A 64-byte signature carries NO flag byte, which IS
+ * SIGHASH_DEFAULT and behaves as ALL; a 65-byte one carries an explicit flag in its trailing byte,
+ * and only SIGHASH_ALL (0x01) commits to every output. The flag lives in the PSBT field and in the
+ * witness, so it is outside the witness-free bytes the template comparison anchors on and cannot
+ * be caught there.
+ *
+ * Exported because that is the ONLY way its default-refuse branch can be reached by a test at all:
+ * `@scure/btc-signer`'s `SignatureSchnorr` coder rejects a tapKeySig that is not 64 or 65 bytes
+ * inside both `Transaction.fromPSBT` and `updateInput`, so a length outside that pair never
+ * reaches this app's gate and its public-API outcome is the `unparseable` verdict. This
+ * predicate's own spec is therefore the pin for that branch. A second, inline copy of this
+ * comparison beside the exported one is precisely the duplication that made an earlier audit
+ * finding's assertions non-load-bearing, so there is one rule, one definition, one call site.
+ */
+export function isAcceptedTapKeySig(sig: Uint8Array): boolean {
+  if (sig.length === 64) {
+    return true;
+  }
+  return sig.length === 65 && sig[64] === 0x01;
+}
+
+/**
  * Judge a returned PSBT against the exact template this page created.
  *
  * Pure, DOM-free and exported so the panel renders it and the predicate is unit-testable, in the
@@ -106,11 +140,10 @@ export function validateSignedPsbt(
     if (!tapKeySig) {
       return { ok: false, reason: 'unsigned' };
     }
-    // (3b) BIP341: a 64-byte signature is SIGHASH_DEFAULT; a 65-byte one carries an explicit flag
-    // in its trailing byte, and only SIGHASH_ALL (0x01) commits to every output. Anything else is
-    // refused HERE, before any finalize, so a signature that does not bind this transaction's
-    // outputs never becomes broadcastable hex.
-    if (tapKeySig.length === 65 && tapKeySig[64] !== 0x01) {
+    // (3b) The accepted sighash set, defined once in {@link isAcceptedTapKeySig} and applied here,
+    // before any finalize, so a signature that does not bind this transaction's outputs never
+    // becomes broadcastable hex.
+    if (!isAcceptedTapKeySig(tapKeySig)) {
       return { ok: false, reason: 'bad-sighash' };
     }
     // (4) The template match already pins the fee; this branch survives so a looser future
