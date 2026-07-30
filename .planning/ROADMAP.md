@@ -280,6 +280,8 @@ Plans:
 
 - [ ] 05-21-PLAN.md - TRACER: typecheck `packages/web` in `pnpm test` + render web components via `react-dom/server`, proven on the funded-cancel gate, the post-broadcast suppression, and the terms empty state (SVC-04/SVC-05, defects #15/#21/#8/#7, wave 1)
 
+Note on the `depends_on` chain: 05-22 through 05-26 each declare the previous plan, so waves stay one plan deep. The code dependency for 05-22, 05-23 and 05-24 is on 05-21 alone; the chained edges express the round's serialization rule, since three plans depending on 05-21 directly would compute to one wave, dispatch concurrently against a tree each transiently mutates, and collide on `05-UAT.md`.
+
 **Gap round 2, wave 2** *(blocked on 05-21: the render harness)*
 
 - [ ] 05-22-PLAN.md - Operator console render pins: the mode chip, the test-peer refusal, the dismissal body, the kill-switch mode guard (SVC-04, defects #25/#22/#10/#20/#27, wave 2)
