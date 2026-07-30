@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { hexToBytes } from '@noble/hashes/utils';
 import {
   BTCR2_CONTEXT,
   TERMS_ACCEPTANCE_FIELDS,
@@ -6,6 +7,7 @@ import {
   buildTermsAcceptance,
   termsAcceptanceBytes,
   termsAcceptanceHashHex,
+  termsAcceptanceSigningBytes,
   termsHashHex,
   type TermsAcceptance,
 } from '../src/tos.js';
@@ -141,5 +143,62 @@ describe('the canonical bytes and hash of an acceptance', () => {
         baseHash,
       );
     }
+  });
+});
+
+/**
+ * KNOWN-ANSWER vectors (05-AUDIT-2.md entry 7, defect #6).
+ *
+ * Every other assertion in this file, and every one in `packages/service/src/hono-adapter.ts`'s
+ * spec and `packages/web/tests/terms.spec.ts`, is shape-only (`/^[0-9a-f]{64}$/`) or
+ * self-consistent (this function compared against itself). That is the one shape of assertion that
+ * cannot fail when the function changes: swap `sha256` for any other 32-byte digest in
+ * `@noble/hashes` and all of them stay green, because both sides of every comparison move together.
+ *
+ * The consequence is not internal. This record is a FROZEN proof format (SVC-05, D-19): a third
+ * party handed a stored acceptance is expected to verify it with STANDARD SHA-256. A digest swap
+ * would leave this repo entirely self-consistent while making every stored acceptance unverifiable
+ * by anyone outside it, and the break would surface as an unexplainable mismatch long afterwards.
+ *
+ * So the expected values below are external constants, not derived from anything in this codebase.
+ * The empty string and `abc` are the published SHA-256 test vectors; the non-ASCII line was taken
+ * from GNU coreutils `sha256sum` over its UTF-8 bytes, an implementation with no relationship to
+ * this one. Pinning a non-ASCII body pins the ENCODING step as well as the digest: a swap to
+ * latin1 or UTF-16 would leave the ASCII vectors green.
+ */
+describe('termsHashHex answers the STANDARD SHA-256, verifiable outside this codebase (audit #6)', () => {
+  it('matches the published SHA-256 of the empty string', () => {
+    expect(termsHashHex('')).toBe('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+  });
+
+  it('matches the published SHA-256 of "abc"', () => {
+    expect(termsHashHex('abc')).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+  });
+
+  it('matches the external SHA-256 of a NON-ASCII body, so the UTF-8 step is pinned too', () => {
+    // `sha256sum` over the same 14 UTF-8 bytes. An encoding change alone reddens this row while
+    // leaving the two ASCII rows above untouched.
+    expect(termsHashHex('Sé excelente.')).toBe(
+      '0244e5b9ccf5c78602f521eb396812c316b0cee9e167bd966c15e5752a00bc55',
+    );
+  });
+});
+
+describe('termsAcceptanceSigningBytes IS the canonical record hash, not a second derivation', () => {
+  it('equals the raw bytes of termsAcceptanceHashHex, decoded from its hex', () => {
+    const record = buildTermsAcceptance(BASE);
+    // Two values that agree today are not the same value. The browser signs these bytes and the
+    // service verifies against them, while the SAME hash is the store key the verified artifact is
+    // written under; if the signing input ever stopped being that hash, a stored acceptance would
+    // be filed under a key its own signature does not cover.
+    expect(termsAcceptanceSigningBytes(record)).toEqual(hexToBytes(termsAcceptanceHashHex(record)));
+    expect(termsAcceptanceSigningBytes(record)).toHaveLength(32);
+  });
+
+  it('is domain-separated: the signing bytes are never the plain hash of the terms text', () => {
+    const record = buildTermsAcceptance(BASE);
+    // The record's own `@context` and `type` are inside the canonical bytes, so an acceptance
+    // signature can never be replayed as a signature over the terms document itself.
+    expect(termsAcceptanceSigningBytes(record)).not.toEqual(hexToBytes(BASE.termsHash));
   });
 });

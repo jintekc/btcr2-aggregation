@@ -1,11 +1,17 @@
 import { AggregationServiceRunner, HttpServerTransport, type AggregationResult } from '@did-btcr2/aggregation/service';
 import { resolveBtcr2SenderPk } from '@did-btcr2/method';
 import { buildCohortConfig, createIdentity, resolveNetwork, type Identity } from '@btcr2-aggregation/shared';
+import type { BitcoinConnection } from '@did-btcr2/bitcoin';
 import type { Participant } from '@btcr2-aggregation/participant';
 import type { Transaction } from '@scure/btc-signer';
 import { describe, expect, it } from 'vitest';
 import { createService } from '../src/index.js';
-import { createCohortMonitor } from '../src/monitor.js';
+import {
+  addedTestPeersText,
+  createCohortMonitor,
+  operatorAddedTestPeersText,
+  TEST_PEER_REGISTRATION_SKIPPED_TEXT,
+} from '../src/monitor.js';
 import {
   createTestPeers,
   spawnTestPeers,
@@ -402,12 +408,170 @@ describe('createService tears its test peers down on both terminal paths', () =>
   });
 });
 
+/**
+ * The LIVE-MODE registration disclosure (05-AUDIT-2.md entry 18, defect #11), driven through the
+ * shipped spawn path.
+ *
+ * `createService`'s own `addTestPeers` closure records three things on a successful spawn: a
+ * per-cohort activity line, a service-level operator action, and, ONLY when the service booted
+ * live, the honest note that these peers' own DID registrations are skipped (D-17, ADR 0007).
+ * Nothing in the repo reached that third entry. The route matrix in `lifecycle-routes.spec.ts`
+ * re-types its own `onSpawned` callback with the two unconditional entries and omits the live
+ * branch entirely, which is exactly how a branch nobody drives ships green in both directions:
+ * delete the `mode === 'live'` guard and every hermetic run gains a caveat that is false, or delete
+ * the call and a live operator believes their test peers' DIDs were registered when they were not.
+ *
+ * So this pair fakes NOTHING. Two real services, one live with a broadcaster and one hermetic, each
+ * started on a real ephemeral port, each driven through the real gated route with a real operator
+ * session, spawning real participants that really join. The only stand-in anywhere is the counting
+ * esplora connection the live boot needs, and no case here reaches a beacon tx.
+ *
+ * The two unconditional entries are asserted in BOTH modes on purpose. Without them the hermetic
+ * row's `not.toContain` would pass just as happily against a spawn that logged nothing at all.
+ */
+describe('the live-mode test-peer disclosure, driven through the shipped createService spawn (audit #11)', () => {
+  const PASSWORD = 'correct-horse-battery-staple';
+
+  /** A counting esplora stub: no network, and the live boot needs a connection to exist at all. */
+  function stubBitcoin(): BitcoinConnection {
+    return {
+      rest: {
+        address: {
+          getUtxos: async (): Promise<unknown[]> => [],
+        },
+        transaction: {
+          send: async (): Promise<string> => 'a'.repeat(64),
+          isConfirmed: async (): Promise<boolean> => false,
+        },
+      },
+    } as unknown as BitcoinConnection;
+  }
+
+  /**
+   * Boot a real service on an ephemeral port. `live` adds the broadcaster, which is what makes
+   * `index.ts` resolve its service mode to `'live'`; everything else is byte-identical between the
+   * two modes, so the pair differs in exactly the one fact under test.
+   */
+  async function bootService(live: boolean) {
+    const service = createService({
+      identity: createIdentity(resolveNetwork(ACTIVE_NETWORK)),
+      config: buildCohortConfig(2, 'CASBeacon', ACTIVE_NETWORK),
+      operatorPassword: PASSWORD,
+      operatorCookieSecure: false,
+      cohortTtlMs: 60_000,
+      ...(live
+        ? {
+            live: true,
+            broadcast: true,
+            bitcoin: stubBitcoin(),
+            // Return from broadcastAndConfirm without polling, and poll funding far slower than
+            // any case here runs. Neither path is reached: no cohort below fills its seats.
+            confirmTimeoutMs: 0,
+            fundingPollIntervalMs: 60_000,
+          }
+        : {}),
+    });
+    const { baseUrl } = await service.start(0);
+    return { service, baseUrl };
+  }
+
+  /** Sign in over real HTTP and return the bare `operator_session=<id>` cookie. */
+  async function login(baseUrl: string): Promise<string> {
+    const res = await fetch(`${baseUrl}/v1/operator/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: PASSWORD }),
+    });
+    return res.headers.get('set-cookie')?.split(';')[0] ?? '';
+  }
+
+  /** Create and advertise a cohort through the real gated routes, returning its cohort id. */
+  async function advertiseCohort(baseUrl: string, cookie: string): Promise<string> {
+    const created = await fetch(`${baseUrl}/v1/operator/cohorts`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ beaconType: 'CASBeacon', size: 2 }),
+    });
+    const draft = (await created.json()) as { draftId: string };
+    const advertised = await fetch(`${baseUrl}/v1/operator/cohorts/${draft.draftId}/advertise`, {
+      method: 'POST',
+      headers: { cookie },
+    });
+    return ((await advertised.json()) as { draftId: string }).draftId;
+  }
+
+  /**
+   * Spawn ONE test peer through the gated route. One rather than every remaining seat, so a 2-seat
+   * cohort stays open: a filled cohort would start signing, which is a different code path and, on
+   * the live boot, one that wants a funded beacon address.
+   */
+  async function spawnOnePeer(baseUrl: string, cookie: string, cohortId: string): Promise<number> {
+    const res = await fetch(`${baseUrl}/v1/operator/cohorts/${cohortId}/test-peers`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ count: 1 }),
+    });
+    expect(res.status).toBe(200);
+    return ((await res.json()) as { spawned: number }).spawned;
+  }
+
+  it('records the registration-skipped note on a LIVE service with a broadcaster', async () => {
+    const { service, baseUrl } = await bootService(true);
+    try {
+      // The mode really is live: the broadcaster only exists on the live + broadcast path.
+      expect(service.broadcaster).toBeDefined();
+      const cookie = await login(baseUrl);
+      const cohortId = await advertiseCohort(baseUrl, cookie);
+      const spawned = await spawnOnePeer(baseUrl, cookie, cohortId);
+      expect(spawned).toBe(1);
+
+      const activity = service.monitor.detail(cohortId).activity.map((e) => e.text);
+      // The honest live-only caveat. These peers co-sign for real, so silence here would let an
+      // operator believe their DIDs were registered when a KEY first update was never attempted.
+      expect(activity).toContain(TEST_PEER_REGISTRATION_SKIPPED_TEXT);
+      // ...and the two unconditional entries, so the row above is about the live BRANCH rather
+      // than about logging working at all.
+      expect(activity).toContain(operatorAddedTestPeersText(spawned));
+      expect(service.monitor.operatorActions().map((e) => e.text)).toContain(
+        addedTestPeersText(spawned, cohortId),
+      );
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it('records NO such note on the hermetic boot, so a false live-only caveat is caught too', async () => {
+    const { service, baseUrl } = await bootService(false);
+    try {
+      expect(service.broadcaster).toBeUndefined();
+      const cookie = await login(baseUrl);
+      const cohortId = await advertiseCohort(baseUrl, cookie);
+      const spawned = await spawnOnePeer(baseUrl, cookie, cohortId);
+      expect(spawned).toBe(1);
+
+      const activity = service.monitor.detail(cohortId).activity.map((e) => e.text);
+      // A hermetic cohort anchors nothing, so there is no registration to disclose skipping. A
+      // caveat here would be a claim about a live path this boot never takes.
+      expect(activity).not.toContain(TEST_PEER_REGISTRATION_SKIPPED_TEXT);
+      // The same two unconditional entries, which is what makes the absence above meaningful.
+      expect(activity).toContain(operatorAddedTestPeersText(spawned));
+      expect(service.monitor.operatorActions().map((e) => e.text)).toContain(
+        addedTestPeersText(spawned, cohortId),
+      );
+    } finally {
+      await service.stop();
+    }
+  });
+});
+
 describe('the zero-seat refusal reason is exact contract copy', () => {
   it('matches the UI-SPEC disabled reason byte for byte', () => {
     expect(NO_SEATS_REASON).toBe('This cohort has no seats left.');
   });
 
   it('carries no long dash', () => {
-    expect(NO_SEATS_REASON).not.toMatch(/—/);
+    // Written as the escape rather than the character itself (05-26), so this file stops being the
+    // one hit in the repo-wide `grep -rlP '\x{2014}'` scan that this very guard exists to satisfy.
+    expect(NO_SEATS_REASON).not.toMatch(/\u2014/u);
   });
 });

@@ -155,14 +155,20 @@ directly.
 | 2 | A timing field the operator CLEARS on an edit round-trips as EMPTY, meaning "use this service's default", rather than silently keeping the value that was there | `packages/service/tests/draft-edit.spec.ts`, "a per-cohort timing window can be CLEARED and SET on the edit path (audit #29)": both windows, each driven both ways, each read back from the update verb AND from the served gated list, with the service's own default still carried beside the cleared key | 05-25 |
 | 11 | A canceled cohort still reads as canceled to anyone querying its fate after the operator dismisses the row | `packages/service/tests/cohort-fate.spec.ts`, "still carries a CANCELED fate through a dismissal, so the condition really discriminates", beside the shipped 05-19 row "still answers the canceled fact after a 200 dismissal" | 05-25 |
 | 11 | An EXPIRED cohort does NOT start reading as canceled once its row is dismissed, so a lapse is never presented as a deliberate cancel | `packages/service/tests/cohort-fate.spec.ts`, "does NOT carry an EXPIRED fate, so a lapse never becomes a reported cancel (audit #19)", with "answers FALSE for an expired record that was NOT dismissed" isolating the dismissal and "answers a dismissed EXPIRED id byte-identically to one this service never issued" keeping the route non-oracle | 05-25 |
+| 1 | A boot-time clamp warning names BOTH numbers rather than failing silently | `packages/service/tests/runtime-settings.spec.ts`, "warns LOUDLY on the clamped boot, naming both numbers on the real console", captured off `console.warn` on a real `createService` boot. Test 1 already passed by eye, so this row retires nothing; it records that the clause is now a script rather than an observation somebody made once, so 05-27 can narrow test 1 honestly | 05-26 |
+| 2 | A discovery window longer than this service can honor is refused at SAVE with the real maximum named in minutes | `packages/service/tests/runtime-settings.spec.ts`, "refuses a settings save above the TTL, naming the real maximum the console renders" plus "accepts a save at EXACTLY the TTL", both on a real boot that supplies the ceiling from its own cohort TTL. The PER-DRAFT half of the same rule was already covered by `packages/service/tests/discovery-window.spec.ts`, "refuses a window ABOVE the ceiling, naming the service maximum in minutes"; 05-26 adds the settings-default half and, crucially, proves a real boot supplies the ceiling at all | 05-26 |
+| 6 | A paused advertise carries the operator-facing refusal reason, and never raw library phrasing | `packages/service/tests/pause.spec.ts`, "matches the operator-facing sentence byte for byte", "is a lowercase clause that reads inside the console action-error sentence" and "carries no raw library phrasing" (the guard shown firing against an inline raw-library fixture). The two shipped rows that assert the 409 body carries this reason were already there; what was missing was any assertion about what the reason SAYS | 05-26 |
+| 7 | A save with one invalid field applies NOTHING, and every rendered field still shows what the service holds | Already covered on both sides before this plan and recorded here for the ledger: `packages/service/tests/runtime-settings.spec.ts`, "applies NOTHING when any field in the patch is invalid" (the service half), and `packages/web/tests/settings.spec.ts`, the block "a rejected save leaves the rendered snapshot exactly as the service holds it", specifically "renders the service message and changes NO field on a 400" (the rendered half). Checked before claiming, per 05-26's action | pre-existing, recorded 05-26 |
+| 9 | On a LIVE cohort the peers' own post-cohort registration is honestly skipped with a console note rather than silently omitted | `packages/service/tests/test-peers.spec.ts`, "records the registration-skipped note on a LIVE service with a broadcaster" paired with "records NO such note on the hermetic boot, so a false live-only caveat is caught too". Both drive the shipped `createService` spawn path over real HTTP with real participants; both also assert the two unconditional entries, so the hermetic absence is not passing because nothing was logged | 05-26 |
 
 No test above is fully covered yet, so all of them stay in `## Tests`. Test 8 still needs the
 long-body-at-a-narrow-viewport clause, which is a genuine visual judgment and stays with a human.
-Test 6 still needs the public paused notice and the narrow-width chip wrap. Test 9 still needs the
-live-cohort registration disclosure (05-26 closes it). Test 17 still needs a real
+Test 6 still needs the public paused notice and the narrow-width chip wrap. Test 9's live-cohort
+registration disclosure was closed by 05-26; what it still needs is the interpolated test-peer
+confirm copy (see the clause-by-clause note below). Test 17 still needs a real
 `LIVE=1 BROADCAST=1` boot, which no unit gate can stand
-up. Test 2 still needs the over-ceiling refusal naming this service's real maximum (05-26 closes it)
-and the `Cancel edit` closes-without-destroying clause, which is behind a click. Test 12 still
+up. Test 2's over-ceiling refusal naming this service's real maximum was closed by 05-26; what it
+still needs is the `Cancel edit` closes-without-destroying clause, which is behind a click. Test 12 still
 carries an owner JUDGMENT, "confirm the new wording reads as honest rather than as a regression",
 which no assertion can make for them; 05-27 narrows it rather than removing it.
 
@@ -193,6 +199,32 @@ emitted, deliberately without changing either. Whether "unknown draft" is the ri
 operator staring at a stale edit form, given that the id may well be a cohort they just advertised,
 is a copy decision. The uniformity itself is now protected: all three draft refusals are asserted
 identical to each other, so any reword has to keep them so.
+
+**Test 2 was checked clause by clause for full retirement in 05-26 and is NOT retired.** Four of its
+five clauses now have rows: the edit form pre-filling from the DRAFT's own captured values (05-23),
+the shared validation copy across both paths (05-23), the empty timing field round-tripping as empty
+rather than as a zero (05-23 on the form side, 05-25 on the clear-and-save side), and the over-long
+discovery window refused with the real maximum named in minutes (per-draft pre-existing, settings
+default and the boot seed added by 05-26). The fifth, "`Cancel edit` closes the form without
+destroying anything", is uncovered and is behind a click: nothing renders `DraftEditForm`, and no
+store test invokes the cancel-edit action, so both the form-state reset and the draft's survival are
+unexercised. It stays with a human until a render harness reaches that component.
+
+**Test 9 was checked clause by clause for full retirement in 05-26 and is NOT retired.** Its
+live-cohort clause is now closed above, and its zero-seat disabled reason was closed by 05-22. What
+remains uncovered is the COPY of the test-peer confirm family in
+`packages/web/src/stores/operator.ts`. 05-22 pinned the four STATIC constants
+(`ADD_TEST_PEERS_LABEL`, `ADD_TEST_PEERS_BODY`, `ADD_TEST_PEERS_CANCEL_LABEL`,
+`ADD_TEST_PEERS_BUSY`) and `NO_SEATS_LEFT_REASON`, with an em-dash guard over exactly those five.
+The four INTERPOLATED ones are pinned by nothing: `addTestPeersHelp` (which is where "throwaway keys
+created inside this process" actually lives, so test 9's help-line clause and half of its
+"co-sign for real with throwaway keys" clause both ride on an unpinned string),
+`addTestPeersHeading`, `addTestPeersConfirmLabel`, and `liveTestPeersLine` (the live disclosure the
+operator reads at the moment of deciding, which is the console-side twin of the service-side note
+05-26 just pinned). `packages/web/tests/service-controls.spec.ts` is not in 05-26's
+`files_modified`, so the pins were left to whoever owns that file rather than guessed at. Their
+natural shape is the same literal-plus-em-dash-guard treatment 05-22 gave the static five, evaluated
+at a representative seat count and network name.
 
 **Test 10 was checked clause by clause for full retirement in 05-24 and is NOT retired.** Two of its
 three clauses now have rows above. The third, "the next-step line reads correctly", is uncovered:
