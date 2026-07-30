@@ -1121,6 +1121,40 @@ export function createService(opts: CreateServiceOptions): Service {
     const mainnet = netConf.isMainnet;
     const changeAddressRedirected = opts.changeAddress !== undefined;
     runner.on('keygen-complete', ({ cohortId, beaconAddress }) => {
+      // THE THIRD CALL SITE of the one kill-switch rule (SVC-04, D-14; 05-AUDIT entry 2). A cohort
+      // standing down on the fixture path will never have its beacon UTXO read or spent, so it
+      // must not be watched for funding either: the display watch's very first poll records a
+      // `waiting` view, and that view is what draws the copyable `bitcoin:` URI, the "send at
+      // least N sats in one single payment" instruction, and (at the default throwaway recovery
+      // key) the line stating funds sent there are unrecoverable. It is also the sole input to the
+      // anonymous `GET /v1/funding/:cohortId` read, which latches the participant-facing "this
+      // cohort anchors on-chain" copy. Recording nothing closes both at the source.
+      //
+      // Decided ONCE here rather than per poll because the verdict is stable per cohort: both
+      // stamps (this cohort's advertise time and the switch's engage time) are fixed once set, so
+      // no later moment can change the answer. It consults the SHARED per-cohort predicate defined
+      // above rather than re-reading the holder or re-implementing the advertise-stamp comparison,
+      // so all three legs of one cohort's money path - the tx-data handoff,
+      // the broadcast handoff, and this watch - agree by construction and a fourth rule cannot
+      // drift in. It inherits that predicate's FAIL-CLOSED direction: an id with no advertise
+      // stamp starts no watch, which is the money-safe default and matches the tx-data leg.
+      //
+      // What is deliberately NOT done here: the cached `serviceMode` is untouched (the service
+      // really did boot live and its resolve/anchor esplora reads really are still live), and no
+      // `noteEsploraObservation` is synthesized. There is no chain read on this path, so any
+      // reading would be fabricated. The cost of that honesty is disclosed rather than papered
+      // over (T-05-16-05): the funding watch is the only feeder of the health strip's
+      // esplora-reachability bit, so on a service whose remaining cohorts are all post-switch that
+      // bit stops being refreshed and keeps reporting its last value. See the amended kill-switch
+      // consequences in `docs/adr/0017-runtime-lifecycle-control.md`.
+      if (!cohortUsesLivePath(cohortId)) {
+        console.log(
+          `[service] cohort ${cohortId}: broadcast is disabled for this session and this cohort was ` +
+            'advertised after the switch engaged; not watching its beacon address for funding ' +
+            '(nothing will be spent from it, so nothing should be sent to it)',
+        );
+        return;
+      }
       // One watch per cohort (keygen-complete fires once, but guard against a re-emit).
       if (fundingWatches.has(cohortId)) {
         return;
