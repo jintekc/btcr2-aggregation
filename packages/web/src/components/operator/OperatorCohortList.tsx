@@ -98,8 +98,17 @@ function ServiceMetricsRow({ metrics }: { metrics?: ServiceMetricsDTO }) {
  * network, beacon type, and k-of-n numbers are deliberately omitted rather than invented - and
  * keeps `Open` wired so the drill-down and its JSON export stay reachable for as long as the
  * monitor retains the record.
+ *
+ * EXPORTED for the same reason `LifecycleActions.tsx` exports `CancelConfirm` and
+ * `CohortDetail.tsx` exports `TestPeerAction` (05-21, 05-22): this row's two advertise guards are
+ * only reachable in the running app through a fully seeded console, so rendering the row directly
+ * is the cheapest honest witness that the SERVED paused bit actually reaches the control rather
+ * than stopping at the selector. `05-AUDIT-2.md` entry 20 records that
+ * `disabled={isAdvertising || advertisingPaused}` had zero coverage on both call sites, so deleting
+ * the paused half shipped green and a drain-mode service offered an advertise button that could
+ * only be refused. Nothing else about the row changed; the export is the whole diff.
  */
-function CohortRow({
+export function CohortRow({
   baseUrl,
   entry,
   group,
