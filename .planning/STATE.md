@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Completed 05-24-PLAN.md
-last_updated: "2026-07-30T22:25:37.511Z"
+stopped_at: Completed 05-25-PLAN.md
+last_updated: "2026-07-30T22:40:46.623Z"
 last_activity: 2026-07-30
 last_activity_desc: "gap round 2 wave 4 complete (05-24): a fault can no longer accuse an operator of cancelling, the page origin is undroppable by compile error, a wrong-chain endpoint is refused, and a mid-session logout drops the console to login"
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 57
-  completed_plans: 54
+  completed_plans: 55
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 25 of 27 (gap-closure round 2, 05-21..05-27: 4 of 7 done)
+Plan: 26 of 27 (gap-closure round 2, 05-21..05-27: 4 of 7 done)
 Status: Ready to execute
 Last activity: 2026-07-30 - gap round 2 wave 4 complete (05-24): a fault can no longer accuse an operator of cancelling, the page origin is undroppable by compile error, a wrong-chain endpoint is refused, and a mid-session logout drops the console to login
 
-Progress: [██████████] 95%
+Progress: [██████████] 96%
 
 ## Performance Metrics
 
@@ -115,6 +115,7 @@ Progress: [██████████] 95%
 | Phase 05 P22 | 30m | 3 tasks | 4 files |
 | Phase 05 P23 | ~50m | 3 tasks | 7 files |
 | Phase 05 P24 | ~45m | 3 tasks | 6 files |
+| Phase 05 P25 | ~40m | 3 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -207,6 +208,9 @@ Recent decisions affecting current work (Phase 2):
 - [Phase ?]: 05-24: handlePostSeatSnapshot's base url became REQUIRED, so a dropped page origin is a compile error rather than a cancel attribution that silently degrades to the honest fallback forever; only gate-visible because 05-21 put packages/web inside tsc -b
 - [Phase ?]: 05-24: the audit's cross-network endpoint row was impossible as specified (the A3 cannot-verify refusal returns unreachable, never mismatch); the shared-genesis pair was used instead, where only a check given the store's own chain can separate the two candidates
 - [Phase ?]: 05-24: a mutation that stays green gets a second, load-bearing mutation rather than a vacuous row; the truthy-non-boolean fate refusal is invisible to the audit's guard mutation because fetchCohortFate collapses it before the guard sees it
+- [Phase ?]: 05-25: the expired terminal record is reached with runner.stopCohort rather than the whole-runner stop, so the dismissal's still-in-flight phase guard is consulted against a live session
+- [Phase ?]: 05-25: the three draft refusals are asserted identical to EACH OTHER, not just each to its own literal, so a refusal that grew a state hint is a divergence rather than a row somebody updates
+- [Phase ?]: 05-25: the web client's unknown-draft 404 wording is a copy question, flagged for 05-27 rather than resolved; the docstring was corrected, the code was not
 
 ### Pending Todos
 
@@ -246,7 +250,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-30T22:25:27.684Z
-Stopped at: Completed 05-24-PLAN.md
+Last session: 2026-07-30T22:40:46.609Z
+Stopped at: Completed 05-25-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
