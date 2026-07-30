@@ -92,7 +92,7 @@ durable and the rest not, which changes the product's stated state model without
 decided to. Durability is a requirement (DUR-01, v2), and it belongs to whichever phase takes it
 on deliberately, together with cohort state.
 
-**Consequence.** `packages/service/src/runtime-settings.spec.ts` PINS the absence of a persistence
+**Consequence.** `packages/service/tests/runtime-settings.spec.ts` PINS the absence of a persistence
 path at the source, because the console's honest "a restart returns these to the environment" copy
 is only true while the module stays free of the filesystem and the artifact store. Adding a quiet
 write path is therefore a test failure, not a silent behavior change. The holder is per-service and
@@ -174,11 +174,21 @@ longer value is a promise the service cannot keep.
 **Consequence.** Enforcement is an app-side timer that declares `window-expired` into the intent
 registry of decision 1 and only then calls `stopCohort`. The timer is unref'd, bounded,
 stop-signal-aborted, and cleared on all three settle paths, so it can never fire against a reused
-id. A requested window above the ceiling is refused rather than silently truncated or silently
-accepted, because both of those would leave the operator believing a window that is not in force.
-Only a SUPPLIED window is measured against the ceiling, and the same ceiling applies to the
-service-level default, because a default above the runner lifetime would hand an unenforceable
-window to every draft that inherits it.
+id. A requested window above the ceiling is never silently accepted, because that would leave the
+operator believing a window that is not in force.
+
+The ceiling applies on BOTH paths that can set a window, by two rules that differ on purpose. A
+per-draft window and a runtime settings SAVE are REFUSED with the real maximum named: each is an
+operator's explicit act on a value they chose and typed. A boot SEED of the service-level default
+(`DEFAULT_DISCOVERY_WINDOW_MS`) is CLAMPED down to the ceiling with a warning naming both numbers,
+because boot configuration is often inherited rather than chosen, and every other out-of-range seed
+in `runtime-settings.ts` warns and falls back rather than aborting the process; refusing to boot
+would turn one typo in a stranger's env file into a crash loop. Clamping also keeps the gated
+settings read honest, since the value served as the environment default is then the value in force,
+and it closes a second-order lockout by construction: `applySettings` re-reads the stored value for
+every absent key, so an over-ceiling stored default used to refuse every save, including saves of
+fields the operator did touch (see `05-AUDIT.md` entry 7). A default above the runner lifetime would
+otherwise hand an unenforceable window to every draft that inherits it.
 
 The funding window is genuinely different and is unaffected: it is app-owned, so a real per-cohort
 value works there, and it still obeys the ADR 0016-era clamp of `min(window, remaining lifetime
@@ -234,7 +244,9 @@ retirement established.
   durable while cohorts stay in memory, changing the product's stated model by accident.
 - **A reversible in-session broadcast switch.** Rejected on ADR 0010 grounds: see decision 4.
 - **Silently truncate an over-long discovery window to the ceiling.** Rejected: the operator would
-  believe a window that is not in force. Refuse at save and name the real maximum. See decision 5.
+  believe a window that is not in force. Refuse at save and name the real maximum. A boot seed is
+  clamped instead of refused, but LOUDLY, naming both numbers, which is what makes it not this
+  alternative. See decision 5.
 - **Protocol-level enforcement of participation terms.** Not available. The aggregation protocol
   carries no message type that could hold an acceptance, and a client speaking the protocol
   directly opts in with no app involvement. The enforcement boundary is app-level and is stated

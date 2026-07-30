@@ -9,10 +9,16 @@ are recorded in [ADR 0014](adr/0014-deployment-topology.md); this is the how-to.
 One process, one port. The coordinator is a Node service (Hono) that serves BOTH
 the aggregation protocol/API and the built web SPA from the same origin (the
 same-origin topology, [ADR 0003](adr/0003-same-origin-topology.md)), so there is
-no CORS and no second web server. It advertises a cohort, accepts browser
-participants, coordinates the n-of-n MuSig2 co-signing (it holds no signing key,
+no CORS and no second web server. It advertises the cohorts YOU create from the
+operator console, accepts browser participants into them, coordinates the n-of-n
+MuSig2 co-signing (it holds no signing key,
 [ADR 0006](adr/0006-keep-p2p-defer-trusted-coordinator-app.md)), and can resolve
 DIDs and proxy the first-update registration transaction.
+
+**It advertises nothing on its own.** A cohort comes into existence only when the
+authenticated operator advertises a draft, so a freshly booted service serves an
+empty public directory until you create one. That is the product: the operator
+decides what this service offers, rather than a boot loop deciding for you.
 
 One image serves any network. The browser reads the operator's chain at runtime
 from `GET /v1/config`, so you switch networks with the `NETWORK` variable and never
@@ -20,16 +26,39 @@ rebuild.
 
 ## Quick start (mutinynet, offline)
 
+Set an operator password first. The compose file leaves `OPERATOR_PASSWORD` empty
+by default, and empty means fail-closed: the public participant surface still
+serves, but the operator console and every mutating cohort route stay unmounted,
+with a loud boot warning. Since a cohort exists only when the operator advertises
+one, a run with no password can never produce a cohort at all.
+
 ```bash
+echo "OPERATOR_PASSWORD=$(openssl rand -base64 24)" >> .env
 docker compose up --build
 ```
 
-Open http://localhost:8080. This runs on **mutinynet** with an **offline** chain
-connection: DIDs and beacon addresses are minted, cohorts co-sign the fixture beacon
-transaction, but nothing is broadcast and resolution returns the genesis document.
-It is the zero-risk way to see the whole flow. `MIN_PARTICIPANTS=2` with `FILLERS=1`
-means a single browser attendee completes a real 2-of-2 cohort against one
-operator-run honest co-signer.
+(Compose reads that `.env` from the directory you run it in. Keep it out of git and
+out of the image; never bake a real password into a build.)
+
+This runs on **mutinynet** with an **offline** chain connection: DIDs and beacon
+addresses are minted, cohorts co-sign the fixture beacon transaction, but nothing
+is broadcast and resolution returns the genesis document. It is the zero-risk way
+to see the whole flow.
+
+Then, in order:
+
+1. Open http://localhost:8080/operator and log in with the password you just set.
+   This is the console described under "Running the service: the operator's runtime
+   controls" below.
+2. Create a cohort draft (it starts from the `DEFAULT_*` seeds in the environment
+   reference) and advertise it. Only now does the public directory have anything in
+   it.
+3. Open http://localhost:8080 in another tab as a participant, browse the directory,
+   and join the cohort you just advertised.
+4. To rehearse the whole loop by yourself, without a second human, use the
+   `Fill remaining seats with test peers` control in the cohort's drill-down. It
+   fills the remaining seats with real in-process participants; see "Test peers
+   (rehearse your service by yourself)" below for what they do and do not do.
 
 Stop with Ctrl+C (the container handles SIGTERM with a 3s shutdown backstop).
 
@@ -211,8 +240,16 @@ made this session, with the environment value named so you can see what a restar
 
 The discovery window can only be SHORTENED. The underlying library has no per-cohort timing value
 at all, so this service enforces the window itself and can only cut a cohort short of the
-runner-level `COHORT_TTL_MS`. A larger value is refused at save with the real maximum named, rather
-than accepted and quietly not honored.
+runner-level `COHORT_TTL_MS`. A larger value is never accepted and quietly not honored, and the two
+paths that can set it answer differently on purpose:
+
+- **A runtime SAVE above the ceiling is REFUSED**, naming the real maximum. You chose and typed
+  that number, so the honest answer is to tell you it cannot be enforced.
+- **A boot SEED above the ceiling is CLAMPED down** to the maximum, with a warning at boot naming
+  both your value and the enforced one. Boot configuration is often inherited rather than chosen,
+  and every other out-of-range boot value in this service warns and falls back rather than refusing
+  to start; a typo in an env file should not become a crash loop. The clamped value is then what
+  the console reports as the environment default, because it is the value actually in force.
 
 ### Turning broadcast off (one way, this session)
 
@@ -236,8 +273,9 @@ to remove evidence is not the one that goes unrecorded.
 
 ### Test peers (rehearse your service by yourself)
 
-From a cohort's drill-down, `Add test peers` fills the remaining seats with in-process participants
-so one operator can rehearse the whole loop alone instead of needing a second human. It works in
+From a cohort's drill-down, `Fill remaining seats with test peers` fills the remaining seats with
+in-process participants so one operator can rehearse the whole loop alone instead of needing a
+second human. It works in
 hermetic AND live mode. Test peers are REAL participants: on a live cohort they co-sign for real
 with throwaway keys and their DIDs are anchored on the network you named, which the confirmation
 states before you commit.
@@ -371,7 +409,9 @@ browser participants must reach it), so under `LIVE` the `/v1/tx/broadcast` +
 reachable. They only relay valid transactions and public UTXO data (no wallet or
 node RPC is exposed), but an unthrottled public endpoint still lets an anonymous
 flood load your indexer, and against a shared public esplora it can get your
-server IP rate-limited. Add a throttle at the proxy, e.g. nginx:
+server IP rate-limited. Throttle `POST /v1/terms/acceptance` too when you set
+participation terms: it is the other anonymous endpoint worth limiting, because it
+verifies a signature per request. Add a throttle at the proxy, e.g. nginx:
 
 ```nginx
 limit_req_zone $binary_remote_addr zone=btcr2:10m rate=10r/s;
@@ -428,8 +468,18 @@ or orchestrator can hit the same path.
 
 ```bash
 curl -fsS http://localhost:8080/v1/config
-# {"network":"mutinynet","label":"Mutinynet (signet)","isMainnet":false}
+# {"network":"mutinynet","label":"Mutinynet (signet)","isMainnet":false,
+#  "serviceName":"Acme aggregation","serviceDid":"did:btcr2:...","termsText":"..."}
 ```
+
+The network fields are unconditional; the other three are ADDITIVE and each is
+served only when the value exists. `serviceName` appears once you set
+`SERVICE_NAME` (or the display name in the settings surface) and `termsText` once
+you set participation terms, so both are absent on a default boot. `serviceDid` is
+present for any service built by `createService`, which is every path this runbook
+documents (the Docker image, compose, and the compiled entrypoint below), and is
+absent only for a caller wiring the Hono app directly with no service DID. Probe
+liveness on the response status, not on a fixed key set.
 
 ## Environment reference
 
@@ -449,7 +499,7 @@ curl -fsS http://localhost:8080/v1/config
 | `DEFAULT_BEACON_TYPE` | `CASBeacon` | Beacon type a NEW cohort draft starts from (`CASBeacon` or `SMTBeacon`). Runtime-editable; a malformed value warns at boot and falls back. |
 | `DEFAULT_SIZE` | `2` | Seats (n) a NEW cohort draft starts from. Runtime-editable. |
 | `DEFAULT_THRESHOLD` | same as `DEFAULT_SIZE` | Fallback signing threshold (k) a NEW cohort draft starts from; clamped to n. Runtime-editable. |
-| `DEFAULT_DISCOVERY_WINDOW_MS` | unset (service default window) | Discovery window a NEW cohort draft starts from, in ms, minimum 60000. Can only SHORTEN a cohort relative to `COHORT_TTL_MS`; a larger value is refused. Runtime-editable. |
+| `DEFAULT_DISCOVERY_WINDOW_MS` | unset (service default window) | Discovery window a NEW cohort draft starts from, in ms, minimum 60000. Can only SHORTEN a cohort relative to `COHORT_TTL_MS`: a value above it here is CLAMPED down to that maximum at boot with a warning naming both numbers, while a runtime save above it is REFUSED with the maximum named. Runtime-editable. |
 | `DEFAULT_FUNDING_WINDOW_MS` | unset (uses `FUNDING_WINDOW_MS`) | Per-cohort funding window a NEW cohort draft starts from, in ms, minimum 60000. Runtime-editable. |
 | `TERMS_TEXT` | unset | Participation terms shown at join in the web app. Set = a DID-signed acceptance is required to join through the web app (app-level enforcement only, see above). Empty = no terms step at all. Runtime-editable. |
 | `PHASE_TIMEOUT_MS` | (built-in default) | Per-phase stall budget. Under `BROADCAST=1` it must exceed `FUNDING_WINDOW_MS` (boot-validated). |
@@ -457,8 +507,9 @@ curl -fsS http://localhost:8080/v1/config
 | `OPERATOR_PASSWORD` | unset | Operator console password (HOST-01, ADR 0015). Set it to enable the login-gated console + gated telemetry. Unset = fail-closed: public participant surface still serves, operator surface disabled with a loud boot warning. Keep it in a `.env` file, never bake it into the image. |
 | `OPERATOR_SESSION_TTL_MS` | `86400000` (24h) | Operator session lifetime in ms. |
 | `OPERATOR_COOKIE_SECURE` | on | Session cookie `Secure` flag. Leave on behind a TLS proxy; set `0` ONLY for a local plain-http run (else the browser drops the cookie). |
-| `MIN_PARTICIPANTS` | `2` | Participants that complete a cohort. |
-| `FILLERS` | `1` (compose), `0` (bare image) | Operator-run honest co-signers (own keys). `0` = all-real cohorts. |
+| `MIN_PARTICIPANTS` | `2` | FALLBACK seed for the seat count (n) a NEW cohort draft starts from, overridable per draft. `DEFAULT_SIZE` seeds the same thing and wins, and the compose file always sets it, so on the documented compose path this variable is fully shadowed. It does not decide what completes a cohort: that is the per-draft n the operator advertised. |
+| `AUTO_FALLBACK` | on | `0` opts OUT of the ADR 042 k-of-n script-path fallback on a signing stall. Behavior-changing: with it off, a signing round stuck on a missing co-signer no longer recovers on its own and the operator must use `Finalize now` (or the cohort fails). Leave it on unless you want every anchor to be full n-of-n. |
+| `SSE_DEBUG` | unset | `1` logs the participant advert SSE transport's per-connection activity. Diagnostics only; noisy, and it changes no behavior. |
 | `IPFS` | unset | `1` = run a Helia pinning node. |
 | `IPFS_DIR` | in-memory | Durable pin storage path (mount a volume). |
 | `IPFS_ANNOUNCE` | listen addr | Comma-separated multiaddrs to advertise (e.g. a `wss` proxy address). |

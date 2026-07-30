@@ -58,8 +58,10 @@ services:
       # Per-draft timing windows in ms (minimum 60000 each). Empty = the service
       # defaults apply (the built-in discovery window; FUNDING_WINDOW_MS for
       # funding). The discovery window can only SHORTEN a cohort relative to
-      # COHORT_TTL_MS: a larger value is refused at save with the real maximum
-      # named, never silently ignored.
+      # COHORT_TTL_MS, and the two paths that set it answer differently on purpose:
+      # a value above the ceiling HERE is clamped down to it at boot with a warning
+      # naming both numbers, while a runtime save above it is refused with the real
+      # maximum named. Neither path ever accepts a window it cannot enforce.
       DEFAULT_DISCOVERY_WINDOW_MS: ${DEFAULT_DISCOVERY_WINDOW_MS:-}
       DEFAULT_FUNDING_WINDOW_MS: ${DEFAULT_FUNDING_WINDOW_MS:-}
       # Participation terms shown at join in the web app. Set = joining through
@@ -85,18 +87,30 @@ services:
       # mutating cohort routes, and the gated monitoring reads (GET
       # /v1/operator/cohorts and /v1/operator/cohorts/:id) are disabled with a loud
       # boot warning. Never commit a real value; keep it in a .env file, never baked
-      # into the image.
+      # into the image. SET THIS BEFORE YOUR FIRST RUN: because this service
+      # advertises nothing on its own, an empty password means no console, so no
+      # cohort can ever be created and the directory stays empty. See the quick
+      # start in docs/DEPLOY.md.
       OPERATOR_PASSWORD: ${OPERATOR_PASSWORD:-}
       # Optional: operator session lifetime in ms (default 24h) and the cookie Secure
       # flag. Leave OPERATOR_COOKIE_SECURE default (on) behind a TLS proxy; set it to
       # 0 ONLY for a local plain-http run, else the browser drops the session cookie.
       OPERATOR_SESSION_TTL_MS: ${OPERATOR_SESSION_TTL_MS:-}
       OPERATOR_COOKIE_SECURE: ${OPERATOR_COOKIE_SECURE:-}
-      # Cohort sizing. MIN_PARTICIPANTS complete a cohort; FILLERS are operator-run
-      # honest co-signers (each its OWN key, not a service key) so a lone browser
-      # attendee can complete a real n-of-n cohort. FILLERS=0 for all-real cohorts.
+      # Fallback seed for the seat count (n) a NEW draft starts from. DEFAULT_SIZE
+      # above seeds the same thing and wins, and it is always set here, so this
+      # variable is shadowed on this path; it is kept for a bare run that sets
+      # neither. It does NOT decide what completes a cohort: that is the per-draft
+      # n the operator advertised. To rehearse a cohort alone, use the console's
+      # "Fill remaining seats with test peers" control, not a boot knob.
       MIN_PARTICIPANTS: ${MIN_PARTICIPANTS:-2}
-      FILLERS: ${FILLERS:-1}
+      # AUTO_FALLBACK=0 opts OUT of the ADR 042 k-of-n script-path fallback on a
+      # signing stall. Behavior-changing: with it off, a round stuck on a missing
+      # co-signer no longer recovers on its own (the operator must Finalize now, or
+      # the cohort fails). Default on. SSE_DEBUG=1 logs the participant advert SSE
+      # transport's per-connection activity; diagnostics only, changes no behavior.
+      AUTO_FALLBACK: ${AUTO_FALLBACK:-}
+      SSE_DEBUG: ${SSE_DEBUG:-}
       # Opt-in IPFS (Helia) pinning (ADR 0011). IPFS_DIR persists pins across
       # restarts (mount the volume below); IPFS_ANNOUNCE advertises a wss multiaddr
       # for browsers on an https page to dial through your TLS proxy.
