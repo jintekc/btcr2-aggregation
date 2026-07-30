@@ -557,6 +557,44 @@ describe('the funding watch stands down with the switch (05-AUDIT entry 2)', () 
 });
 
 /**
+ * The stood-down cohort's own terminal CHIP (05-AUDIT entry 9, the finder's framing of defect 7).
+ *
+ * The chip half of that defect holds by construction here: `broadcast.ts` returns at the
+ * `shouldBroadcast` gate BEFORE any frame is emitted, so a stood-down cohort's `signing-complete`
+ * record simply stands, unrefined by any broadcaster frame. That is precisely why it deserves one
+ * row of its own: the closest row in `monitor.spec.ts` ("no broadcaster at all") is a DIFFERENT
+ * construction, so without this the kill-switch case would be INFERRED from a neighbouring one
+ * rather than asserted on the path the operator actually takes.
+ *
+ * Pre-fix this cohort read `anchored` with a good-tone badge, mixing genuinely confirmed cohorts
+ * and never-published ones under one identical chip in the Ended group of a live service, with no
+ * per-cohort way to tell them apart.
+ *
+ * No broadcaster-shaped fixture is added: `liveService()` already drives the real handoff, and
+ * after 05-16 it exposes `monitor`, so the assertion is a plain `summary()` read with no port bound.
+ */
+describe('a stood-down cohort settles on the honest co-signed chip (05-AUDIT entry 9)', () => {
+  it('never claims an anchor for a cohort whose beacon tx was never published', async () => {
+    const service = liveService();
+    try {
+      service.settings.disableBroadcast();
+      await new Promise((r) => setTimeout(r, 2));
+      service.runner.emit('cohort-advertised', { cohortId: 'stood-down' } as never);
+
+      service.runner.emit('signing-complete', anchoredResult('stood-down') as never);
+      await settle();
+
+      // Nothing was sent, so nothing can have confirmed, so the word `anchored` is unavailable.
+      expect(service.sent).toEqual([]);
+      const chip = service.monitor.summary().find((r) => r.cohortId === 'stood-down')?.chip;
+      expect(chip).toBe('co-signed');
+    } finally {
+      await service.stop();
+    }
+  });
+});
+
+/**
  * The ONE cost this fix introduces, registered rather than assumed away (T-05-16-05).
  *
  * `monitor.noteEsploraObservation` has exactly one caller in the whole service: the funding

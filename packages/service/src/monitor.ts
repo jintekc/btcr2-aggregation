@@ -245,15 +245,28 @@ export interface FallbackDTO {
  * live cohort reads `filling` (seats filling) or `co-signing` (signing in flight);
  * `needs-funding` is the live-cohort funding-attention placeholder populated by the
  * live-path plan 04-06 (this plan never emits it); an ENDED cohort reads its terminal fate
- * `fallback` (anchored via the k-of-n script path, D-33), `anchored` (anchored via the
+ * `co-signed` / `co-signed-fallback` (signed but NOT confirmed on-chain, 05-AUDIT entry 9),
+ * `fallback` (CONFIRMED via the k-of-n script path, D-33), `anchored` (CONFIRMED via the
  * optimistic key path), `canceled` (the operator ended it deliberately, Phase 5 D-05), or
  * `failed`. The client maps each key to its Badge/StatusDot tone; `canceled` is NEUTRAL, never
  * a bad-tone failure chip, because the operator meant to do it.
+ *
+ * The four completion fates are a clean two-by-two: CONFIRMATION decides the word
+ * (`anchored`/`fallback` versus `co-signed`/`co-signed-fallback`), the k-of-n SCRIPT PATH decides
+ * the column. Only the confirmed pair counts toward the anchored metric; the unconfirmed pair
+ * claims nothing at all about Bitcoin. See {@link EndedRecord.viaFallback} for the full rationale.
  */
 export type CohortChip =
   | 'filling'
   | 'co-signing'
   | 'needs-funding'
+  /**
+   * The co-sign succeeded on the optimistic key path, and this service either published nothing
+   * or has seen no confirmation. An honest intermediate terminal: signed, not anchored.
+   */
+  | 'co-signed'
+  /** The same statement about a co-sign that took the ADR-042 k-of-n script path. */
+  | 'co-signed-fallback'
   | 'fallback'
   | 'anchored'
   | 'canceled'
@@ -379,9 +392,10 @@ export interface FundingView {
 /**
  * The terminal chip of a retained ended-cohort record (a strict subset of {@link CohortChip}).
  * `canceled` is the operator-initiated end (Phase 5 D-05): a deliberate, distinct fate that is
- * never folded into `failed` and never counted as one.
+ * never folded into `failed` and never counted as one. `co-signed` / `co-signed-fallback` are the
+ * two honest UNCONFIRMED completions (05-AUDIT entry 9).
  */
-type EndedChip = 'anchored' | 'fallback' | 'canceled' | 'failed';
+type EndedChip = 'co-signed' | 'co-signed-fallback' | 'anchored' | 'fallback' | 'canceled' | 'failed';
 
 /**
  * A retained ended-cohort record (D-23): its terminal chip plus the seats/capacity snapshot
@@ -394,6 +408,39 @@ interface EndedRecord {
   seatsJoined: number;
   capacity: number;
   reason?: string;
+  /**
+   * True when this cohort's co-sign took the ADR-042 k-of-n SCRIPT PATH (D-33). Recorded here at
+   * `signing-complete` so the script-path fact survives on the RECORD until a later confirmation
+   * can read it, rather than depending on the fold entry still being present.
+   *
+   * **The completion taxonomy, written out because a future reader will otherwise try to
+   * "simplify" the two unconfirmed chips into one** (05-AUDIT entry 9, D-33):
+   *
+   * |                    | key path            | k-of-n script path         |
+   * |--------------------|---------------------|----------------------------|
+   * | confirmed on-chain | `anchored`          | `fallback`                 |
+   * | NOT confirmed      | `co-signed`         | `co-signed-fallback`       |
+   *
+   * CONFIRMATION decides the row, the script path decides the column. Only the confirmed pair
+   * counts toward the anchored metric ({@link ServiceMetricsDTO}); the unconfirmed pair claims
+   * nothing about Bitcoin at all.
+   *
+   * Two shortcuts look tempting here and are both wrong:
+   *
+   * 1. **Minting `'fallback'` at co-sign time.** `'fallback'` is ITSELF an anchored claim (its own
+   *    docstring reads "anchored via the k-of-n script path" and it counts toward the anchored
+   *    metric), so keeping it at `signing-complete` would preserve, for exactly the script-path
+   *    cohorts, the very lie this taxonomy removes.
+   * 2. **Collapsing both unconfirmed chips into one.** That would take the list-level script-path
+   *    signal AND its Needs-attention bucketing (`groupForChip` in
+   *    {@link file://../../web/src/lib/operator-rows.ts}) away from the SHIPPED HERMETIC DEFAULT,
+   *    which is a product regression rather than a defect fix. The honest word and the existing
+   *    distinction are both keepable, so both are kept.
+   *
+   * The per-cohort surface stays reachable independently of this tag: the `detail` projection's
+   * `fallback.used` derivation is untouched, and is still true for a hermetic script-path cohort.
+   */
+  viaFallback?: true;
   /**
    * The server wall-clock time (ms) the fate was recorded, stamped inside
    * {@link rememberEnded} so every terminal record carries one without call-site churn. It is
@@ -1189,11 +1236,16 @@ export function createCohortMonitor(
     });
   });
 
-  // signing-complete: the cohort anchored (co-sign succeeded). Capture the terminal record
-  // AT EVENT TIME (Pitfall 2) so it survives the session GC. `fallback` when the k-of-n
-  // script path produced the tx (result.path === 'script-path', or fallback-started fired),
-  // else `anchored`. On a broadcasting service this is refined by the broadcaster frames
-  // below (a broadcast that then fails flips it to `failed`).
+  // signing-complete: the co-sign SUCCEEDED. That is a fact about this cohort's signatures, and
+  // nothing at all about Bitcoin: nothing has been broadcast here, and nothing has confirmed. So
+  // the terminal recorded is one of the two honest UNCONFIRMED fates (05-AUDIT entry 9) -
+  // `co-signed-fallback` when the k-of-n script path produced the tx, else `co-signed`. Captured
+  // AT EVENT TIME (Pitfall 2) so it survives the session GC.
+  //
+  // On a broadcasting service this record is refined by the broadcaster frames below: a CONFIRMED
+  // anchor promotes it to `anchored`/`fallback`, a failed broadcast flips it to `failed`. On the
+  // hermetic path, where nothing is ever published, it stands as recorded - which is what makes
+  // the `shouldBroadcast` early return in {@link file://./broadcast.ts} honest.
   runner.on('signing-complete', (result) => {
     safely('signing-complete', () => {
       const cohortId = result.cohortId;
@@ -1206,7 +1258,15 @@ export function createCohortMonitor(
         appendActivity(entry, 'good', 'Co-signing complete.');
       }
       const { seatsJoined, capacity } = snapshotSeats(cohortId);
-      rememberEnded(cohortId, { chip: viaFallback ? 'fallback' : 'anchored', seatsJoined, capacity });
+      // ONE source of truth, two values read off it: the tag stored on the record is the same tag
+      // the chip is derived from, and the same one a later promotion reads back. A second
+      // derivation at promotion time is exactly how the two could drift apart.
+      rememberEnded(cohortId, {
+        chip: viaFallback ? 'co-signed-fallback' : 'co-signed',
+        seatsJoined,
+        capacity,
+        ...(viaFallback ? { viaFallback: true as const } : {}),
+      });
     });
   });
 
@@ -1225,10 +1285,9 @@ export function createCohortMonitor(
 
   // Broadcaster frames (live broadcasting services only) refine the on-chain fate. A
   // beacon-tx broadcast that FAILS after a successful co-sign is an honest `failed` outcome
-  // (the tx never anchored), so it overrides the anchored record from signing-complete. A
-  // confirmed anchor reinforces the anchored/fallback record (kept fresh at event time); a
-  // pending (confirmed:false) frame is NOT terminal and is left to the signing-complete
-  // record so "Anchored" is reserved for a real confirmation (D-18).
+  // (the tx never anchored), so it overrides the co-signed record from signing-complete. A
+  // CONFIRMED anchor PROMOTES that record to `anchored`/`fallback`; a pending (confirmed:false)
+  // frame promotes nothing, so "Anchored" is reserved for a real confirmation (D-18).
   if (broadcaster) {
     // A broadcast frame (accepted to the network) is folded into the activity ring so the
     // operator sees the on-chain progression in the log too, in step with the anchor view.
@@ -1251,6 +1310,12 @@ export function createCohortMonitor(
       });
     });
     broadcaster.on('beacon-anchored', ({ cohortId, confirmed }) => {
+      // LOAD-BEARING, not merely conservative: this early return is the only thing that decides
+      // which ROW of the completion two-by-two a record sits in (see {@link EndedRecord.viaFallback}).
+      // An unconfirmed frame promotes NOTHING, so the standing `co-signed`/`co-signed-fallback`
+      // record - and the zero in the anchored column behind it - is what the operator sees for a
+      // beacon tx that was broadcast but never confirmed. That is the mainline live case
+      // 05-AUDIT entry 9 reproduced, and it has no health-strip cue of its own.
       if (!confirmed) {
         return;
       }
@@ -1259,11 +1324,16 @@ export function createCohortMonitor(
         if (entry) {
           appendActivity(entry, 'good', 'Beacon tx confirmed on-chain.');
         }
-        // Preserve a fallback tag if signing-complete already recorded one; a confirmed
-        // anchor of an optimistic-path cohort stays `anchored`.
-        const viaFallback = ended.get(cohortId)?.chip === 'fallback';
+        // Promote by reading the SAME script-path tag `signing-complete` stored on the record, so
+        // a confirmed k-of-n cohort reads `fallback` rather than flattening to a plain anchor.
+        const viaFallback = ended.get(cohortId)?.viaFallback === true;
         const { seatsJoined, capacity } = snapshotSeats(cohortId);
-        rememberEnded(cohortId, { chip: viaFallback ? 'fallback' : 'anchored', seatsJoined, capacity });
+        rememberEnded(cohortId, {
+          chip: viaFallback ? 'fallback' : 'anchored',
+          seatsJoined,
+          capacity,
+          ...(viaFallback ? { viaFallback: true as const } : {}),
+        });
       });
     });
   }
@@ -1606,22 +1676,39 @@ export function createCohortMonitor(
           inFlight += 1;
         }
       }
-      // anchored / failed from the bounded retained records: `fallback` counts as anchored
-      // (the k-of-n script path still put the beacon tx on-chain), everything else that is
-      // not `failed` is an optimistic anchor.
+      // anchored / failed from the bounded retained records, classified EXPLICITLY per chip rather
+      // than as a failed-check plus an everything-else branch, so a future terminal fate cannot
+      // fall into a column by default (which is how 05-AUDIT entry 9 happened in the first place).
       //
-      // A `canceled` record counts as NEITHER (D-05). It never anchored, so counting it as
-      // anchored would be a lie; and it is a deliberate operator end, so counting it as failed
-      // would inflate a failure counter with the operator's own decision. The metrics row is a
+      // The `anchored` counter now only ever reports CONFIRMED anchors: `anchored` (key path) and
+      // `fallback` (k-of-n script path) both mean this service watched the beacon tx confirm. On a
+      // no-broadcast service it therefore stays at ZERO permanently, which is the honest reading -
+      // that service anchors nothing (Phase 4 D-18, restated as the list-chip rule in
+      // `04-UI-SPEC.md`; 05-AUDIT entry 9).
+      //
+      // Three fates count in NEITHER column, on the same reasoning D-05 recorded for the first of
+      // them. A `canceled` record never anchored, so counting it as anchored would be a lie; and it
+      // is a deliberate operator end, so counting it as failed would inflate a failure counter with
+      // the operator's own decision. `co-signed` and `co-signed-fallback` are neither anchored (no
+      // confirmation) nor failed (the co-sign succeeded), so they join it. The metrics row is a
       // bounded live view, not a ledger of every cohort that ever existed, so a fate that fits
-      // neither column simply does not appear in one.
+      // neither column simply does not appear in one; a completed hermetic cohort is counted by its
+      // presence in the Ended group instead.
       let anchored = 0;
       let failed = 0;
       for (const record of ended.values()) {
-        if (record.chip === 'failed') {
-          failed += 1;
-        } else if (record.chip !== 'canceled') {
-          anchored += 1;
+        switch (record.chip) {
+          case 'failed':
+            failed += 1;
+            break;
+          case 'anchored':
+          case 'fallback':
+            anchored += 1;
+            break;
+          case 'co-signed':
+          case 'co-signed-fallback':
+          case 'canceled':
+            break;
         }
       }
       return { open, inFlight, anchored, failed };

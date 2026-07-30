@@ -647,7 +647,7 @@ describe('GET /v1/operator/cohorts/:id monitoring route', () => {
 });
 
 describe('createCohortMonitor summary + serviceMetrics + ended taxonomy', () => {
-  it('records an ANCHORED ended record that survives with no live cohort (D-23)', () => {
+  it('records a CO-SIGNED ended record that survives with no live cohort (D-23)', () => {
     const runner = bareRunner();
     const monitor = createCohortMonitor(runner);
     // Seat a member so the ended record captures a real seat count from the fold, then end.
@@ -661,10 +661,78 @@ describe('createCohortMonitor summary + serviceMetrics + ended taxonomy', () => 
     runner.emit('signing-complete', anchoredResult('c1'));
 
     // No live cohort exists for this bare runner (runner.session.getCohort('c1') is undefined),
-    // yet the ended record still projects the cohort's anchored fate + captured seat count.
+    // yet the ended record still projects the cohort's fate + captured seat count.
+    //
+    // MIGRATED (05-AUDIT entry 9): this construction has NO broadcaster, so nothing was ever
+    // published and no confirmation was ever seen. The honest terminal is `co-signed`, and the
+    // anchored counter stays at zero, because a service that anchors nothing must not report an
+    // anchor. Only the confirmation-gated `beacon-anchored` handler may mint the anchored word.
     const row = monitor.summary().find((r) => r.cohortId === 'c1');
-    expect(row).toMatchObject({ chip: 'anchored', phase: 'ended', seatsJoined: 1 });
+    expect(row).toMatchObject({ chip: 'co-signed', phase: 'ended', seatsJoined: 1 });
+    expect(monitor.serviceMetrics()).toMatchObject({ anchored: 0, failed: 0 });
+  });
+
+  it('leaves an UNCONFIRMED beacon-anchored frame at the co-signed fate, never anchored (05-AUDIT entry 9)', () => {
+    // The MAINLINE live case the audit's second skeptic reproduced, with no kill switch involved:
+    // the beacon tx really was broadcast, but it did not confirm inside the confirm window, so the
+    // broadcaster emits `beacon-anchored` with `confirmed: false`. Pre-fix that frame was ignored
+    // and the standing `signing-complete` record read `anchored` with `anchored: 1` counted, which
+    // is an on-chain claim this service had no confirmation for.
+    const runner = bareRunner();
+    const broadcaster = new BeaconBroadcaster();
+    const monitor = createCohortMonitor(runner, broadcaster);
+    runner.emit('signing-complete', anchoredResult('c-unconfirmed'));
+    broadcaster.emit('beacon-anchored', { cohortId: 'c-unconfirmed', txid: 'a'.repeat(64), confirmed: false });
+
+    expect(monitor.summary().find((r) => r.cohortId === 'c-unconfirmed')?.chip).toBe('co-signed');
+    expect(monitor.serviceMetrics()).toMatchObject({ anchored: 0, failed: 0 });
+  });
+
+  it('promotes to ANCHORED only on a CONFIRMED beacon-anchored frame (Phase 4 D-18)', () => {
+    const runner = bareRunner();
+    const broadcaster = new BeaconBroadcaster();
+    const monitor = createCohortMonitor(runner, broadcaster);
+    runner.emit('signing-complete', anchoredResult('c-confirmed'));
+    // The unconfirmed intermediate: still a co-sign, nothing claimed about Bitcoin.
+    expect(monitor.summary().find((r) => r.cohortId === 'c-confirmed')?.chip).toBe('co-signed');
+
+    broadcaster.emit('beacon-anchored', { cohortId: 'c-confirmed', txid: 'b'.repeat(64), confirmed: true });
+    expect(monitor.summary().find((r) => r.cohortId === 'c-confirmed')?.chip).toBe('anchored');
     expect(monitor.serviceMetrics()).toMatchObject({ anchored: 1, failed: 0 });
+  });
+
+  it('promotes a SCRIPT-PATH co-sign to `fallback` on confirmation, keeping the path distinction', () => {
+    // The confirmed half of the two-by-two: confirmation decides the word (`fallback` rather than
+    // `co-signed-fallback`), the script path decides the column. The script-path fact rides the
+    // RETAINED ended record, so the promotion can read it after the fold entry has moved on.
+    const runner = bareRunner();
+    const broadcaster = new BeaconBroadcaster();
+    const monitor = createCohortMonitor(runner, broadcaster);
+    runner.emit('fallback-started', { cohortId: 'c-script', sessionId: 's1' });
+    runner.emit('signing-complete', anchoredResult('c-script', 'script-path'));
+    expect(monitor.summary().find((r) => r.cohortId === 'c-script')?.chip).toBe('co-signed-fallback');
+
+    broadcaster.emit('beacon-anchored', { cohortId: 'c-script', txid: 'c'.repeat(64), confirmed: true });
+    expect(monitor.summary().find((r) => r.cohortId === 'c-script')?.chip).toBe('fallback');
+    expect(monitor.serviceMetrics()).toMatchObject({ anchored: 1, failed: 0 });
+  });
+
+  it('reads `co-signed-fallback` for a script-path co-sign with NO confirmation, never `fallback`', () => {
+    // The row the whole two-by-two rests on. Pre-fix this read `fallback` and counted
+    // `anchored: 1`, so a k-of-n cohort that published nothing claimed an on-chain anchor. The
+    // fix keeps the script-path DISTINCTION (its own chip, still bucketed into Needs attention by
+    // `groupForChip`) while removing the anchored claim: `fallback` is itself an anchored word.
+    const runner = bareRunner();
+    const broadcaster = new BeaconBroadcaster();
+    const monitor = createCohortMonitor(runner, broadcaster);
+    runner.emit('fallback-started', { cohortId: 'c-script-unconfirmed', sessionId: 's1' });
+    runner.emit('signing-complete', anchoredResult('c-script-unconfirmed', 'script-path'));
+    broadcaster.emit('beacon-anchored', { cohortId: 'c-script-unconfirmed', txid: 'd'.repeat(64), confirmed: false });
+
+    const chip = monitor.summary().find((r) => r.cohortId === 'c-script-unconfirmed')?.chip;
+    expect(chip).toBe('co-signed-fallback');
+    expect(chip).not.toBe('fallback');
+    expect(monitor.serviceMetrics()).toMatchObject({ anchored: 0, failed: 0 });
   });
 
   it('records a FAILED ended record with the cohort-attributed reason (planning note 2)', () => {
@@ -677,15 +745,91 @@ describe('createCohortMonitor summary + serviceMetrics + ended taxonomy', () => 
     expect(monitor.serviceMetrics()).toMatchObject({ failed: 1 });
   });
 
-  it('tags a k-of-n script-path completion as `fallback`, counted as anchored (D-33)', () => {
+  it('tags a k-of-n script-path completion as `co-signed-fallback`, counted in NEITHER column (D-33)', () => {
+    // MIGRATED IN PLACE (05-AUDIT entry 9), and the migration target is the consequential part:
+    // this row now asserts `co-signed-fallback`, NOT plain `co-signed`. The chip stops claiming an
+    // anchor (nothing was published here: there is no broadcaster), and the script-path
+    // distinction plus its Needs-attention bucketing are KEPT, because the unconfirmed state has
+    // its own chip rather than collapsing into the key-path one. Migrating this row to plain
+    // `co-signed` is the one edit that would erase the operator's list-level fallback signal while
+    // leaving the suite green, so it is forbidden by plan prohibition.
+    //
+    // The Needs-attention half is pinned client-side in
+    // {@link file://../../web/tests/operator-rows.spec.ts} (the four-way grouping row).
     const runner = bareRunner();
     const monitor = createCohortMonitor(runner);
     runner.emit('fallback-started', { cohortId: 'c3', sessionId: 's1' });
     runner.emit('signing-complete', anchoredResult('c3', 'script-path'));
 
-    expect(monitor.summary().find((r) => r.cohortId === 'c3')?.chip).toBe('fallback');
-    // Fallback still anchored the beacon tx on-chain, so it counts toward `anchored`.
-    expect(monitor.serviceMetrics()).toMatchObject({ anchored: 1, failed: 0 });
+    expect(monitor.summary().find((r) => r.cohortId === 'c3')?.chip).toBe('co-signed-fallback');
+    // The k-of-n script path signed the tx; it did not put it on-chain here, and nothing confirmed
+    // it, so the anchored counter must not move.
+    expect(monitor.serviceMetrics()).toMatchObject({ anchored: 0, failed: 0 });
+  });
+
+  it('a HERMETIC script-path cohort reads co-signed-fallback AND keeps `fallback.used` in the drill-down', () => {
+    // The BOUND on the distinction. The `fallback.used` half is deliberately NOT red-before-green:
+    // it derives from the live result path or the fold entry's own `fellBack` tag and was already
+    // true before this change. Its job here is to be a NON-REGRESSION guard on the drill-down
+    // derivation, which this plan leaves untouched: after the chip taxonomy change, that derivation
+    // is the per-cohort surface where the script-path fact still reaches the operator for a cohort
+    // that never got a confirmation. Do not mistake it for defect coverage.
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner); // hermetic: no broadcaster at all
+    runner.emit('fallback-started', { cohortId: 'c-hermetic-script', sessionId: 's1' });
+    runner.emit('signing-complete', anchoredResult('c-hermetic-script', 'script-path'));
+
+    expect(monitor.summary().find((r) => r.cohortId === 'c-hermetic-script')?.chip).toBe('co-signed-fallback');
+    expect(monitor.detail('c-hermetic-script').fallback.used).toBe(true);
+  });
+
+  it('the hermetic default anchors nothing: a plain co-sign leaves BOTH metric columns at zero', () => {
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner); // no broadcaster, no fallback
+    runner.emit('signing-complete', anchoredResult('c-hermetic'));
+
+    expect(monitor.summary().find((r) => r.cohortId === 'c-hermetic')?.chip).toBe('co-signed');
+    // Strict equality: nothing on-chain exists by construction on this path, so a stray count in
+    // either column would be a claim about Bitcoin that this service cannot make.
+    expect(monitor.serviceMetrics()).toEqual({ open: 0, inFlight: 0, anchored: 0, failed: 0 });
+  });
+
+  it('counts the canceled fate AND both unconfirmed co-sign fates in NEITHER column (D-05, 05-AUDIT entry 9)', () => {
+    // The explicit classification, asserted by STRICT equality over the whole metrics object so an
+    // accidental double count (or a new terminal falling into a column by default) cannot hide.
+    const runner = bareRunner();
+    const monitor = createCohortMonitor(runner);
+    runner.emit('signing-complete', anchoredResult('m-cosigned'));
+    runner.emit('fallback-started', { cohortId: 'm-script', sessionId: 's1' });
+    runner.emit('signing-complete', anchoredResult('m-script', 'script-path'));
+    monitor.noteCanceled('m-canceled');
+    runner.emit('cohort-failed', { cohortId: 'm-failed', reason: 'stalled' });
+
+    // Four retained records, exactly ONE of which belongs in a column.
+    expect(monitor.summary()).toHaveLength(4);
+    expect(monitor.serviceMetrics()).toEqual({ open: 0, inFlight: 0, anchored: 0, failed: 1 });
+  });
+
+  it('carries the event-time seat snapshot and stamp THROUGH the confirmation promotion', () => {
+    // A promoted record must not lose the counts captured when the cohort ended, nor its stamp:
+    // the console names WHEN a fate landed from that stamp (D-22), and the seat snapshot is the
+    // only honest source once the session has GC'd the cohort (Pitfall 2).
+    const runner = bareRunner();
+    const broadcaster = new BeaconBroadcaster();
+    const monitor = createCohortMonitor(runner, broadcaster);
+    runner.emit('opt-in-received', {
+      cohortId: 'c-promote',
+      participantDid: 'did:example:alice',
+      participantPk: new Uint8Array([1]),
+      communicationPk: new Uint8Array([2]),
+    });
+    runner.emit('participant-accepted', { cohortId: 'c-promote', participantDid: 'did:example:alice' });
+    runner.emit('signing-complete', anchoredResult('c-promote'));
+    broadcaster.emit('beacon-anchored', { cohortId: 'c-promote', txid: 'e'.repeat(64), confirmed: true });
+
+    const row = monitor.summary().find((r) => r.cohortId === 'c-promote');
+    expect(row).toMatchObject({ chip: 'anchored', phase: 'ended', seatsJoined: 1 });
+    expect(typeof row?.at).toBe('number');
   });
 
   it('bounds ended records at 24 with oldest-first eviction', () => {
@@ -705,9 +849,15 @@ describe('createCohortMonitor summary + serviceMetrics + ended taxonomy', () => 
 
   it('serviceMetrics counts anchored + failed independently from the ended set', () => {
     const runner = bareRunner();
-    const monitor = createCohortMonitor(runner);
+    const broadcaster = new BeaconBroadcaster();
+    const monitor = createCohortMonitor(runner, broadcaster);
+    // MIGRATED (05-AUDIT entry 9): the two anchored cohorts are now driven through a CONFIRMED
+    // beacon-anchored frame, because a co-sign alone no longer counts as an anchor. The property
+    // this row pins (the two columns are counted independently) is unchanged.
     runner.emit('signing-complete', anchoredResult('a1'));
     runner.emit('signing-complete', anchoredResult('a2'));
+    broadcaster.emit('beacon-anchored', { cohortId: 'a1', txid: '1'.repeat(64), confirmed: true });
+    broadcaster.emit('beacon-anchored', { cohortId: 'a2', txid: '2'.repeat(64), confirmed: true });
     runner.emit('cohort-failed', { cohortId: 'f1', reason: 'stall' });
     // No live cohorts on the bare runner, so open + inFlight are 0.
     expect(monitor.serviceMetrics()).toEqual({ open: 0, inFlight: 0, anchored: 2, failed: 1 });
@@ -718,7 +868,10 @@ describe('createCohortMonitor summary + serviceMetrics + ended taxonomy', () => 
     const broadcaster = new BeaconBroadcaster();
     const monitor = createCohortMonitor(runner, broadcaster);
     runner.emit('signing-complete', anchoredResult('c9'));
-    expect(monitor.summary().find((r) => r.cohortId === 'c9')?.chip).toBe('anchored');
+    // MIGRATED: the record the failure OVERRIDES is now the honest unconfirmed co-sign rather than
+    // a premature anchored claim. The override itself is unchanged, and this row's own citation of
+    // the confirmed-only rule is now more true, not less.
+    expect(monitor.summary().find((r) => r.cohortId === 'c9')?.chip).toBe('co-signed');
 
     // The beacon-tx broadcast then fails: the honest fate is `failed`, not `anchored`, so
     // the operator never sees an "anchored" chip for a cohort whose tx never made it on-chain.
@@ -1134,9 +1287,15 @@ describe('createCohortMonitor funding view (LIVE-01, D-36 through D-43)', () => 
 describe('dismissEnded: clearing one ended record, telemetry only (SVC-04, D-15)', () => {
   it('removes exactly one ended record and leaves every sibling present', () => {
     const runner = bareRunner();
-    const monitor = createCohortMonitor(runner);
+    const broadcaster = new BeaconBroadcaster();
+    const monitor = createCohortMonitor(runner, broadcaster);
+    // MIGRATED (05-AUDIT entry 9): the two completions are CONFIRMED here, so the anchored column
+    // still has something in it and the "counters move by exactly that one record" assertion below
+    // stays a real measurement rather than a vacuous zero-to-zero.
     runner.emit('signing-complete', anchoredResult('c1'));
     runner.emit('signing-complete', anchoredResult('c2'));
+    broadcaster.emit('beacon-anchored', { cohortId: 'c1', txid: '1'.repeat(64), confirmed: true });
+    broadcaster.emit('beacon-anchored', { cohortId: 'c2', txid: '2'.repeat(64), confirmed: true });
     runner.emit('cohort-failed', { cohortId: 'c3', reason: 'stalled' });
 
     const before = monitor.summary().map((r) => r.cohortId).sort();
