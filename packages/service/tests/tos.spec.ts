@@ -139,6 +139,34 @@ function stored(store: MemoryArtifactStore): Promise<Array<[string, unknown]>> {
   return store.entries('acceptance');
 }
 
+/**
+ * Post `count` valid acceptances that differ only in the COHORT they name, returning their hashes
+ * in the order they were posted (so `[0]` is the oldest and therefore the first eviction victim).
+ *
+ * Varying the cohort id is what makes each record a distinct DEDUP KEY. A batch that varied only
+ * `acceptedAt` would share ONE dedup key and correctly leave ONE record, so it cannot be used to
+ * test the bound.
+ */
+async function fillDistinctKeys(
+  ctx: ReturnType<typeof acceptanceApp>,
+  participant: Identity,
+  count: number,
+): Promise<string[]> {
+  const hashes: string[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const acceptance = acceptanceFor(
+      ctx.serviceDid,
+      participant,
+      TERMS,
+      `cohort-${String(i).padStart(4, '0')}`,
+    );
+    hashes.push(termsAcceptanceHashHex(acceptance));
+    const res = await post(ctx.app, { acceptance, signature: signWith(acceptance, participant) });
+    expect(res.status).toBe(200);
+  }
+  return hashes;
+}
+
 describe('POST /v1/terms/acceptance stores only a VERIFIED acceptance', () => {
   it('accepts, stores, and returns the hash reference for a correctly signed record', async () => {
     const { app, store, serviceDid } = acceptanceApp({ terms: TERMS });
@@ -401,27 +429,6 @@ describe('the acceptance namespace is BOUNDED, so an anonymous caller cannot gro
    * namespace.
    */
 
-  /** Post `count` valid acceptances that differ only in the COHORT they name, so each is a distinct dedup key. */
-  async function fillDistinctKeys(
-    ctx: ReturnType<typeof acceptanceApp>,
-    participant: Identity,
-    count: number,
-  ): Promise<string[]> {
-    const hashes: string[] = [];
-    for (let i = 0; i < count; i += 1) {
-      const acceptance = acceptanceFor(
-        ctx.serviceDid,
-        participant,
-        TERMS,
-        `cohort-${String(i).padStart(4, '0')}`,
-      );
-      hashes.push(termsAcceptanceHashHex(acceptance));
-      const res = await post(ctx.app, { acceptance, signature: signWith(acceptance, participant) });
-      expect(res.status).toBe(200);
-    }
-    return hashes;
-  }
-
   it(`retains EXACTLY ${MAX_ACCEPTANCES} acceptances across distinct dedup keys, evicting oldest-first`, async () => {
     // Exactly, never "at most": an upper bound is also satisfied by a fix that retains nothing.
     // The batch varies the COHORT ID, so every record is a distinct dedup key. A batch varying
@@ -533,6 +540,111 @@ describe('the acceptance namespace is BOUNDED, so an anonymous caller cannot gro
     await post(ctx.app, { acceptance: b, signature: signWith(b, participant) });
 
     expect(await stored(ctx.store)).toHaveLength(2);
+  });
+});
+
+describe('the bound changed NOTHING a caller can learn, be refused for, or be locked out of', () => {
+  /**
+   * The bound closed an availability defect. The risk of any such fix is that it pays for the
+   * closure somewhere a caller can feel: a new refusal reason, a new observable difference, or a
+   * legitimate participant who can no longer join. These four rows are the receipts that it did
+   * not, and three of them are rows that already shipped.
+   *
+   * LOAD-BEARING BY STAYING UNEDITED: the uniform-refusal case above (which compares six refusal
+   * bodies to EACH OTHER rather than one at a time), every refusal row that asserts the store is
+   * still EMPTY, and the no-listing-endpoint case. They are the evidence that the refusal contract
+   * did not move, so they must keep passing exactly as written. A future change that needs to edit
+   * one of them to stay green has changed the contract, whatever else it also did.
+   */
+
+  it('NEVER refuses because the bound was reached: a legitimate joiner is not locked out', async () => {
+    // T-05-17-02, the reason this design evicts instead of capping. A cap that refused would let
+    // an attacker fill it and stop real participants from recording an acceptance at all, which
+    // breaks the SVC-05 join gate itself, and it would add a seventh reason a caller can provoke.
+    // Proven AFTER the bound is live, not before, so it is a property of the shipped behavior.
+    const ctx = acceptanceApp({ terms: TERMS });
+    const flooder = createIdentity(resolveNetwork(ACTIVE_NETWORK));
+    await fillDistinctKeys(ctx, flooder, MAX_ACCEPTANCES + 20);
+    expect(await stored(ctx.store)).toHaveLength(MAX_ACCEPTANCES);
+
+    const joiner = createIdentity(resolveNetwork(ACTIVE_NETWORK));
+    const acceptance = acceptanceFor(ctx.serviceDid, joiner, TERMS, 'cohort-real-joiner');
+    const res = await post(ctx.app, { acceptance, signature: signWith(acceptance, joiner) });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ hash: termsAcceptanceHashHex(acceptance) });
+    expect(await ctx.store.get('acceptance', termsAcceptanceHashHex(acceptance))).toEqual(acceptance);
+  });
+
+  it('reads an EVICTED acceptance exactly as it reads one that never existed', async () => {
+    // T-05-17-03. Eviction must leak no more than absence already did: if an evicted hash answered
+    // differently from an unknown one, the bound would have handed a stranger a way to ask "was
+    // this record ever here", which is precisely what the uniform refusal body exists to deny.
+    const ctx = acceptanceApp({ terms: TERMS });
+    const participant = createIdentity(resolveNetwork(ACTIVE_NETWORK));
+    const hashes = await fillDistinctKeys(ctx, participant, MAX_ACCEPTANCES + 20);
+    const evicted = hashes[0];
+    const neverExisted = 'f'.repeat(64);
+    expect(await ctx.store.get('acceptance', evicted)).toBeUndefined();
+
+    const [evictedRead, unknownRead] = await Promise.all([
+      ctx.app.request(`/cas/acceptance/${evicted}`),
+      ctx.app.request(`/cas/acceptance/${neverExisted}`),
+    ]);
+    // Compared as whole answers rather than checked independently: two rows that each assert 404
+    // would still pass if one of them started carrying a different body.
+    expect({ status: evictedRead.status, body: await evictedRead.json() }).toEqual({
+      status: unknownRead.status,
+      body: await unknownRead.json(),
+    });
+    expect(evictedRead.status).toBe(404);
+  });
+
+  it('still exposes NO listing endpoint, so the bound introduced no count and no index', async () => {
+    // A bound is a number, and a number is a thing a stranger might like to read. It stays
+    // unreadable: the acceptance namespace is served by the hash-addressed read alone, and the one
+    // export path over the store still carries resolution artifacts only.
+    const ctx = acceptanceApp({ terms: TERMS });
+    const participant = createIdentity(resolveNetwork(ACTIVE_NETWORK));
+    await fillDistinctKeys(ctx, participant, 3);
+
+    expect(await exportSidecar(ctx.store)).toEqual({ '@context': BTCR2_CONTEXT });
+    expect((await ctx.app.request('/cas/acceptance')).status).toBe(404);
+    expect((await ctx.app.request('/cas/acceptance/')).status).toBe(404);
+    expect((await ctx.app.request('/v1/terms/acceptance')).status).toBe(404);
+  });
+
+  it('answers every refusal with the byte-SAME body AFTER the bound is full, exactly as before', async () => {
+    // The shipped uniform-refusal case runs against an empty store. This one runs the same
+    // comparison against a service whose acceptance namespace is at its cap, so a refusal cannot
+    // start naming retention as its reason once eviction is actually happening.
+    const ctx = acceptanceApp({ terms: TERMS });
+    const participant = createIdentity(resolveNetwork(ACTIVE_NETWORK));
+    const attacker = createIdentity(resolveNetwork(ACTIVE_NETWORK));
+    await fillDistinctKeys(ctx, participant, MAX_ACCEPTANCES + 5);
+
+    const good = acceptanceFor(ctx.serviceDid, participant, TERMS, 'cohort-refusals');
+    const bodies = [
+      { acceptance: good, signature: signWith(good, attacker) },
+      (() => {
+        const a = acceptanceFor(ctx.serviceDid, participant, 'Other terms.', 'cohort-refusals');
+        return { acceptance: a, signature: signWith(a, participant) };
+      })(),
+      (() => {
+        const a = { ...good, participantDid: 'did:btcr2:not-a-real-identifier' };
+        return { acceptance: a, signature: signWith(good, participant) };
+      })(),
+      { acceptance: { hello: 'world' }, signature: 'ff'.repeat(64) },
+      { acceptance: good },
+    ];
+
+    const results = await Promise.all(bodies.map((b) => post(ctx.app, b)));
+    for (const r of results) {
+      expect(r).toEqual(results[0]);
+    }
+    expect(results[0]).toEqual({ status: 400, body: { error: 'acceptance refused' } });
+    // And the refusals grew nothing: the namespace is still exactly at its bound.
+    expect(await stored(ctx.store)).toHaveLength(MAX_ACCEPTANCES);
   });
 });
 
