@@ -5,7 +5,7 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: verifying
-stopped_at: Completed 05-14-PLAN.md
+stopped_at: Gap plans 05-15..05-20 planned and reviewed
 last_updated: "2026-07-29T18:16:36.335Z"
 last_activity: 2026-07-28
 last_activity_desc: Phase 05 execution started
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
 Plan: 14 of 14
-Status: Built and gated green; AWAITING human UAT (05-UAT.md) with 8 confirmed audit defects open (05-AUDIT.md)
+Status: Built and gated green; 6 gap plans (05-15..05-20) PLANNED for the 8 audit defects, not yet executed; human UAT (05-UAT.md) still pending
 Last activity: 2026-07-28 — Phase 05 execution started
 
 Progress: [██████████] 100%
