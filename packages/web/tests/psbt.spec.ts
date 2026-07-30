@@ -13,7 +13,7 @@ import {
   resolveNetwork,
   type Identity,
 } from '@btcr2-aggregation/shared';
-import { validateSignedPsbt } from '../src/lib/psbt';
+import { isAcceptedTapKeySig, validateSignedPsbt } from '../src/lib/psbt';
 import { psbtVerdictMessage } from '../src/components/cohort/WalletSignPanel';
 
 /**
@@ -71,6 +71,49 @@ function walletSignWithSighash(
   tx.updateInput(0, { sighashType: flag });
   tx.sign(identity.keys.raw.secret!, [flag]);
   return tx.toPSBT(0);
+}
+
+/**
+ * Rewrite ONLY the `tapKeySig` field's length prefix and value, leaving the rest of the PSBT a
+ * valid serialization. This is the one way to carry an impossible signature length into the
+ * validator at all: `@scure/btc-signer`'s `SignatureSchnorr` coder guards `updateInput` as well as
+ * `fromPSBT`, so such an input cannot even be built in memory. Splicing the bytes keeps the parsed
+ * transaction itself un-stubbed, which is what makes the assertion about signature LENGTH rather
+ * than about a mock, and keeps it apart from generic PSBT corruption, which would return the same
+ * verdict for an unrelated reason.
+ *
+ * The field is BIP-174 encoded as a one-byte key (`0x13`, PSBT_IN_TAP_KEY_SIG) with no key data,
+ * then a compact-size value length. The marker is located by scanning, and an ambiguous scan (a
+ * signature whose own bytes happen to contain the marker, which BIP340 aux randomness allows)
+ * throws rather than guessing at which occurrence is the real field.
+ */
+function spliceTapKeySigLength(signed: Uint8Array, newLen: number): Uint8Array {
+  const sigLen = Transaction.fromPSBT(signed, { allowUnknownOutputs: true }).getInput(0)!.tapKeySig!
+    .length;
+  const marker = [0x01, 0x13, sigLen];
+  const at: number[] = [];
+  for (let i = 0; i + marker.length <= signed.length; i++) {
+    if (marker.every((b, j) => signed[i + j] === b)) {
+      at.push(i);
+    }
+  }
+  if (at.length !== 1) {
+    throw new Error(`ambiguous tapKeySig marker: ${at.length} occurrences`);
+  }
+  const start = at[0] + marker.length;
+  const sig = signed.slice(start, start + sigLen);
+  const value =
+    newLen <= sigLen
+      ? sig.slice(0, newLen)
+      : new Uint8Array([...sig, ...new Uint8Array(newLen - sigLen)]);
+  return new Uint8Array([
+    ...signed.slice(0, at[0]),
+    0x01,
+    0x13,
+    newLen,
+    ...value,
+    ...signed.slice(start + sigLen),
+  ]);
 }
 
 describe('validateSignedPsbt', () => {
@@ -260,6 +303,130 @@ describe('validateSignedPsbt', () => {
     expect(bytesToHex(returned.unsignedTx)).toBe(templateHex);
     // And the returned PSBT re-serializes to base64 the app can read back (upload/paste parity).
     expect(psbtBase64ToBytes(psbtBytesToBase64(signed))).toEqual(signed);
+  });
+});
+
+/**
+ * The accepted sighash set (05-AUDIT.md entry 3, both skeptics).
+ *
+ * The audit executed every flavour below against the shipped validator and every one returned ok
+ * with a valid txid, so each row here is genuinely red before the gate lands. The taxonomy matters
+ * because the flavours are dangerous in DIFFERENT ways, which is why the gate pins the accepted
+ * set rather than blacklisting the one flag the original write-up named.
+ */
+describe('the accepted sighash set, one row per flavour the audit executed', () => {
+  const REFUSED: [number, string][] = [
+    [0x02, 'NONE commits to no output at all, so the change can be redirected by any observer'],
+    [0x82, 'NONE|ANYONECANPAY frees the outputs AND lets an attacker append inputs'],
+    [0x03, 'SINGLE commits to output 0 but leaves the OP_RETURN at vout 1 rewritable'],
+    [0x83, 'SINGLE|ANYONECANPAY leaves the OP_RETURN rewritable and the input set open'],
+    [0x81, 'ALL|ANYONECANPAY commits to the outputs but lets an attacker append inputs'],
+  ];
+
+  for (const [flag, why] of REFUSED) {
+    it(`refuses 0x${flag.toString(16).padStart(2, '0')}, because ${why}`, () => {
+      const { base64, templateHex } = ourTemplate();
+      const verdict = validateSignedPsbt(
+        walletSignWithSighash(base64, flag),
+        templateHex,
+        REGISTRATION_FEE_SATS,
+        NETWORK,
+      );
+      // The REASON, not merely not-ok: reclassifying one of these as mismatched or unparseable
+      // would send the participant to re-export a transaction that is in fact fine.
+      expect(verdict).toEqual({ ok: false, reason: 'bad-sighash' });
+      expect('rawHex' in verdict).toBe(false);
+    });
+  }
+
+  it('accepts a 64-byte signature, which is SIGHASH_DEFAULT and the common wallet default', () => {
+    const { base64, templateHex } = ourTemplate();
+    const signed = walletSign(base64);
+    // The shape really is the one this row claims to cover.
+    expect(
+      Transaction.fromPSBT(signed, { allowUnknownOutputs: true }).getInput(0)!.tapKeySig!.length,
+    ).toBe(64);
+    const verdict = validateSignedPsbt(signed, templateHex, REGISTRATION_FEE_SATS, NETWORK);
+    expect(verdict.ok).toBe(true);
+    expect(verdict.ok && verdict.txid).toBeTruthy();
+  });
+
+  it('accepts a 65-byte signature whose flag is an explicit SIGHASH_ALL', () => {
+    // A wallet that always writes the flag byte must not be locked out: 0x01 commits to every
+    // output, which is exactly the property the gate is protecting.
+    const { base64, templateHex } = ourTemplate();
+    const signed = walletSignWithSighash(base64, 0x01);
+    const sig = Transaction.fromPSBT(signed, { allowUnknownOutputs: true }).getInput(0)!.tapKeySig!;
+    expect(sig.length).toBe(65);
+    expect(sig[64]).toBe(0x01);
+    const verdict = validateSignedPsbt(signed, templateHex, REGISTRATION_FEE_SATS, NETWORK);
+    expect(verdict.ok).toBe(true);
+    expect(verdict.ok && verdict.txid).toBeTruthy();
+  });
+
+  it('reports the library unparseable verdict for a tapKeySig of an impossible length', () => {
+    // Scope, stated so this row is not read as more than it is: the refusal below comes from
+    // `@scure/btc-signer`'s OWN `SignatureSchnorr` field coder ("Schnorr signature should be 64 or
+    // 65 bytes long"), which guards both `Transaction.fromPSBT` and `updateInput`. So a 63- or
+    // 66-byte signature never reaches this app's gate, and its honest public-API outcome is the
+    // EXISTING unparseable verdict, not the new one. The app's own default-refuse branch is pinned
+    // directly against `isAcceptedTapKeySig` below instead.
+    //
+    // The bytes are spliced at the serialization layer rather than through a stubbed transaction:
+    // ONLY the tapKeySig field's length prefix and value are rewritten, so what this row exercises
+    // really is signature length and not generic PSBT corruption.
+    const { base64, templateHex } = ourTemplate();
+    for (const badLen of [63, 66]) {
+      const spliced = spliceTapKeySigLength(walletSign(base64), badLen);
+      expect(() => Transaction.fromPSBT(spliced, { allowUnknownOutputs: true })).toThrow(
+        /Schnorr signature should be 64 or 65 bytes long/,
+      );
+      expect(validateSignedPsbt(spliced, templateHex, REGISTRATION_FEE_SATS, NETWORK)).toEqual({
+        ok: false,
+        reason: 'unparseable',
+      });
+    }
+  });
+});
+
+/**
+ * The rule itself, asserted where its default-refuse branch is actually reachable.
+ *
+ * Extracted and exported for exactly this reason: the library rejects a non-64-or-65-byte
+ * tapKeySig before this app ever sees it, so "a length nobody enumerated is refused" cannot be
+ * pinned end to end. It is still a real property and it gets a real pin, just an honest one that
+ * does not pretend to be an end-to-end path. This is also the single definition of the rule, so a
+ * future inline copy beside it would be caught by these rows going stale rather than silently
+ * diverging.
+ */
+describe('isAcceptedTapKeySig', () => {
+  const sigOf = (len: number, last?: number): Uint8Array => {
+    const bytes = new Uint8Array(len).fill(0x7f);
+    if (last !== undefined && len > 0) {
+      bytes[len - 1] = last;
+    }
+    return bytes;
+  };
+
+  it('accepts the two legitimate shapes and nothing else', () => {
+    // 64 bytes is SIGHASH_DEFAULT: no flag byte at all, so there is nothing to be wrong.
+    expect(isAcceptedTapKeySig(sigOf(64))).toBe(true);
+    // 65 bytes carries an explicit flag, and only ALL commits to every output.
+    expect(isAcceptedTapKeySig(sigOf(65, 0x01))).toBe(true);
+    for (const flag of [0x02, 0x03, 0x81, 0x82, 0x83]) {
+      expect(isAcceptedTapKeySig(sigOf(65, flag))).toBe(false);
+    }
+  });
+
+  it('refuses by DEFAULT, so a length nobody enumerated is not silently blessed', () => {
+    for (const len of [0, 63, 66]) {
+      expect(isAcceptedTapKeySig(sigOf(len))).toBe(false);
+    }
+    // And every remaining 65-byte flag byte, not just the five the audit executed: the rule is a
+    // positive accepted set, so anything outside it is refused without needing enumeration.
+    for (let flag = 0x00; flag <= 0xff; flag++) {
+      expect(isAcceptedTapKeySig(sigOf(65, flag))).toBe(flag === 0x01);
+    }
   });
 });
 
