@@ -367,6 +367,93 @@ describe('applySettings refuses a discovery-window default this service cannot h
 });
 
 /**
+ * The SEED half of the same ceiling (05-AUDIT.md entry 7, D-11/D-12). The two rows above cover the
+ * SAVE path and are deliberately left untouched: the save path still REFUSES with the real maximum
+ * named, and their staying green unedited is the evidence that this block moved nothing there.
+ *
+ * The asymmetry is the point. A save is an operator's explicit act on a value they typed, so the
+ * honest answer is a refusal naming the limit. A boot seed is inherited configuration the operator
+ * may never have chosen, and every other out-of-range seed in this module warns and falls back
+ * rather than aborting the process, so the seed CLAMPS with a loud warning.
+ *
+ * What no earlier row did was construct the holder with an over-ceiling seed, so the one path that
+ * never consulted the ceiling was never entered. Two consequences rode on that gap and both are
+ * asserted here: the gated read captioned an unenforceable window as this service's `env default`,
+ * and `applySettings` re-read that stored value for every ABSENT key, so a save of an unrelated
+ * field (a rename) was refused with an error about a field the operator never touched.
+ */
+describe('createRuntimeSettings CLAMPS an over-ceiling discovery-window seed (05-AUDIT entry 7)', () => {
+  it('stores the ceiling as BOTH the current value and the env default', () => {
+    const { warn } = withWarnings();
+    const settings = createRuntimeSettings({
+      defaultDiscoveryWindowMs: 60 * 60_000,
+      discoveryWindowCeilingMs: 30 * 60_000,
+      warn,
+    });
+    // Both halves matter: `value` is what every new draft inherits, and `envDefault` is what the
+    // console captions as this service's environment default. Seeding the unenforceable number
+    // into either one is a promise the runner's own TTL breaks 30 minutes in.
+    expect(settings.defaultDiscoveryWindowMs.value).toBe(30 * 60_000);
+    expect(settings.defaultDiscoveryWindowMs.envDefault).toBe(30 * 60_000);
+    expect(settings.defaultDiscoveryWindowMs.changed).toBe(false);
+  });
+
+  it('warns loudly, naming both the requested value and the enforced maximum', () => {
+    const { warnings, warn } = withWarnings();
+    createRuntimeSettings({
+      defaultDiscoveryWindowMs: 60 * 60_000,
+      discoveryWindowCeilingMs: 30 * 60_000,
+      warn,
+    });
+    // A clamp the operator cannot see in boot output is indistinguishable from the silent
+    // acceptance this row exists to end, so the message must carry both numbers.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/3600000/);
+    expect(warnings[0]).toMatch(/1800000/);
+  });
+
+  it('leaves the settings surface usable: a save of an UNRELATED field now succeeds', () => {
+    const { warn } = withWarnings();
+    const settings = createRuntimeSettings({
+      serviceName: 'boot',
+      defaultDiscoveryWindowMs: 60 * 60_000,
+      discoveryWindowCeilingMs: 30 * 60_000,
+      warn,
+    });
+    // Before the clamp this returned the ceiling error and applied NOTHING, because the all-or-
+    // nothing set re-read the stored over-ceiling value for the absent discovery key. The operator
+    // was locked out of every setting by a boot value they never chose.
+    expect(settings.applySettings({ serviceName: 'renamed' })).toBeUndefined();
+    expect(settings.serviceName.value).toBe('renamed');
+  });
+
+  it('leaves a seed at or below the ceiling byte-unchanged and silent', () => {
+    const { warnings, warn } = withWarnings();
+    const settings = createRuntimeSettings({
+      defaultDiscoveryWindowMs: 30 * 60_000,
+      discoveryWindowCeilingMs: 30 * 60_000,
+      warn,
+    });
+    // Equal is not over: the unset case seeds the window and the ceiling from the SAME
+    // `cohortTtlMs`, so a clamp that fired at equality would warn on every default boot.
+    expect(warnings).toEqual([]);
+    expect(settings.defaultDiscoveryWindowMs.value).toBe(30 * 60_000);
+  });
+
+  it('leaves the seed alone when no ceiling is configured', () => {
+    const { warnings, warn } = withWarnings();
+    const settings = createRuntimeSettings({
+      defaultDiscoveryWindowMs: 60 * 60_000,
+      warn,
+    });
+    // A service that never set a cohort TTL has no maximum to enforce, so there is nothing to
+    // clamp against and inventing one would truncate a window the service can actually honor.
+    expect(warnings).toEqual([]);
+    expect(settings.defaultDiscoveryWindowMs.value).toBe(60 * 60_000);
+  });
+});
+
+/**
  * A real runner + operator cohort surface wired to a real settings holder, so the read-once rule
  * (D-13) is asserted against the SAME `createDraft` the gated route calls rather than a stand-in.
  */

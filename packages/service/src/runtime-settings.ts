@@ -126,9 +126,11 @@ export interface RuntimeSettingsSeed {
    * discovery-window default (D-11/D-13, RESEARCH Pitfall 7). Nothing in `aggregation@0.4.0` is
    * per-cohort: the runner arms its TTL at advertise and never resets it, so a default window
    * ABOVE that TTL is a promise this service cannot keep for the drafts that inherit it. Supplying
-   * it lets {@link RuntimeSettings.applySettings} refuse such a value at save time, naming the real
-   * maximum, exactly as `validateDraft` already refuses it per draft. Omitted, no ceiling applies
-   * (a service with no TTL never truncates anything).
+   * it enforces the ceiling on BOTH paths that can set the value, by the two different rules the
+   * docs state distinctly: the boot SEED is clamped down to it with a loud warning, and a runtime
+   * SAVE above it is refused by {@link RuntimeSettings.applySettings} naming the real maximum,
+   * exactly as `validateDraft` already refuses it per draft. Omitted, no ceiling applies (a service
+   * with no TTL never truncates anything).
    */
   discoveryWindowCeilingMs?: number;
   /** Where a malformed numeric seed is reported. Defaults to `console.warn`. */
@@ -344,11 +346,49 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
     ONE_MINUTE_MS,
   );
 
+  // Apply the ceiling to the SEED as well, clamping down with a loud warning (D-11/D-12,
+  // `05-AUDIT.md` entry 7). It happens here, where the seed and the ceiling are both already
+  // resolved, and NOT as a boot check in `demo-server.ts`: a second rule at the env layer is a
+  // second rule that can drift from this one.
+  //
+  // The asymmetry with `applySettings` below is deliberate, because the alternative was live and a
+  // future reader will ask. A SAVE is refused with the real maximum named: it is an operator's
+  // explicit act on a value they chose and typed, so naming the limit is the honest answer. A boot
+  // SEED is inherited configuration the operator may never have chosen, and every other
+  // out-of-range seed in this file (the malformed numerics through {@link numericKnob}, the unknown
+  // beacon type, the k > n threshold) warns and falls back rather than aborting; refusing to boot
+  // here would turn one typo in a stranger's env file into a crash loop on the very path this
+  // product's core value depends on.
+  //
+  // Two things were wrong without it, and the clamp closes both by construction. The gated settings
+  // read served the over-ceiling number with `changed: false`, so the console captioned as this
+  // service's `env default` a window the runner's own TTL would overrule (no app timer is even
+  // armed: `armWindowTimer` returns early at or above the TTL, so the cohort lapsed with the
+  // generic expired fate instead of the app's window-expired reason). And because
+  // {@link RuntimeSettings.applySettings} re-reads the STORED value for every absent key, an
+  // over-ceiling stored value refused every save as a set, including saves of fields the operator
+  // did touch: a rename failed behind an error about a window they never set. With no over-ceiling
+  // value storable, the save path has nothing left to trip over.
+  const clampedDiscoveryWindowMs =
+    seededDiscoveryWindowMs !== undefined &&
+    discoveryWindowCeilingMs !== undefined &&
+    seededDiscoveryWindowMs > discoveryWindowCeilingMs
+      ? discoveryWindowCeilingMs
+      : seededDiscoveryWindowMs;
+  if (clampedDiscoveryWindowMs !== seededDiscoveryWindowMs) {
+    // Both numbers, in the ms the operator supplied, so boot output says what happened and why
+    // rather than leaving the operator to infer a truncation from a number they never typed.
+    warn(
+      `defaultDiscoveryWindowMs=${seededDiscoveryWindowMs} exceeds this service's cohort TTL; ` +
+        `using ${clampedDiscoveryWindowMs} instead, the longest discovery window this service can enforce`,
+    );
+  }
+
   const serviceName: FieldState<string | undefined> = field(trimToUndefined(seed.serviceName));
   const defaultBeaconType: FieldState<BeaconType> = field(seededBeaconType);
   const defaultSize: FieldState<number> = field(seededSize);
   const defaultThreshold: FieldState<number> = field(seededThreshold);
-  const defaultDiscoveryWindowMs: FieldState<number | undefined> = field(seededDiscoveryWindowMs);
+  const defaultDiscoveryWindowMs: FieldState<number | undefined> = field(clampedDiscoveryWindowMs);
   const defaultFundingWindowMs: FieldState<number | undefined> = field(seededFundingWindowMs);
   const termsText: FieldState<string | undefined> = field(trimToUndefined(seed.termsText));
 
