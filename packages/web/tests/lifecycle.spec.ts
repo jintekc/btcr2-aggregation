@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { createElement } from 'react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { FINALIZABLE_PHASES } from '@btcr2-aggregation/shared';
 import {
   cancelAvailability,
@@ -11,7 +12,55 @@ import {
   seatReclaimNoteVisible,
   typeToConfirmMatches,
 } from '../src/lib/lifecycle';
+import {
+  AFTER_BROADCAST,
+  CANCEL_LABEL,
+  KEEP_RUNNING,
+  LifecycleActions,
+  RECOVERY_OPERATOR_HELD,
+  RECOVERY_THROWAWAY,
+  RUNG3_HEADING,
+  RUNG4_CONFIRM,
+  RUNG4_HEADING,
+} from '../src/components/operator/LifecycleActions';
+import { asRenderedText, renderStatic } from './support/render';
 import type { CohortDetailDTO, FundingView } from '../src/lib/operator';
+import type { OperatorState } from '../src/stores/operator';
+import type { ParticipantState } from '../src/stores/participant';
+
+/**
+ * The render fixtures, and the FILE-SCOPED fakes that carry them into a static render.
+ *
+ * Both holders are plain mutable objects declared here and read LAZILY by the fakes, which is the
+ * recipe `packages/web/tests/support/render.tsx` spells out: a `vi.mock` factory is hoisted above
+ * this file's imports, so it may capture a holder but must resolve both the original module and
+ * the helper by dynamic import. Every other export of both store modules stays REAL (the fake
+ * spreads the actual module), so `CANCEL_BUSY` and `FINALIZE_BUSY` are the shipped constants.
+ *
+ * Typed as partials of the stores' own state: an untyped literal would turn a misspelled key into
+ * an `undefined` indistinguishable from an unseeded store, which is precisely the silent failure
+ * the harness docstring warns about.
+ *
+ * NOTE: there is no `setState` anywhere in this file, and there cannot be. A static render takes
+ * `useSyncExternalStore`'s SERVER snapshot, which zustand implements as `getInitialState()`, so a
+ * `setState` seed is invisible; and here the bound hooks ARE the fake, which exposes none. The
+ * demonstration of that trap lives in `packages/web/tests/support/render.spec.tsx`, against a
+ * store that test creates itself.
+ */
+const operatorFixture: { current: Partial<OperatorState> } = { current: {} };
+const participantFixture: { current: Partial<ParticipantState> } = { current: {} };
+
+vi.mock('../src/stores/operator', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/stores/operator')>();
+  const { selectorFake } = await import('./support/render');
+  return { ...actual, useOperator: selectorFake(() => operatorFixture.current) };
+});
+
+vi.mock('../src/stores/participant', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/stores/participant')>();
+  const { selectorFake } = await import('./support/render');
+  return { ...actual, useParticipant: selectorFake(() => participantFixture.current) };
+});
 
 /**
  * SVC-04 lifecycle predicates (Phase 5 D-03/D-04). Every availability and ceremony decision the
@@ -271,6 +320,73 @@ describe('ConfirmPanel arms through the tested predicate (05-19)', () => {
 
   it('keeps the button disabled expression reading that single flag', () => {
     expect(PRIMITIVES_SRC).toContain('disabled={busy || !armed}');
+  });
+});
+
+const COHORT_ID = 'cohort-abc-123456';
+
+/**
+ * The post-broadcast cancel suppression, RENDERED (05-21, `05-AUDIT-2.md` entry 2).
+ *
+ * This is the only barrier there is. `packages/service/src/operator-cohorts.ts` checks that the
+ * cohort is advertised and then calls `runner.stopCohort` unconditionally, and the route adds only
+ * an id-shape check, so there is NO server-side post-broadcast guard behind this JSX. Swapping the
+ * two arms would leave `Cancel cohort` on a cohort whose beacon transaction is already on the
+ * wire, and until this block existed nothing in the repo would have noticed.
+ *
+ * Asserted against real markup rather than a source grep, which is what the harness in
+ * `packages/web/tests/support/render.tsx` bought. The two rows are also this block's ANTI-VACUITY
+ * control: the same component under two fixtures must produce two different outputs, so a row
+ * cannot pass because the fixture never reached the renderer.
+ */
+describe('LifecycleActions hides Cancel once the beacon transaction is out (D-04, rendered)', () => {
+  beforeEach(() => {
+    // Reset between rows, so one fixture cannot leak into the next describe.
+    operatorFixture.current = {};
+    participantFixture.current = { network: 'regtest' };
+  });
+
+  function markup(over: Partial<CohortDetailDTO>): string {
+    operatorFixture.current = { detail: detail(over) };
+    return renderStatic(
+      createElement(LifecycleActions, { baseUrl: 'http://svc.example', cohortId: COHORT_ID }),
+    );
+  }
+
+  it('renders the post-broadcast line and NO cancel control once the anchor carries a txid', () => {
+    const html = markup({
+      phase: 'SigningStarted',
+      anchor: { enabled: true, state: 'broadcast', txid: 'ab12' },
+    });
+    expect(html).toContain(asRenderedText(AFTER_BROADCAST));
+    // Hidden, not disabled: a disabled button would imply the act is still possible under some
+    // condition, and after a broadcast it is not.
+    expect(html).not.toContain(CANCEL_LABEL);
+  });
+
+  it('renders the cancel control and NO post-broadcast line while the cohort is still live', () => {
+    const html = markup({ phase: 'Advertised' });
+    expect(html).toContain(CANCEL_LABEL);
+    expect(html).not.toContain(asRenderedText(AFTER_BROADCAST));
+  });
+});
+
+describe('the shipped cancel copy is pinned at the source (05-AUDIT-2.md entries 1 and 2)', () => {
+  it('contains no em-dash in any authored cancel string', () => {
+    // Em-dashes in authored copy propagate straight into shipped UI strings; guard at the source,
+    // in the shape `packages/web/tests/settings.spec.ts` already uses.
+    for (const copy of [
+      CANCEL_LABEL,
+      AFTER_BROADCAST,
+      KEEP_RUNNING,
+      RUNG3_HEADING,
+      RUNG4_HEADING,
+      RUNG4_CONFIRM,
+      RECOVERY_OPERATOR_HELD,
+      RECOVERY_THROWAWAY,
+    ]) {
+      expect(copy).not.toMatch(/—/);
+    }
   });
 });
 

@@ -336,7 +336,15 @@ export const ADD_TEST_PEERS_BUSY = 'Adding…';
  */
 export const NO_SEATS_LEFT_REASON = 'This cohort has no seats left.';
 
-interface OperatorState {
+/**
+ * Exported ONLY so a render fixture can be typed as `Partial<OperatorState>` (05-21).
+ *
+ * A render seeded through an untyped object literal turns a misspelled key into an `undefined`
+ * that is indistinguishable from an unseeded store, which is the same silent failure that makes a
+ * `setState` seed vacuous. Typed against the real state, the typo is a compile error, and since
+ * 05-21 put `packages/web/tests` inside the root `tsc -b`, `pnpm test` now catches it.
+ */
+export interface OperatorState {
   auth: OperatorAuthStatus;
   error?: string;
   /** The operator's own cohorts (drafts, advertised, and expired records). */

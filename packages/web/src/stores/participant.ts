@@ -130,7 +130,15 @@ export interface ParticipantResult {
   updateHashHex: string | null;
 }
 
-interface ParticipantState {
+/**
+ * Exported ONLY so a render fixture can be typed as `Partial<ParticipantState>` (05-21).
+ *
+ * A render seeded through an untyped object literal turns a misspelled key into an `undefined`
+ * that is indistinguishable from an unseeded store, which is the same silent failure that makes a
+ * `setState` seed vacuous. Typed against the real state, the typo is a compile error, and since
+ * 05-21 put `packages/web/tests` inside the root `tsc -b`, `pnpm test` now catches it.
+ */
+export interface ParticipantState {
   identity: Identity | null;
   did: string | null;
   /**

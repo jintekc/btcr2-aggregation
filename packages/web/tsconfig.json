@@ -13,7 +13,14 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": false,
     "allowImportingTsExtensions": true,
-    "types": ["vite/client"]
+    "types": ["vite/client"],
+    // `composite` is what makes this package referenceable from the root solution, so `pnpm test`
+    // (`tsc -b && vitest run`) typechecks it (05-AUDIT-2.md structural cause 2). TypeScript 5.9
+    // permits composite together with `noEmit` and `allowImportingTsExtensions`, so nothing is
+    // emitted except the tsbuildinfo the root `clean` script already removes.
+    "composite": true
   },
-  "include": ["src"]
+  // `tests` is included deliberately: with `include: ["src"]` the fourteen spec files under
+  // `packages/web/tests` were typechecked by NOTHING in the repo, not even the package build.
+  "include": ["src", "tests"]
 }

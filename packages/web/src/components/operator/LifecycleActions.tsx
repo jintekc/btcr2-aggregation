@@ -40,18 +40,26 @@ import type { CohortDetailDTO } from '../../lib/operator';
  * chip and the committed-fallback state only ever arrive from the served projection).
  */
 
-/** Exact 05-UI-SPEC copy, all em-dash-free. */
-const CANCEL_LABEL = 'Cancel cohort';
+/**
+ * Exact 05-UI-SPEC copy, all em-dash-free.
+ *
+ * The cancel family is EXPORTED (05-21, `05-AUDIT-2.md` entries 1 and 2) so the render assertions
+ * in `packages/web/tests/lifecycle.spec.ts` compare against the shipped strings rather than
+ * retyped copies of them, and so an em-dash guard can be taken over them at the source. A test
+ * that retypes the sentence it is checking proves the tester can type, not that the product ships
+ * that sentence.
+ */
+export const CANCEL_LABEL = 'Cancel cohort';
 const AVAILABILITY_NOTE = "Available until this cohort's beacon transaction is broadcast.";
-const AFTER_BROADCAST =
+export const AFTER_BROADCAST =
   "This cohort's beacon transaction is already broadcast, so there is nothing left to cancel.";
-const KEEP_RUNNING = 'Keep it running';
-const RUNG3_HEADING = 'Cancel this cohort?';
-const RUNG4_HEADING = 'Cancel this funded cohort?';
-const RUNG4_CONFIRM = 'Cancel funded cohort';
-const RECOVERY_OPERATOR_HELD =
+export const KEEP_RUNNING = 'Keep it running';
+export const RUNG3_HEADING = 'Cancel this cohort?';
+export const RUNG4_HEADING = 'Cancel this funded cohort?';
+export const RUNG4_CONFIRM = 'Cancel funded cohort';
+export const RECOVERY_OPERATOR_HELD =
   "Operator-held recovery key: you can recover the funds sent to this cohort's beacon address.";
-const RECOVERY_THROWAWAY =
+export const RECOVERY_THROWAWAY =
   "Throwaway recovery key: funds sent to this cohort's beacon address are unrecoverable.";
 const FINALIZE_LABEL = 'Finalize now';
 const FINALIZE_NOT_SIGNING = "Available once this cohort's signing round starts.";

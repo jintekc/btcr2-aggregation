@@ -228,7 +228,12 @@ describe('the store gate: a participant is never seated with an unrecorded accep
       termsAcceptance: null,
       termsAccepting: false,
       termsError: null,
-      status: 'idle',
+      // A REAL member of `ParticipantStatus`, and the one the store actually holds once an
+      // identity exists. This seed used to read `'idle'`, which the union has never contained: it
+      // wrote a value the store can never hold, so the two assertions that read it back could
+      // only ever compare one impossible value against another. Surfaced by 05-21 putting
+      // `packages/web/tests` inside `tsc -b` for the first time (05-AUDIT-2.md cause 2).
+      status: 'ready',
     });
   });
 
@@ -238,8 +243,11 @@ describe('the store gate: a participant is never seated with an unrecorded accep
 
   it('refuses the join outright when terms are set and nothing is recorded', async () => {
     await useParticipant.getState().join('http://localhost', COHORT);
-    // Never reached 'connecting': the gate runs before any teardown or runner construction.
-    expect(useParticipant.getState().status).toBe('idle');
+    // The refusal the comment always described, now actually asserted: the gate runs BEFORE any
+    // teardown or runner construction, so the status never advances to 'connecting' and is left
+    // exactly where the seed put it.
+    expect(useParticipant.getState().status).not.toBe('connecting');
+    expect(useParticipant.getState().status).toBe('ready');
     expect(useParticipant.getState().termsError).toBe(TERMS_ACCEPTANCE_FAILED);
   });
 
@@ -248,7 +256,8 @@ describe('the store gate: a participant is never seated with an unrecorded accep
       termsAcceptance: { cohortId: 'cohort-elsewhere', hash: 'ab'.repeat(32), acceptedAt: 'x' },
     });
     await useParticipant.getState().join('http://localhost', COHORT);
-    expect(useParticipant.getState().status).toBe('idle');
+    expect(useParticipant.getState().status).not.toBe('connecting');
+    expect(useParticipant.getState().status).toBe('ready');
   });
 
   it('records an acceptance and returns true when the service stores it', async () => {
@@ -279,17 +288,24 @@ describe('the store gate: a participant is never seated with an unrecorded accep
   });
 
   it('posts ONLY the record, its signature and the genesis: never the private key', async () => {
-    const spy = vi.fn(async () => new Response(JSON.stringify({ hash: 'cd'.repeat(32) }), { status: 200 }));
+    // Typed as the thing it stands in for, so the recorded call tuple is `fetch`'s own and
+    // `calls[0][1]` is genuinely a `RequestInit`. Untyped, the inferred tuple is EMPTY, index 1
+    // does not exist on it, and the old `as RequestInit` conversion was papering over that rather
+    // than typing it (surfaced by 05-21 putting `packages/web/tests` inside `tsc -b`).
+    const spy = vi.fn<typeof fetch>(
+      async () => new Response(JSON.stringify({ hash: 'cd'.repeat(32) }), { status: 200 }),
+    );
     vi.stubGlobal('fetch', spy);
     await useParticipant.getState().acceptTerms('http://localhost', COHORT);
-    const body = JSON.parse(String((spy.mock.calls[0]?.[1] as RequestInit).body));
-    expect(Object.keys(body).sort()).toEqual(['acceptance', 'signature']);
+    const sent = String(spy.mock.calls[0]?.[1]?.body);
+    const body: unknown = JSON.parse(sent);
+    expect(Object.keys(body as Record<string, unknown>).sort()).toEqual(['acceptance', 'signature']);
     // The strongest form of the custody claim: the actual secret does not appear anywhere in
     // the serialized request.
     const secretHex = Buffer.from(
       useParticipant.getState().identity!.keys.secretKey.bytes,
     ).toString('hex');
-    expect(String((spy.mock.calls[0]?.[1] as RequestInit).body)).not.toContain(secretHex);
+    expect(sent).not.toContain(secretHex);
   });
 
   it('does not gate a service that set NO terms: the join path is unchanged', async () => {

@@ -4,6 +4,11 @@
     { "path": "packages/shared" },
     { "path": "packages/service" },
     { "path": "packages/participant" },
-    { "path": "e2e" }
+    { "path": "e2e" },
+    // LAST on purpose: `packages/web` resolves `@btcr2-aggregation/shared` and
+    // `@btcr2-aggregation/participant` through workspace symlinks to their BUILT declaration
+    // files, so the projects that emit those declarations have to build first. Its presence here
+    // is what puts the web package (src and tests) inside `pnpm test` (05-AUDIT-2.md cause 2).
+    { "path": "packages/web" }
   ]
 }
