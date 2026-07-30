@@ -315,6 +315,35 @@ describe('esplora - checkEndpoint orders parse, probe, compare', () => {
       0: NETWORKS.regtest.genesisHash,
     });
     expect(await checkEndpoint(ENDPOINT, 'regtest')).toEqual({ kind: 'ok', base: ENDPOINT });
+    // ONE request on a chain that needs no second marker. Counting matters as much as the
+    // verdict: a row that only read the verdict would pass just as happily against a probe that
+    // asked twice and took whichever answer it liked, and this endpoint belongs to a third party
+    // who is owed no more requests than the check actually needs.
+    expect(calls).toHaveLength(1);
+  });
+
+  it('refuses an endpoint whose required second marker cannot be read at all', async () => {
+    // Block zero agrees, so the signet-family second marker is genuinely required, and the
+    // endpoint cannot serve it. "Cannot verify" is refused, never waved through (RESEARCH A3):
+    // the alternative is treating a half-finished observation as a confirmed identity.
+    stubChain({ 0: NETWORKS.mutinynet.genesisHash });
+    expect(await checkEndpoint(ENDPOINT, 'mutinynet')).toEqual({ kind: 'unreachable' });
+    expect(calls).toHaveLength(2);
+  });
+
+  it('stops after block zero when block zero already disagrees', async () => {
+    // The second probe is gated on block zero ALREADY agreeing, and that gate is load-bearing in
+    // both directions. It keeps the common case to one request, and it stops a height-one marker
+    // that happens to match ours from rescuing an endpoint whose genesis is somebody else's
+    // chain entirely. Our own marker was never observed here, so the honest verdict is that we
+    // could not verify the endpoint, not that we identified it.
+    stubChain({
+      0: NETWORKS.regtest.genesisHash,
+      [NETWORKS.mutinynet.distinguishingBlock!.height]:
+        NETWORKS.mutinynet.distinguishingBlock!.hash,
+    });
+    expect(await checkEndpoint(ENDPOINT, 'mutinynet')).toEqual({ kind: 'unreachable' });
+    expect(calls).toHaveLength(1);
   });
 
   it('separates two signet-family chains that SHARE a genesis block', async () => {
@@ -331,6 +360,8 @@ describe('esplora - checkEndpoint orders parse, probe, compare', () => {
       theirNetwork: NETWORKS.signet.label,
       ourNetwork: NETWORKS.mutinynet.label,
     });
+    // Exactly two: block zero, then the marker that block zero cannot settle.
+    expect(calls).toHaveLength(2);
   });
 
   it('accepts the matching signet-family chain on the same shared genesis', async () => {
@@ -340,6 +371,7 @@ describe('esplora - checkEndpoint orders parse, probe, compare', () => {
         NETWORKS.mutinynet.distinguishingBlock!.hash,
     });
     expect(await checkEndpoint(ENDPOINT, 'mutinynet')).toEqual({ kind: 'ok', base: ENDPOINT });
+    expect(calls).toHaveLength(2);
   });
 
   it('classifies a thrown fetch as browser-rejected, not as unreachable', async () => {
@@ -582,6 +614,36 @@ describe('participant store - setting and clearing an endpoint', () => {
     expect(s.chainEndpoint).toBe(ENDPOINT);
     expect(s.chainEndpointVerdict).toEqual({ kind: 'ok', base: ENDPOINT });
     expect(s.chainEndpointProbing).toBe(false);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('judges the endpoint against THIS participant\'s chain, not a chain the code picked', async () => {
+    // The row every other row in this block cannot be: it is the only one whose store network is
+    // not the one they all share. That sameness was the hole (`05-AUDIT-2.md` entry 3) - with six
+    // rows seeded to one chain, hardcoding the network at the store's single call into the
+    // endpoint check passed all six, while a mutinynet participant would have been handed a
+    // regtest esplora and read UTXOs and confirmations off the wrong chain, feeding `register()`'s
+    // funding read and, with the second opt-in on, a direct broadcast (T-05-11-03).
+    //
+    // The shared-genesis pair is what makes the assertion sharp: this endpoint answers with the
+    // signet family's genesis, which mutinynet ALSO carries, so only the height-one marker
+    // separates them and only a check given mutinynet can tell the two apart.
+    useParticipant.setState({ network: 'mutinynet' });
+    stubChain({
+      0: NETWORKS.signet.genesisHash,
+      [NETWORKS.signet.distinguishingBlock!.height]: NETWORKS.signet.distinguishingBlock!.hash,
+    });
+    await useParticipant.getState().useChainEndpoint(ENDPOINT);
+    const s = useParticipant.getState();
+    expect(s.chainEndpoint).toBeNull();
+    // The message names the STORE's own chain, not just the endpoint's. A refusal that named
+    // only the far side would leave the participant unable to tell which of the two is wrong.
+    expect(s.chainEndpointVerdict).toEqual({
+      kind: 'mismatch',
+      theirNetwork: NETWORKS.signet.label,
+      ourNetwork: NETWORKS.mutinynet.label,
+    });
+    expect(calls).toHaveLength(2);
   });
 
   it('keeps a refused endpoint INACTIVE and holds its specific verdict', async () => {
