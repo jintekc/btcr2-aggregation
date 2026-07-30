@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 27 of 27 (gap-closure round 2, 05-21..05-27: 6 of 7 done)
+Plan: 27 of 27 (gap-closure round 2, 05-21..05-27: 7 of 7 done)
 Status: Phase complete — ready for verification
 Last activity: 2026-07-30 - gap round 2 wave 6 complete (05-26): the discovery-window ceiling is proven SEEDED by a real boot, three no-op route guards are distinguished from having no guard, the live test-peer caveat is driven through the shipped spawn path, and the frozen terms hash has externally verifiable answers
 
