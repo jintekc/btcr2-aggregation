@@ -196,7 +196,7 @@ Plans:
 
 **Slip order** (CONTEXT D-22, three tiers): CORE never slips - SVC-04 lifecycle control (plans 01 through 07 and 10). SECOND - the four absorbed parked items (plans 08 and 09). SLIP-FIRST - the three folded scoping one-pagers (plans 11, 12, and 13), which re-park cleanly to Phase 6 or the next milestone if the phase runs long.
 
-**Plans**: 21/27 plans executed
+**Plans**: 22/27 plans executed
 Plans:
 **Wave 1**
 
@@ -284,7 +284,7 @@ Note on the `depends_on` chain: 05-22 through 05-26 each declare the previous pl
 
 **Gap round 2, wave 2** *(blocked on 05-21: the render harness)*
 
-- [ ] 05-22-PLAN.md - Operator console render pins: the mode chip, the test-peer refusal, the dismissal body, the kill-switch mode guard (SVC-04, defects #25/#22/#10/#20/#27, wave 2)
+- [x] 05-22-PLAN.md - Operator console render pins: the mode chip, the test-peer refusal, the dismissal body, the kill-switch mode guard (SVC-04, defects #25/#22/#10/#20/#27, wave 2)
 
 **Gap round 2, wave 3**
 
@@ -333,5 +333,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 2. Participant Discovery + Browse-and-Pick Join | 9/9 | Complete    | 2026-07-16 |
 | 3. Participant Submit, Co-Sign, Track, and Resolve | 9/9 | Complete    | 2026-07-22 |
 | 4. Operator Cohort Monitoring | 8/8 | Complete    | 2026-07-27 |
-| 5. Operator Cohort Lifecycle Control | 21/27 | In Progress|  |
+| 5. Operator Cohort Lifecycle Control | 22/27 | In Progress|  |
 | 6. Two-Stranger End-to-End + Real-Aggregator Framing | 0/TBD | Not started | - |
