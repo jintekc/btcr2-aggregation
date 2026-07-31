@@ -4,15 +4,15 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
-status: verifying
+status: executing
 stopped_at: Completed 05-27-PLAN.md (phase 5 second gap round complete)
-last_updated: "2026-07-30T23:30:13.455Z"
+last_updated: "2026-07-31T01:06:46.489Z"
 last_activity: 2026-07-30
 last_activity_desc: "gap round 2 wave 6 complete (05-26): the discovery-window ceiling is proven SEEDED by a real boot, three no-op route guards are distinguished from having no guard, the live test-peer caveat is driven through the shipped spawn path, and the frozen terms hash has externally verifiable answers"
 progress:
   total_phases: 5
   completed_phases: 5
-  total_plans: 57
+  total_plans: 60
   completed_plans: 57
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
 Plan: 27 of 27 (gap-closure round 2, 05-21..05-27: 7 of 7 done)
-Status: Phase complete — ready for verification
+Status: Ready to execute
 Last activity: 2026-07-30 - gap round 2 wave 6 complete (05-26): the discovery-window ceiling is proven SEEDED by a real boot, three no-op route guards are distinguished from having no guard, the live test-peer caveat is driven through the shipped spawn path, and the frozen terms hash has externally verifiable answers
 
 Progress: [██████████] 100%
