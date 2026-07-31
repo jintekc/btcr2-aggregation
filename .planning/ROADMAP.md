@@ -196,7 +196,7 @@ Plans:
 
 **Slip order** (CONTEXT D-22, three tiers): CORE never slips - SVC-04 lifecycle control (plans 01 through 07 and 10). SECOND - the four absorbed parked items (plans 08 and 09). SLIP-FIRST - the three folded scoping one-pagers (plans 11, 12, and 13), which re-park cleanly to Phase 6 or the next milestone if the phase runs long.
 
-**Plans**: 27/27 plans executed
+**Plans**: 27/30 plans executed (third gap round, 05-28 through 05-30, planned 2026-07-30)
 Plans:
 **Wave 1**
 
@@ -305,6 +305,20 @@ Note on the `depends_on` chain: 05-22 through 05-26 each declare the previous pl
 **Gap round 2, wave 7** *(blocked on the whole round: reads the UAT ledger)*
 
 - [x] 05-27-PLAN.md - Browser witness, honest-success pin, Secure-cookie row, and the single `05-UAT.md` reconciliation (SVC-04/SVC-05/PART-05/PART-06, defects #27-e2e/#3/#28, wave 7)
+
+**Third gap round** (planned 2026-07-30 from `05-VERIFICATION.md`, `status: gaps_found`, 5 of 7 Success Criteria verified; run with `/gsd-execute-phase 5 --gaps-only`). Owner-approved scope is exactly three items: the two Success-Criterion-failing gaps plus warning W3. Waves restart at 1 and are SINGLETONS: each plan deliberately puts the tree into a RED state (a failing row written before its fix, and a revert-the-fix check afterwards) and each ends by running the whole suite, so two plans in one wave would read each other's transiently broken tree. The files are disjoint, so the `depends_on` edges express serialization only, not a code dependency.
+
+**Gap round 3, wave 1**
+
+- [ ] 05-28-PLAN.md - The drill-down cancel/finalize ceremony can no longer be armed against a stale, wrong cohort (SVC-04, Gap 1 / SC 1 / review CR-1, wave 1)
+
+**Gap round 3, wave 2** *(serialized behind 05-28)*
+
+- [ ] 05-29-PLAN.md - The `mismatch` chain verdict becomes reachable on the default network, naming both chains (PART-05, Gap 2 / SC 6 / review WR-1, wave 2)
+
+**Gap round 3, wave 3** *(serialized behind 05-29)*
+
+- [ ] 05-30-PLAN.md - A malformed or non-whole-minute settings seed can no longer wedge every save until restart (SVC-04, W3 / review WR-2 and WR-3, wave 3)
 
 **UI hint**: yes
 
