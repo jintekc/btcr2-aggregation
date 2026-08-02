@@ -348,7 +348,10 @@ describe('LifecycleActions hides Cancel once the beacon transaction is out (D-04
   });
 
   function markup(over: Partial<CohortDetailDTO>): string {
-    operatorFixture.current = { detail: detail(over) };
+    // The provenance matches the rendered cohort, as the store holds it after a poll that was not
+    // raced (Gap 1). Without it the component now refuses to render at all, which is itself
+    // evidence the refusal below is wired rather than decorative.
+    operatorFixture.current = { detail: detail(over), detailCohortId: COHORT_ID };
     return renderStatic(
       createElement(LifecycleActions, { baseUrl: 'http://svc.example', cohortId: COHORT_ID }),
     );
@@ -369,6 +372,69 @@ describe('LifecycleActions hides Cancel once the beacon transaction is out (D-04
     const html = markup({ phase: 'Advertised' });
     expect(html).toContain(CANCEL_LABEL);
     expect(html).not.toContain(asRenderedText(AFTER_BROADCAST));
+  });
+});
+
+/**
+ * The second barrier behind the store's round guard (`05-VERIFICATION.md` Gap 1, review CR-1).
+ *
+ * `LifecycleActions` receives the cohort it will ACT on as a prop and reads the data it REASONS
+ * about from a shared store slot, so during a navigation race the two can describe different
+ * cohorts. Every availability, rung, seat count and recovery-key disclosure it renders is derived
+ * from the slot, while the confirm click targets the prop: an unfunded cohort A's late answer
+ * paints the cheap rung-3 ceremony, and one click cancels the funded cohort B on screen.
+ *
+ * The component's answer is a REFUSAL, never a fallback, because there is no safe default rung to
+ * guess. The store's round guard stops the wrong data being painted; this stops the ceremony being
+ * armed at all if any future path ever paints it anyway, which is the difference between a bug that
+ * strands funds and a bug that renders an empty card.
+ *
+ * The negative rows assert EMPTY markup rather than a missing label, so a row cannot pass because
+ * a label moved, and the first row is this block's anti-vacuity control.
+ */
+describe('LifecycleActions refuses a cohort it cannot tie the served data to (Gap 1, rendered)', () => {
+  const OTHER_COHORT = 'cohort-zzz-999999';
+
+  beforeEach(() => {
+    operatorFixture.current = {};
+    participantFixture.current = { network: 'regtest' };
+  });
+
+  function markupWith(fixture: Partial<OperatorState>): string {
+    operatorFixture.current = fixture;
+    return renderStatic(
+      createElement(LifecycleActions, { baseUrl: 'http://svc.example', cohortId: COHORT_ID }),
+    );
+  }
+
+  it('renders the cancel control when the served detail is provably about THIS cohort', () => {
+    // The anti-vacuity control: without it every negative row below would pass against a fixture
+    // that never reached the renderer.
+    const html = markupWith({ detail: detail({ phase: 'Advertised' }), detailCohortId: COHORT_ID });
+    expect(html).toContain(CANCEL_LABEL);
+  });
+
+  it('renders NOTHING when the served detail is an answer about a DIFFERENT cohort', () => {
+    const html = markupWith({ detail: detail({ phase: 'Advertised' }), detailCohortId: OTHER_COHORT });
+    expect(html).toBe('');
+  });
+
+  it('renders NOTHING when the served detail carries no provenance at all', () => {
+    // An unattributed document is not evidence about any cohort.
+    const html = markupWith({ detail: detail({ phase: 'Advertised' }) });
+    expect(html).toBe('');
+  });
+
+  it('refuses the FUNDED rung-4 path the same way, so cheap friction never stands in for expensive', () => {
+    // This is the exact substitution the gap describes: cohort A is unfunded and cohort B, on
+    // screen, is funded. Rendering anything here shows a rung-3 ceremony over a rung-4 act.
+    const html = markupWith({
+      detail: detail({ phase: 'SigningStarted', funding: funding({ state: 'funded' }) }),
+      detailCohortId: OTHER_COHORT,
+    });
+    expect(html).toBe('');
+    expect(html).not.toContain(RUNG4_HEADING);
+    expect(html).not.toContain(CANCEL_LABEL);
   });
 });
 
