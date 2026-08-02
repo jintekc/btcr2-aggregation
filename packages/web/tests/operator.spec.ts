@@ -34,6 +34,20 @@ const SAMPLE_DETAIL: CohortDetailDTO = {
   activity: [],
 };
 
+/**
+ * A SECOND cohort's detail, visibly different from {@link SAMPLE_DETAIL} in both its seat count
+ * and its phase. The two differences are the point: a concurrent-poll assertion comparing two
+ * identical documents would pass no matter which one landed.
+ */
+const OTHER_DETAIL: CohortDetailDTO = {
+  ...SAMPLE_DETAIL,
+  members: [{ did: 'did:example:bob', status: 'seated', since: 2, round: 'seated' }],
+  seatsJoined: 3,
+  capacity: 3,
+  phase: 'SigningStarted',
+  submissions: [{ did: 'did:example:bob', submitted: true }],
+};
+
 /** Reset the operator store to a signed-in, list-view baseline before each test. */
 function resetStore(): void {
   useOperator.setState({
@@ -41,6 +55,7 @@ function resetStore(): void {
     error: undefined,
     view: { kind: 'list' },
     detail: undefined,
+    detailCohortId: undefined,
     detailStale: false,
     lastUpdated: undefined,
     // Cleared too, so a health assertion never inherits a previous test's served mode.
@@ -127,8 +142,204 @@ describe('operator store pollDetail branching', () => {
     );
     await useOperator.getState().pollDetail(BASE);
     expect(useOperator.getState().detail).toEqual(SAMPLE_DETAIL);
+    expect(useOperator.getState().detailCohortId).toBe('cohort-1');
     expect(useOperator.getState().detailStale).toBe(false);
     expect(typeof useOperator.getState().lastUpdated).toBe('number');
+  });
+});
+
+/**
+ * The concurrent drill-down poll race (`05-VERIFICATION.md` Gap 1, review CR-1).
+ *
+ * `pollDetail` reads the open cohort id BEFORE its await and, until this block existed, wrote the
+ * answer into the shared `detail` slot afterwards with no re-check. `openCohort` re-points the view
+ * and clears `detail`, but nothing cancels or invalidates a request already in flight for the
+ * PREVIOUS cohort, so the window is that request's remaining latency (bounded by the client's
+ * 8000 ms timeout).
+ *
+ * The harm is not a cosmetic mis-render. `LifecycleActions` takes the cohort it will ACT on as a
+ * prop and reads the data it REASONS about from this store slot, so a late answer about an unfunded
+ * cohort A can arm the cheap rung-3 ceremony while one click cancels the funded cohort B on screen.
+ *
+ * The whole suite covered `pollDetail`'s three answer branches thoroughly, and every one of those
+ * rows is load-bearing about what each ANSWER means. What no row did was ask a SECOND question
+ * while the first was still in flight, which is why this shipped through a 1169-test gate.
+ */
+describe('operator store pollDetail concurrency (Gap 1: an answer belongs to ONE cohort)', () => {
+  beforeEach(resetStore);
+
+  /** A promise plus its settle handles, so a row controls exactly WHEN an answer lands. */
+  function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
+    let resolve!: (v: T) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  /**
+   * Answer PER COHORT rather than globally, so the race is staged deterministically.
+   *
+   * The request URL is `/v1/operator/cohorts/{id}`, so the stub reads the id back out of it and
+   * hands over the promise this row owns. Settle ORDER is the thing under test, so nothing here
+   * uses a timer: a timer would turn the row into a race about the test runner instead.
+   */
+  function stubPerCohort(answers: Record<string, Promise<Response>>): void {
+    vi.stubGlobal('fetch', (input: unknown) => {
+      const url = String(input);
+      const id = decodeURIComponent(url.slice(url.lastIndexOf('/') + 1));
+      const staged = answers[id];
+      if (!staged) {
+        return Promise.reject(new Error(`no staged answer for cohort ${id}`));
+      }
+      return staged;
+    });
+  }
+
+  /** An ok response carrying one cohort's served document. */
+  function ok(value: CohortDetailDTO): Response {
+    return new Response(JSON.stringify(value), { status: 200 });
+  }
+
+  /**
+   * The operator's actual sequence: open A, start its poll, navigate to B, settle B, and only
+   * THEN let A's late answer arrive. Returns both polls so a row can await them.
+   */
+  function stageRace(a: Promise<Response>, b: Promise<Response>): { pollA: Promise<void>; pollB: Promise<void> } {
+    stubPerCohort({ 'cohort-a': a, 'cohort-b': b });
+    useOperator.getState().openCohort('cohort-a');
+    const pollA = useOperator.getState().pollDetail(BASE);
+    useOperator.getState().openCohort('cohort-b');
+    const pollB = useOperator.getState().pollDetail(BASE);
+    return { pollA, pollB };
+  }
+
+  it('discards a LATE answer about a cohort the operator has already navigated away from', async () => {
+    const a = deferred<Response>();
+    const b = deferred<Response>();
+    const { pollA, pollB } = stageRace(a.promise, b.promise);
+
+    b.resolve(ok(OTHER_DETAIL));
+    await pollB;
+    // A's answer lands LAST, which is the whole race.
+    a.resolve(ok(SAMPLE_DETAIL));
+    await pollA;
+
+    const s = useOperator.getState();
+    // Both facts, not just the document: asserting the document alone would pass against an
+    // implementation that painted the right data under the wrong cohort's name.
+    expect(s.detail).toEqual(OTHER_DETAIL);
+    expect(s.detailCohortId).toBe('cohort-b');
+    // And it is genuinely the OTHER cohort's document, not a coincidence of identical fixtures.
+    expect(s.detail?.seatsJoined).toBe(3);
+    expect(s.detail?.phase).toBe('SigningStarted');
+  });
+
+  it('does not mark the cohort in view stale when the STALE poll is the one that failed', async () => {
+    const a = deferred<Response>();
+    const b = deferred<Response>();
+    const { pollA, pollB } = stageRace(a.promise, b.promise);
+
+    // B reads successfully FIRST, so this row cannot pass against a view that was never fresh.
+    b.resolve(ok(OTHER_DETAIL));
+    await pollB;
+    expect(useOperator.getState().detailStale).toBe(false);
+
+    a.reject(new Error('network down'));
+    await pollA;
+
+    const s = useOperator.getState();
+    // Freshness is a fact about the cohort being WATCHED, never about whichever request failed.
+    expect(s.detailStale).toBe(false);
+    expect(s.detail).toEqual(OTHER_DETAIL);
+    expect(s.detailCohortId).toBe('cohort-b');
+  });
+
+  it('STILL expires the session on a stale 401, because an expiry is not cohort-scoped', async () => {
+    // The one branch the guard deliberately does not cover. A 401 is true no matter which cohort
+    // asked, and deferring it would leave the operator working a dead session for another tick.
+    const a = deferred<Response>();
+    const b = deferred<Response>();
+    const { pollA, pollB } = stageRace(a.promise, b.promise);
+
+    b.resolve(ok(OTHER_DETAIL));
+    await pollB;
+
+    a.resolve(new Response('no', { status: 401 }));
+    await pollA;
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-out');
+    expect(s.error).toBe(SESSION_EXPIRED);
+    // The expiry path clears the whole gated slice, provenance included.
+    expect(s.detail).toBeUndefined();
+    expect(s.detailCohortId).toBeUndefined();
+  });
+
+  it('leaves the non-race path unchanged, so the guard did not simply disable the poll', async () => {
+    const b = deferred<Response>();
+    stubPerCohort({ 'cohort-b': b.promise });
+    useOperator.getState().openCohort('cohort-b');
+    useOperator.setState({ detailStale: true });
+    const poll = useOperator.getState().pollDetail(BASE);
+    b.resolve(ok(OTHER_DETAIL));
+    await poll;
+
+    const s = useOperator.getState();
+    expect(s.detail).toEqual(OTHER_DETAIL);
+    expect(s.detailCohortId).toBe('cohort-b');
+    expect(s.detailStale).toBe(false);
+    expect(typeof s.lastUpdated).toBe('number');
+  });
+});
+
+/**
+ * The provenance is PAIRED with the data it describes (Gap 1, missing item 1).
+ *
+ * A provenance id that outlives the detail it names is worse than none: it is a stale claim that
+ * the next component to read the slot would believe. So every site that clears `detail` clears the
+ * provenance in the SAME object literal, and these rows drive the three an operator can reach.
+ */
+describe('operator store detail provenance clearing (Gap 1)', () => {
+  beforeEach(resetStore);
+
+  /** Land a real served detail for `id`, through the shipped poll rather than a hand-set field. */
+  async function landDetail(id: string): Promise<void> {
+    useOperator.getState().openCohort(id);
+    vi.stubGlobal('fetch', () => Promise.resolve(new Response(JSON.stringify(SAMPLE_DETAIL), { status: 200 })));
+    await useOperator.getState().pollDetail(BASE);
+    expect(useOperator.getState().detailCohortId).toBe(id);
+  }
+
+  it('closeCohort drops the detail and its provenance together', async () => {
+    await landDetail('cohort-1');
+    useOperator.getState().closeCohort();
+    expect(useOperator.getState().detail).toBeUndefined();
+    expect(useOperator.getState().detailCohortId).toBeUndefined();
+  });
+
+  it('openCohort onto a DIFFERENT cohort drops both, so no id outlives its document', async () => {
+    await landDetail('cohort-1');
+    useOperator.getState().openCohort('cohort-2');
+    expect(useOperator.getState().detail).toBeUndefined();
+    expect(useOperator.getState().detailCohortId).toBeUndefined();
+  });
+
+  it('expireSession drops both with the rest of the gated slice', async () => {
+    await landDetail('cohort-1');
+    useOperator.getState().expireSession();
+    expect(useOperator.getState().detail).toBeUndefined();
+    expect(useOperator.getState().detailCohortId).toBeUndefined();
+  });
+
+  it('signOut drops both with the rest of the gated slice', async () => {
+    await landDetail('cohort-1');
+    vi.stubGlobal('fetch', () => Promise.resolve(new Response('ok', { status: 200 })));
+    await useOperator.getState().signOut(BASE);
+    expect(useOperator.getState().detail).toBeUndefined();
+    expect(useOperator.getState().detailCohortId).toBeUndefined();
   });
 });
 
