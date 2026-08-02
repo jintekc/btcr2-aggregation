@@ -1,534 +1,346 @@
 ---
-phase: 05
-reviewed: 2026-07-30T00:00:00Z
-depth: standard
-status: issues
-files_reviewed: 94
+phase: 05-operator-cohort-lifecycle-control
+reviewed: 2026-08-02T00:00:00Z
+depth: deep
+files_reviewed: 10
+files_reviewed_list:
+  - packages/web/src/stores/operator.ts
+  - packages/web/src/components/operator/LifecycleActions.tsx
+  - packages/web/src/lib/esplora.ts
+  - packages/service/src/runtime-settings.ts
+  - packages/web/tests/operator.spec.ts
+  - packages/web/tests/lifecycle.spec.ts
+  - packages/web/tests/tx-client.spec.ts
+  - packages/web/tests/cohort-form.spec.ts
+  - packages/service/tests/runtime-settings.spec.ts
+  - docs/DEPLOY.md
 findings:
   critical: 1
-  warning: 7
-  info: 5
-  total: 13
+  warning: 5
+  info: 2
+  total: 8
+status: issues_found
 ---
 
-# Phase 5: Code Review Report
+# Phase 5: Code Review Report (re-review after gap-closure round 3)
 
-**Reviewed:** 2026-07-30
-**Depth:** standard
-**Files Reviewed:** 94 (the phase-05 key-file union from `/tmp/review-scope.txt`)
+**Reviewed:** 2026-08-02
+**Depth:** deep (cross-file: store to component to route to holder, plus the callers of every changed module)
+**Files Reviewed:** 10 (the round-3 file set, traced into `operator-cohorts.ts`, `index.ts`, `demo-server.ts`, `CohortDetail.tsx`, `ServiceControls.tsx`, `HealthStrip.tsx`, `DraftEditForm.tsx`, `SettingsView.tsx`, `participant.ts`, `cohort-form.ts`, `networks.ts`)
 **Status:** issues_found
 
 ## Summary
 
-Reviewed the phase-05 surface: the service lifecycle modules (`operator-cohorts.ts`,
-`runtime-settings.ts`, `cohort-intent.ts`, `advert-republish.ts`, `test-peers.ts`,
-`acceptance-ledger.ts`, `hono-adapter.ts`, `index.ts`, `monitor.ts`, `store.ts`,
-`demo-server.ts`), the shared additions (`phases.ts`, `tos.ts`, `networks.ts`), and the web
-operator console plus the participant-side chain-endpoint, PSBT, terms and fate-attribution
-paths.
+Baseline: `pnpm typecheck` (`tsc -b`) clean; `vitest run packages/web/tests packages/service/tests/runtime-settings.spec.ts` is 21/21 files, 438/438 tests green.
 
-Baseline: `pnpm typecheck` (`tsc -b`) is clean and `vitest run` is 68/68 files, 1169/1169 tests
-green. Every finding below is something the suite does not cover, and four of them are
-reproduced with executable evidence in the finding body.
+The three round-3 fixes were verified against the code, not against the summaries:
 
-The auth and anti-oracle posture holds up under inspection: every mutating route is registered
-inside the `operatorAuth` block after both prefix guards, the four anonymous reads
-(`/v1/anchor`, `/v1/funding`, `/v1/cohort-fate`, `/v1/terms/acceptance`) each carry a cheap
-shape guard before any lookup and answer one uniform body, and the kill switch genuinely has no
-enable counterpart anywhere in the holder or the route table. The `cohortKeepsLiveWiring`
-predicate is applied at all three money legs and fails closed.
+- **Prior CR-1 (stale drill-down poll) is genuinely fixed.** `pollDetail` now captures `askedFor` before the await and re-checks `get().view` after it, with the 401 branch deliberately ahead of the guard. `detailCohortId` is written and cleared in the same `set` call as `detail` at all four sites (`pollDetail`, `openCohort`, `closeCohort`, `expireSession`/`signOut`). `packages/web/tests/operator.spec.ts` stages the race deterministically with per-cohort deferreds and carries a real anti-vacuity control.
+- **Prior WR-1 (unreachable `mismatch` on the default network) is genuinely fixed.** `classifyEndpoint` now identifies the chain from block zero before demanding a second marker, and the registry contains exactly one ambiguous genesis (the mutinynet/signet pair), so the reorder cannot widen acceptance. The `accepts NOTHING new` matrix in `tx-client.spec.ts` drives every registry pairing both ways and is the right shape of proof.
+- **Prior WR-2 and WR-3 are fixed for the numeric fields only.** `numericKnob` gained an opt-in integrality check and every window the holder stores is floored to a whole minute. Two residues remain: the same invariant is violated by the two free-text seeds (CR-01 below), and the per-draft validator was left with the weaker rule (WR-03 below).
 
-The concerns are concentrated elsewhere:
+The findings below are what the round did not close, plus two defects the round-3 changes introduced (WR-02, and the `TestPeerAction` half of WR-04). Four are reproduced with executable evidence.
 
-1. One client-side state race lets the highest-stakes confirmation ladder run at the wrong rung
-   against the wrong cohort (CR-1).
-2. Two independent boot-config values that the service accepts without complaint wedge the
-   gated settings surface so that no setting at all can be saved (WR-2, WR-3).
-3. The participant chain guard's primary safety verdict, `mismatch`, is unreachable on the
-   project's default network (WR-1).
+## Narrative Findings (AI reviewer)
 
 ## Critical Issues
 
-### CR-1: A stale detail poll can arm the cheap cancel ceremony against a funded cohort
+### CR-01 (BLOCKER): The round's own stated invariant is false for `SERVICE_NAME` and `TERMS_TEXT`, and a long seed wedges every settings save
 
-**File:** `packages/web/src/stores/operator.ts:1252-1272` (`pollDetail`), with the consequence at
-`packages/web/src/components/operator/CohortDetail.tsx:377` and
-`packages/web/src/components/operator/LifecycleActions.tsx:129-169, 239-285`
+**File:** `packages/service/src/runtime-settings.ts:317-473` (seeding), `packages/service/src/runtime-settings.ts:566-627` (`applySettings`), with the env path at `packages/service/src/demo-server.ts:396,432` and the vacuous pin at `packages/service/tests/runtime-settings.spec.ts:755-772`
 
 **Issue:**
 
-`pollDetail` reads `get().view` once, at the top, then writes the response into the shared
-`detail` slot unconditionally after the `await`:
+Plan 05-30 shipped an invariant and wrote it into the source in capitals:
+
+> THE INVARIANT `requireInteger` EXISTS FOR (`05-VERIFICATION.md` W3, review WR-2). No seed this holder ACCEPTS may be a value {@link RuntimeSettings.applySettings} would REFUSE.
+
+That invariant holds for the numeric fields and the beacon type. It is false for the two free-text fields. The seeds are only trimmed:
 
 ```ts
-async pollDetail(baseUrl) {
-  const { view } = get();
-  if (view.kind !== 'detail') { return; }
-  const result = await fetchCohortDetail(baseUrl, view.cohortId);
+const serviceName: FieldState<string | undefined> = field(trimToUndefined(seed.serviceName));
+const termsText:   FieldState<string | undefined> = field(trimToUndefined(seed.termsText));
+```
+
+while `applySettings` applies `MAX_SERVICE_NAME_CHARS` (200) and `MAX_TERMS_CHARS` (20000) to `nextServiceName` / `nextTermsText` regardless of whether the value came from the patch or was re-read from storage for an absent key. `demo-server.ts` pipes `process.env.SERVICE_NAME` and `process.env.TERMS_TEXT` straight in with no bound.
+
+Reproduced against the shipped module:
+
+```
+$ bun /tmp/rs2.ts
+warns at boot: []
+stored name length: 5000
+stored terms length: 100000
+rename-only save -> Participation terms must be 20000 characters or fewer.
+size-only save   -> Service name must be 200 characters or fewer.
+name after -> 5000
+size after -> 2
+terms-only boot, size save -> Participation terms must be 20000 characters or fewer.
+```
+
+Three consequences, and each is the exact harm the WR-2/WR-3 fix was written to end:
+
+1. The whole gated settings surface refuses every save, silently, until restart. The message names a field the operator did not touch (a size change is refused with a sentence about the service name).
+2. The boot is silent. Every other out-of-range seed in this module warns loudly and falls back; these two do neither.
+3. `GET /v1/config` serves the unbounded text publicly, so the cap that `MAX_TERMS_CHARS` documents as protection against "unbounded in-memory text on a surface an operator can save repeatedly" is not enforced on the path that actually sets it in production (the environment).
+
+`TERMS_TEXT` is the realistic trigger: 20000 characters is roughly 3500 words, and a genuine participation-terms document can exceed that. The operator sees their terms served correctly and then finds the console cannot save anything.
+
+This shipped green because the spec block that claims to state the invariant as a property checks numbers only:
+
+```ts
+function expectHolderInvariants(settings: RuntimeSettings): void {
+  expect(Number.isInteger(settings.defaultSize.value)).toBe(true);
   ...
-  set({ detail: result.value, detailStale: false, lastUpdated: Date.now() });
+  for (const window of [settings.defaultDiscoveryWindowMs.value, settings.defaultFundingWindowMs.value]) { ... }
 }
 ```
 
-There is no abort controller and no re-check of the view after the await. `openCohort` clears
-`detail` and re-points the view, and `CohortDetail`'s effect re-keys on `cohortId`, but neither
-cancels nor invalidates a request already in flight for the previous cohort. The stale response
-therefore lands in `detail` while `view.cohortId` names a different cohort. The window is the
-remaining latency of that request, bounded by the client's 8000 ms timeout.
+`HOSTILE_SEEDS` has no string row at all. `docs/DEPLOY.md` documents no length bound for either variable either, so an operator has no way to know the limit before booting into it.
 
-That is not merely a cosmetic mis-render, because the drill-down splits its two inputs:
-
-- `LifecycleActions` receives `cohortId` as a **prop** (`view.cohortId`, cohort B) and reads
-  `detail` from the **store** (cohort A).
-- `cancelAvailability(detail)`, `cancelRung(detail)`, `finalizeAvailability(detail)`,
-  `detail.seatsJoined` and `detail.funding?.recoveryKeyState` are all derived from A.
-- `onConfirm` fires `cancelCohort(baseUrl, cohortId)`, which targets **B**.
-
-So if A is an unfunded or hermetic cohort and B is funded, `cancelRung(A)` returns 3 and
-`CancelConfirm` renders the rung-3 panel: no `typeToConfirm` gate, no
-`RECOVERY_THROWAWAY` / `RECOVERY_OPERATOR_HELD` disclosure, and A's seat count in the sentence.
-A single click then cancels the funded cohort B. That is precisely the outcome the D-03 ceremony
-ladder exists to prevent, and the consequence is stranded Bitcoin at B's beacon address under a
-throwaway recovery key.
-
-The same stale `detail` also mis-drives `finalizeAvailability` (offering or hiding `Finalize
-now` on the wrong cohort's phase) and `FundingStage` (which renders A's beacon address and
-`bitcoin:` funding instruction under B's heading, at `CohortDetail.tsx:466`).
-
-**Fix:** re-check the view after the await, and drop an answer that no longer matches the open
-cohort. Two lines, and it also makes the existing `closeCohort` path exact:
+**Fix:** bound both seeds where every other malformed seed is bounded, with the same warn-and-fall-back posture, then extend the invariant predicate so the pin stops being vacuous.
 
 ```ts
-async pollDetail(baseUrl) {
-  const { view } = get();
-  if (view.kind !== 'detail') {
-    return;
+/** Trim, collapse empty to undefined, and refuse an over-long seed the way every numeric seed is refused. */
+function textKnob(name: string, raw: string | undefined, max: number, warn: (m: string) => void): string | undefined {
+  const trimmed = trimToUndefined(raw);
+  if (trimmed !== undefined && trimmed.length > max) {
+    warn(`ignoring ${name}: ${trimmed.length} characters exceeds the ${max} this service stores`);
+    return undefined;
   }
-  const askedFor = view.cohortId;
-  const result = await fetchCohortDetail(baseUrl, askedFor);
-  // The answer is about ONE cohort. If the operator has since navigated away, it is not an
-  // answer about what is on screen, so it must not be painted there (the participant store's
-  // `fetchCohortFate` round guard, applied to the drill-down poll).
-  const now = get().view;
-  if (now.kind !== 'detail' || now.cohortId !== askedFor) {
-    return;
+  return trimmed;
+}
+
+const serviceName: FieldState<string | undefined> =
+  field(textKnob('SERVICE_NAME', seed.serviceName, MAX_SERVICE_NAME_CHARS, warn));
+const termsText: FieldState<string | undefined> =
+  field(textKnob('TERMS_TEXT', seed.termsText, MAX_TERMS_CHARS, warn));
+```
+
+and in `packages/service/tests/runtime-settings.spec.ts`:
+
+```ts
+// The invariant is about EVERY field the holder stores, not only the numeric ones.
+for (const [text, max] of [
+  [settings.serviceName.value, MAX_SERVICE_NAME_CHARS],
+  [settings.termsText.value, MAX_TERMS_CHARS],
+] as const) {
+  if (text !== undefined) {
+    expect(text.length).toBeLessThanOrEqual(max);
   }
-  ...
 }
 ```
 
-Belt and braces worth adding beside it: have `LifecycleActions` refuse to render its controls
-when the served detail cannot be tied to `cohortId`, rather than trusting that the store slot
-and the prop always agree.
+plus two `HOSTILE_SEEDS` rows (`serviceName: 'x'.repeat(5000)`, `termsText: 'y'.repeat(100000)`), which fail today. Add both limits to the `SERVICE_NAME` and `TERMS_TEXT` rows of the `docs/DEPLOY.md` environment reference.
 
 ## Warnings
 
-### WR-1: The `mismatch` chain verdict is unreachable on the default network
+### WR-01 (WARNING): `refreshCohorts` has no round guard, so a late list read repopulates gated state after a session expiry or a sign-out
 
-**File:** `packages/web/src/lib/esplora.ts:154-189` (`classifyEndpoint`), with the orchestration at
-`packages/web/src/lib/esplora.ts:227-261` (`checkEndpoint`)
-
-**Issue:**
-
-`classifyEndpoint` refuses an unverified second marker before it ever tries to identify the
-observed chain:
-
-```ts
-if (ours.distinguishingBlock && observed.distinguishing === undefined) {
-  return { kind: 'unreachable' };
-}
-const theirName = identifyChain(observed);
-```
-
-`checkEndpoint` only probes the second marker when block zero **already matches ours**
-(`esplora.ts:248`). So for any `ourNetwork` in the signet family, an endpoint on a different
-chain family never gets a second probe, arrives with `distinguishing === undefined`, and is
-classified `unreachable`.
-
-`mutinynet` is `DEFAULT_NETWORK` and carries a `distinguishingBlock`; `signet` does too
-(`packages/shared/src/networks.ts:115-143, 178`). Reproduced:
-
-```
-$ bun /tmp/probe.ts
-mainnet endpoint on mutinynet -> {"kind":"unreachable"}
-checkEndpoint -> {"kind":"unreachable"}
-```
-
-Consequence: a participant on the project's default network who pastes a mainnet, testnet3,
-testnet4 or regtest esplora endpoint is shown `Couldn't reach that endpoint.`
-(`ChainEndpointPanel.tsx:50`) instead of `That endpoint is on Bitcoin mainnet, but this service
-is on Mutinynet (signet). It was not used.` (`ChainEndpointPanel.tsx:55-57`). They are sent to
-check their host when the host is fine and the network is wrong. The module docstring names
-"FIRST, the endpoint must be on the RIGHT CHAIN" as the whole point of the guard, and the E16
-copy set carries four distinct messages precisely so the participant knows what to do next.
-
-The endpoint is still refused, so this is a diagnosis defect rather than a trust hole, which is
-why it is a warning and not a blocker.
-
-**Fix:** identify the chain from block zero first, and require the second marker only when the
-genesis already matches ours (which is the only case where it is load-bearing):
-
-```ts
-const theirName = identifyChain(observed);
-if (theirName === null && input.probe.genesis !== ours.genesisHash) {
-  // A different block zero is already conclusive: no second marker can rescue it.
-  return { kind: 'mismatch', theirNetwork: UNRECOGNIZED_CHAIN, ourNetwork: ours.label };
-}
-if (ours.distinguishingBlock && observed.distinguishing === undefined) {
-  return { kind: 'unreachable' };
-}
-```
-
-Add a `classifyEndpoint` row per foreign family (mainnet, testnet4, regtest) against
-`ourNetwork: 'mutinynet'`; today's rows only exercise the signet-versus-signet case, which is
-why this shipped green.
-
-### WR-2: A non-integer `DEFAULT_SIZE` or `DEFAULT_THRESHOLD` seed wedges every settings save
-
-**File:** `packages/service/src/runtime-settings.ts:77-93` (`numericKnob`), consumed at
-`packages/service/src/runtime-settings.ts:318-322` and re-read at
-`packages/service/src/runtime-settings.ts:489-500`
+**File:** `packages/web/src/stores/operator.ts:890-926`, contrasted with the new guard at `packages/web/src/stores/operator.ts:1292-1309`
 
 **Issue:**
 
-`numericKnob` validates finiteness and a lower bound only:
+Round 3 gave `pollDetail` a round guard. `refreshCohorts` did not get one, and its ok branch writes unconditionally:
 
 ```ts
-if (!Number.isFinite(n) || n < minimum) { warn(...); return fallback; }
-return n;
+const result = await fetchOperatorCohorts(baseUrl);
+if (result.kind === 'unauthorized') { get().expireSession(); return; }
+if (result.kind === 'unreachable')  { set({ listStale: true }); return; }
+set({ cohorts: ..., rows: ..., metrics: ..., health: ..., operatorActions: ..., defaults: ..., listStale: false, lastUpdated: Date.now() });
 ```
 
-It never checks integrality. `applySettings`, however, re-reads the STORED value for every
-absent patch key and validates it with `Number.isInteger`. A fractional seed therefore passes
-boot silently and then fails every subsequent save as a set, including saves of fields the
-operator did touch. Reproduced:
+The list poll fires every 4000 ms while the client timeout is 8000 ms, so two reads can be in flight at once. If the fast one 401s and the slow one succeeds, `expireSession` runs first and the late ok write puts the gated slice back. `signOut` has the identical exposure (a poll issued just before the click lands just after the clear). Reproduced against the shipped store:
 
 ```
-$ bun /tmp/rs.ts
-warns: []
-stored size: 2.5 stored discovery: 90000
-rename-only save -> Cohort size must be at least 1 signer.
-name after save: undefined
+$ bun /tmp/op.ts
+after expiry  auth: logged-out cohorts: 0 health: undefined
+after late ok auth: logged-out cohorts: 1 health: { mode: "live", esploraReachable: true, paused: false } metrics: { open: 1, ... } listStale: false
 ```
 
-The operator's only runtime configuration surface is now unusable, and the message names a
-field they never edited. `createDraft` is hit too: `withServiceDefaults`
-(`operator-cohorts.ts:1138-1150`) fills the absent size with `2.5` and `validateDraft` throws
-`SIZE_ERROR` on every create.
+`pollDetail` is incidentally immune because `expireSession` sets `view` to `list` and its round guard rejects on that, which is exactly the asymmetry: the same class of stale write is now guarded on one path and not the other. The store's own docstrings claim otherwise (`expireSession` "clearing every gated slice", the sign-out comment "the next session must re-read it rather than render a stale mode claim against a service that may have been restarted into another mode"), and `SESSION_EXPIRED` promises the operator that "Monitoring rebuilds from this service's state after you sign in". After a late write the next sign-in renders the previous session's cohort list, metrics and broadcast-mode chip until the first read of the new session lands. The store already knows this pattern is needed: `advertise` guards `if (get().auth === 'logged-in')` before opening a drill-down.
 
-This is the exact defect class the discovery-window clamp docstring
-(`runtime-settings.ts:349-371`) states it closed: "an over-ceiling stored value refused every
-save as a set, including saves of fields the operator did touch: a rename failed behind an
-error about a window they never set." The ceiling dimension was fixed; the integrality
-dimension was not.
-
-**Fix:** give `numericKnob` an integrality option and use it for the four seeds whose consumers
-demand whole numbers, so a malformed value warns and falls back at boot exactly like every other
-malformed knob:
+**Fix:** apply the same shape of guard the round gave `pollDetail`, keyed on the session rather than the cohort.
 
 ```ts
-export function numericKnob(
-  name: string,
-  raw: string | number | undefined,
-  fallback: number | undefined,
-  warn: (msg: string) => void,
-  minimum = 1,
-  integer = false,
-): number | undefined {
-  ...
-  if (!Number.isFinite(n) || n < minimum || (integer && !Number.isInteger(n))) {
-    warn(`ignoring malformed ${name}="${String(raw)}"; using ${fallback ?? 'the built-in default'}`);
-    return fallback;
-  }
-  return n;
-}
-```
-
-Then pass `integer: true` for `defaultSize`, `defaultThreshold`, and both window seeds. The
-invariant worth pinning in a spec is stronger than the knob: **no seed this holder accepts may
-be a value `applySettings` would reject.**
-
-### WR-3: A legal window seed round-trips into the forms as a fractional minute and blocks every save
-
-**File:** `packages/web/src/lib/cohort-form.ts:52-66` (`parseWindow` / `msToMinutesText`), consumed
-at `packages/web/src/components/operator/SettingsView.tsx:68-78, 173-186` and
-`packages/web/src/components/operator/DraftEditForm.tsx`
-
-**Issue:**
-
-`numericKnob` accepts any finite ms at or above `ONE_MINUTE_MS`, so
-`DEFAULT_DISCOVERY_WINDOW_MS=90000` is a perfectly legal boot value that stores and serves
-cleanly. The console then seeds the field with `msToMinutesText(90000)` = `"1.5"`, and
-`parseWindow("1.5")` returns `{ kind: 'invalid' }` because it mirrors the server's whole-minute
-guard. Reproduced:
-
-```
-$ bun /tmp/cf.ts
-field text seeded from the served snapshot: "1.5"
-parsed back: {"kind":"invalid"}
-form verdict for a rename-only save: Discovery window must be a whole number of minutes, at least 1.
-```
-
-`SettingsView.submit` runs `validateCohortForm` over the whole form before it will post
-(`SettingsView.tsx:173-186`), so the operator cannot save the service name, the terms, the
-beacon type or anything else until they manually retype a field they never set. The same seed
-reaches `DraftEditForm` through `OperatorCohortDTO.defaultDiscoveryWindowMs`, so editing a
-draft is blocked the same way.
-
-This is independent of WR-2 (that one is about non-integer ms, this one about ms that are
-integral but not a whole number of minutes), and both close with the same rule.
-
-**Fix:** make the minute granularity part of what the service will accept, rather than
-something only the browser enforces. Either quantize the seed at the holder (round down to a
-whole minute with a loud warning, mirroring the discovery-window ceiling clamp) or reject a
-non-whole-minute seed through the `integer`-aware `numericKnob` above with
-`minimum: ONE_MINUTE_MS` plus a `% ONE_MINUTE_MS === 0` check. The rule to hold is that any ms
-value this service will serve must round-trip through `msToMinutesText` -> `parseWindow` without
-becoming `invalid`.
-
-### WR-4: `GET /cas/:kind/:hash` resolves prototype-inherited keys and 500s an anonymous request
-
-**File:** `packages/service/src/store.ts:321-327, 344-358`
-
-**Issue:**
-
-`KIND_BY_SEGMENT` is a plain object literal, so the lookup walks `Object.prototype`:
-
-```ts
-const kind = KIND_BY_SEGMENT[c.req.param('kind')];
-if (!kind) { return c.json({ error: 'unknown artifact kind' }, 404); }
-```
-
-`__proto__`, `constructor`, `toString`, `valueOf` and friends all return a truthy non-`ArtifactKind`
-value and pass the guard. `MemoryArtifactStore` absorbs it (a fresh sub-map, then a miss, then
-404), but `FileSystemArtifactStore` hands it to `node:path.join` and throws. Reproduced against
-the real Hono app:
-
-```
-filesystem  /cas/__proto__/aabbcc -> 500
-TypeError: The "paths[1]" property must be of type string, got object
-  at #file (packages/service/src/store.ts:152:22)
-```
-
-An anonymous caller therefore gets a 500 and a stack trace in the operator's log on every
-request, on the store implementation the docstring calls "the natural default for a self-hosted
-aggregator that pins its cohorts' artifacts". It also breaks the uniform-refusal posture the
-rest of the public surface holds to.
-
-**Fix:** make the lookup own-property only, so the segment set really is the five names:
-
-```ts
-const KIND_BY_SEGMENT = new Map<string, ArtifactKind>(ARTIFACT_KINDS.map((k) => [k, k]));
-// ...
-const kind = KIND_BY_SEGMENT.get(c.req.param('kind'));
-```
-
-A `Map` also removes the hand-maintained second copy of `ARTIFACT_KINDS`, so a sixth namespace
-cannot be added to one and forgotten in the other.
-
-### WR-5: The endpoint verdict cache is never cleared in shipped code, so the retry cannot work
-
-**File:** `packages/web/src/lib/esplora.ts:196-201, 236-260`
-
-**Issue:**
-
-`checkEndpoint` caches every verdict, including the failures:
-
-```ts
-const cached = verdictCache.get(key);
-if (cached) { return cached; }
-...
-verdictCache.set(key, verdict);
-```
-
-`clearEndpointCache` exists and its docstring says it is "Used by tests and by an explicit
-re-check", but a repo-wide grep finds callers only in `packages/web/tests/tx-client.spec.ts`.
-Neither `useChainEndpoint` nor `clearChainEndpoint` in the participant store touches it.
-
-So an endpoint that was momentarily down, rate-limited, or behind a cold TLS handshake that
-tripped the 8000 ms budget is recorded `unreachable` for the lifetime of the page, and the
-panel's `Use this endpoint` button (`ChainEndpointPanel.tsx:36`) becomes a no-op returning the
-same cached sentence. The participant's only recourse is a full page reload, which also destroys
-their in-memory identity.
-
-**Fix:** treat an explicit `Use this endpoint` click as an explicit re-check. Either drop that
-key before probing, or cache only `ok` verdicts (the stated goal, "a dead or refusing endpoint
-is probed once rather than on every chain read", is about the per-read path, and only `ok`
-verdicts are consulted there):
-
-```ts
-async useChainEndpoint(raw) {
-  set({ chainEndpointProbing: true, chainEndpointVerdict: null });
-  // An explicit click is an explicit re-check: a transient failure must not be permanent.
-  forgetEndpointVerdict(raw, get().network);
-  const verdict = await checkEndpoint(raw, get().network);
+async refreshCohorts(baseUrl) {
+  const askedWhileSignedIn = get().auth === 'logged-in';
+  const result = await fetchOperatorCohorts(baseUrl);
+  if (result.kind === 'unauthorized') { get().expireSession(); return; }
+  // An answer to a question the PREVIOUS session asked is not evidence about this one: a read
+  // that lands after an expiry or a sign-out must not repopulate the gated slice.
+  if (!askedWhileSignedIn || get().auth !== 'logged-in') { return; }
   ...
 }
 ```
 
-### WR-6: The two chain calls carry no timeout, so a hung participant endpoint wedges registration
+Add a row to `packages/web/tests/operator.spec.ts` in the shape of the existing concurrency block: stage a slow ok read and a fast 401, settle the 401 first, then the ok, and assert `cohorts`, `health` and `metrics` are still empty.
 
-**File:** `packages/web/src/lib/tx-client.ts:82-91, 111-120`
+### WR-02 (WARNING): The clamp warning introduced by 05-30 states a false reason and names a knob that is not an environment variable
 
-**Issue:**
-
-`fetchUtxos` and `broadcastTx` are the only network clients in `packages/web/src/lib` with no
-`AbortSignal.timeout(...)`. Every sibling (`config.ts:68`, `operator.ts:12`, `anchor`,
-`funding`, `cohort-fate.ts:41`, and `esplora.ts:37` itself) carries the 8000 ms budget, and
-`fetchNetworkConfig`'s docstring spells out why: "a coordinator that accepts the connection but
-never sends a response ... would otherwise hang this promise with no default browser timeout,
-leaving the caller stuck."
-
-That reasoning is strictly stronger here, because PART-05 makes both URLs
-**participant-supplied and arbitrary** (`tx-client.ts:79-81, 108-110`). A third-party esplora
-that accepts the socket and never answers leaves `register()` parked at
-`regStatus: 'broadcasting'` (`stores/participant.ts:2435, 2485`) or `'checking'` with the
-re-entrancy guard held, and there is no cancel control on that surface. `exportPsbt` has the
-same exposure through its own `psbtExporting` guard (`stores/participant.ts:2514-2531`).
-
-**Fix:** add the shared budget to both, matching every other client in the package:
-
-```ts
-res = await fetch(url, {
-  headers: { accept: 'application/json' },
-  signal: AbortSignal.timeout(TIMEOUT_MS),
-});
-```
-
-A broadcast probably deserves a longer budget than a read; pick two named constants rather than
-one, but neither should be unbounded.
-
-### WR-7: The test-peer seat cap holds only for serial calls
-
-**File:** `packages/service/src/test-peers.ts:371-393` (`addTestPeersFor`), with the seat reader at
-`packages/service/src/index.ts:1322-1360`
+**File:** `packages/service/src/runtime-settings.ts:412-465`
 
 **Issue:**
 
-`addTestPeersFor` reads the live seat count, computes `remainingSeats`, and then awaits the
-spawn. Nothing marks the cohort as having a spawn in flight:
+The quantizer runs at three points, and point 2 is deliberately placed AFTER the ceiling clamp. That ordering makes the clamp fire on a value that never exceeded the real ceiling, and the clamp's message then says something untrue. Observed in the suite's own output for the documented `COHORT_TTL_MS=90000` case (`packages/service/tests/runtime-settings.spec.ts:881`):
 
-```ts
-const seats = deps.seats(cohortId);
-const remainingSeats = Math.max(0, seats.capacity - seats.seatsJoined);
-if (remainingSeats === 0) { return 'no-seats'; }
-const result = await deps.registry.spawn({ cohortId, requested, remainingSeats });
+```
+[settings] discoveryWindowCeilingMs=90000 is not a whole number of minutes; using 60000 instead, the longest whole-minute window at or below it
+[settings] defaultDiscoveryWindowMs=90000 exceeds this service's cohort TTL; using 60000 instead, the longest discovery window this service can enforce
 ```
 
-Two concurrent `POST /v1/operator/cohorts/:id/test-peers` requests both observe the same
-remaining count and each spawn up to that many peers. Worse, the seats do not fill
-synchronously: a peer takes a seat only after its SSE opt-in round-trips, so even ONE request
-whose peers are still seating leaves the next request reading the pre-spawn count.
+Both lines mislead:
 
-`test-peers.ts:22-26` and `hono-adapter.ts:992-993` both state the invariant as absolute ("no
-request can grow the spawn beyond n", T-05-09-02). It holds serially only. The surplus peers
-are then silently dropped by the library's own opt-in surplus behaviour (a documented upstream
-limit), but they have already opened two SSE subscriptions each and are held in `handles` until
-the cohort settles, which is a leaked-connection multiplier on an operator-triggerable action.
+- The cohort TTL is 90000. A value of 90000 does not exceed it. The clamp fired against the already-quantized ceiling (60000), not against the TTL, so the sentence names a rule the operator did not break.
+- The operator never set `DEFAULT_DISCOVERY_WINDOW_MS`; it was derived from `COHORT_TTL_MS` at `index.ts:674`. They set one variable and are warned about two others, one of which (`discoveryWindowCeilingMs`) exists in no environment reference, no compose file, and no ADR.
 
-The route is operator-gated, so this is a robustness and honesty defect rather than an
-unauthenticated DoS.
+`docs/DEPLOY.md:506` describes this case as producing "a boot warning naming both numbers", singular. It produces two, and the second is false.
 
-**Fix:** hold a per-cohort in-flight marker in the registry and subtract already-spawned peers
-from the remaining count, so the cap is enforced against what this service has actually
-committed rather than against what the session has finished seating:
+The clamp comment justifies the ordering as "a value clamped to an already-quantized ceiling is whole by construction, and a value that was never clamped still needs its own floor", which is true but is not a reason to clamp before flooring: flooring first is equally correct (`floor(w) <= w`, and the ceiling is already whole), stores the identical value, and removes the spurious clamp entirely.
+
+**Fix:** floor the seed before comparing it to the ceiling, and report the source variable rather than the internal field name.
 
 ```ts
-const remainingSeats = Math.max(
-  0,
-  seats.capacity - seats.seatsJoined - deps.registry.pendingFor(cohortId),
-);
+// QUANTIZER POINT 2: floor the SEED first, so the clamp below only ever fires on a window that
+// genuinely exceeds what this service can enforce, and its message stays true.
+const flooredDiscoveryWindowMs = floorToWholeMinute('defaultDiscoveryWindowMs', seededDiscoveryWindowMs);
+const resolvedDiscoveryWindowMs =
+  flooredDiscoveryWindowMs !== undefined &&
+  discoveryWindowCeilingMs !== undefined &&
+  flooredDiscoveryWindowMs > discoveryWindowCeilingMs
+    ? discoveryWindowCeilingMs
+    : flooredDiscoveryWindowMs;
 ```
 
-Either that, or serialize per cohort with a promise chain in `createTestPeers.spawn`. Whichever
-is chosen, the docstring's absolute claim should be softened to match what the code enforces.
+For the ceiling's own quantizer call, pass a name the operator can act on (`COHORT_TTL_MS (discovery-window ceiling)`), and pin the warning COUNT in the derived-boot spec row, which today asserts only the stored value.
+
+### WR-03 (WARNING): `validateDraft` still accepts a non-whole-minute window, so the WR-3 wedge survives on the per-draft path
+
+**File:** `packages/service/src/operator-cohorts.ts:716-721`, consumed at `operator-cohorts.ts:1172,1224`, with the browser half at `packages/web/src/components/operator/DraftEditForm.tsx:129-152`
+
+**Issue:**
+
+The holder now refuses a window that is integral but not a whole number of minutes:
+
+```ts
+if (!Number.isInteger(ms) || ms < ONE_MINUTE_MS || ms % ONE_MINUTE_MS !== 0) { return message; }
+```
+
+`validateDraft`, which guards the same two values on the per-cohort path and throws the SAME two constants, does not:
+
+```ts
+if (discoveryWindowMs !== undefined && (!Number.isInteger(discoveryWindowMs) || discoveryWindowMs < ONE_MINUTE_MS)) {
+  throw new Error(DISCOVERY_WINDOW_ERROR);
+}
+```
+
+So `POST /v1/operator/cohorts` with `discoveryWindowMs: 90000` is accepted and stored on the draft. `DraftEditForm` then seeds its minutes field with `msToMinutesText(90000)` = `"1.5"`, `parseWindow` calls that invalid, and `validateCohortForm` runs over the whole form before submit, so that draft can never be edited again from the console: a beacon-type change is refused behind a message about a window the operator may not have set. That is the same failure the holder's `validateWindow` docstring names verbatim ("The browser cannot produce such a value, but a headless operator client posting straight at the gated route can, and it would re-wedge the console the moment it landed"), left open one module away, behind the same shared error string. Two validators enforcing different rules under one sentence is also a drift hazard on its own: `DISCOVERY_WINDOW_ERROR` is now true of one call site and false of the other.
+
+Related off-by-one worth closing in the same edit: `validateDraft` accepts `discoveryWindowMs === cohortTtlMs` (the ceiling check is `>`), while `armWindowTimer` refuses to arm at `windowMs >= opts.cohortTtlMs` (`operator-cohorts.ts:871`). A draft set to exactly the TTL is therefore accepted with a window this service then never enforces, and the cohort lapses with the library's generic expired fate rather than the app's `window-expired` reason. This is the same "captioned as configuration you can rely on" harm the 05-30 clamp comment describes.
+
+**Fix:** move the whole-minute rule into one shared predicate and call it from both, so the two paths cannot disagree.
+
+```ts
+// operator-cohorts.ts, beside the two error constants that already live here.
+export function windowProblem(ms: number | undefined, message: string): string | undefined {
+  if (ms === undefined) { return undefined; }
+  return Number.isInteger(ms) && ms >= ONE_MINUTE_MS && ms % ONE_MINUTE_MS === 0 ? undefined : message;
+}
+```
+
+`validateDraft` throws on it, `runtime-settings.validateWindow` returns it. Add a `createDraft` spec row for `discoveryWindowMs: 90_000` (refused) and one for `discoveryWindowMs === cohortTtlMs`, whichever behavior is chosen for the boundary.
+
+### WR-04 (WARNING): The provenance barrier stops at `LifecycleActions`; the other card that mixes a prop cohort with slot data is the live test-peer confirm
+
+**File:** `packages/web/src/components/operator/LifecycleActions.tsx:144-159` (barrier present), `packages/web/src/components/operator/CohortDetail.tsx:308-341,157-205` (barrier absent)
+
+**Issue:**
+
+The round-3 reasoning for the second barrier is stated in the component itself: "This component receives the cohort it will ACT on as a prop and reads the data it REASONS about from a store slot shared by every drill-down". That description is true of `CohortDetail` as a whole and word for word of `TestPeerAction`, which receives `cohortId` as a prop, receives `remaining` and `live` computed by its parent from the shared `detail`, and fires `addTestPeers(baseUrl, cohortId)`. Its confirm is the one that says, on a live cohort, that the peers "co-sign for real and their DIDs are anchored on {network}". A count and a live flag from one cohort under a confirm that acts on another is the same substitution the barrier exists to refuse, at the same stakes (a real beacon transaction, real fees, DIDs anchored).
+
+`FundingStage` has the same split: it renders `detail.funding.beaconAddress` and its funding instruction under the heading `Cohort {shortId(cohortId)}`, which is the exact consequence the prior CR-1 named.
+
+This is not a live bug today, because the store's round guard closes the only write path into `detail`. It is a defense-in-depth inconsistency: the round decided that one barrier was not enough for the cancel ceremony and then left the two neighbours on the page trusting the single barrier, with nothing in a spec recording which of them is meant to be protected.
+
+**Fix:** derive the provenance once at the top of `CohortDetail` and refuse the whole body rather than protecting one card.
+
+```ts
+const detailCohortId = useOperator((s) => s.detailCohortId);
+// One barrier for the page: every section below reads the shared slot while every control acts on
+// the prop, so an unattributed or foreign document is not evidence about this cohort.
+const provenDetail = detail && detailCohortId === cohortId ? detail : undefined;
+```
+
+Then render from `provenDetail` throughout and drop the now-redundant condition from `LifecycleActions`, or keep it and let the two agree. Extend the `lifecycle.spec.ts` refusal block with one `TestPeerAction` row driven through `CohortDetail`.
+
+### WR-05 (WARNING): `lastUpdated` carries two different freshness facts, so the health strip claims a freshness it has not got and the operator log claims to still be checking
+
+**File:** `packages/web/src/stores/operator.ts:519-520,890-926,1245-1310`, read at `packages/web/src/components/operator/HealthStrip.tsx:66,102-103`, `packages/web/src/components/operator/ServiceControls.tsx:202`, `packages/web/src/components/operator/CohortDetail.tsx:311,335-339`
+
+**Issue:**
+
+One field is stamped by two unrelated reads (`refreshCohorts` at line 924 and `pollDetail` at line 1309) and cleared by drill-down navigation (`openCohort` line 1257, `closeCohort` line 1267). Three consumers read it as if it meant three different things:
+
+1. `HealthStrip` renders "N s ago" and its tone from `lastUpdated` beside the mode, esplora and paused chips, all of which come from `health`, which only a LIST read refreshes. Inside a drill-down the list poll is stopped (`OperatorConsole.tsx:51-57` returns unless `view.kind === 'list'`), so the chips freeze while the detail poll keeps ticking the clock beside them. An operator watching a cohort for ten minutes sees "Live, 3s ago" over a broadcast-mode and esplora-reachability claim last read ten minutes ago. That is precisely the D-25 freshness honesty the field exists to serve.
+2. `ServiceControls` computes `loaded` from `lastUpdated !== undefined`, with the comment "A read has landed for this session exactly when the list poll stamped its freshness clock". `openCohort` clears it, so opening any cohort flips the service-level `Operator actions` log to its `Checking operator actions` loading posture while the store still holds the entries, and `closeCohort` does it again on the way back for up to one list-poll interval.
+3. `CohortDetail`'s own indicator reads "Live" as soon as any action taken from the drill-down (pause, resume, disable broadcast, dismiss) calls `refreshCohorts`, even if no detail read has ever landed for the open cohort.
+
+**Fix:** split the field so each surface reads the clock for the data it is decorating.
+
+```ts
+/** Wall-clock (ms) of the last successful LIST read: the health strip and the operator log read this. */
+listUpdated?: number;
+/** Wall-clock (ms) of the last successful DETAIL poll for the open cohort. */
+detailUpdated?: number;
+```
+
+`refreshCohorts` stamps `listUpdated` only, `pollDetail` stamps `detailUpdated` only, `openCohort` and `closeCohort` clear `detailUpdated` only, and both are cleared with the rest of the gated slice on expiry and sign-out. `HealthStrip` and `ServiceControls` read `listUpdated`; `CohortDetail` reads `detailUpdated`. Consider polling the list at a slower cadence while a drill-down is open rather than not at all, since the strip stays on screen there.
 
 ## Info
 
-### IN-1: `verdictCache` is an unbounded module-level singleton
+### IN-01 (INFO): `numericKnob` coerces environment strings with bare `Number()`, so hex and exponent forms are accepted as knob values
 
-**File:** `packages/web/src/lib/esplora.ts:196`
+**File:** `packages/service/src/runtime-settings.ts:103`
 
-**Issue:** every distinct `base|network` key is retained forever, and the key is
-participant-typed. Every other retained structure in this codebase is explicitly bounded
-oldest-first (`MAX_TERMINAL`, `MAX_INTENTS`, `MAX_ACCEPTANCES`, `MAX_TEST_PEER_DIDS`,
-`ACTIVITY_RING_SIZE`). This one is not, and it is also module-scoped rather than per-store,
-which is the singleton shape the service side deliberately avoids everywhere.
+**Issue:** `const n = typeof raw === 'number' ? raw : Number(raw);` means `DEFAULT_SIZE=0x10` is stored as 16, `DEFAULT_SIZE=1e3` as 1000, and `PORT=+8080` as 8080. Each passes `Number.isInteger` and each is silent. This is the server-side twin of deferred IN-2 (`parseWindow`), and the same shape guard closes both.
 
-**Fix:** bound it with the same delete-then-set idiom (a couple of dozen entries is generous for
-one page session), or move it into the participant store slice so it dies with the round.
-
-### IN-2: `parseWindow` accepts hex, exponent and signed numeric forms as minute values
-
-**File:** `packages/web/src/lib/cohort-form.ts:52-61`
-
-**Issue:** `Number(text)` means `"0x10"` parses as 16 minutes, `"1e3"` as 1000, and `"+5"` as 5.
-The field is labelled `(minutes)` and the message promises "a whole number of minutes", so these
-are quietly accepted values the operator did not mean to type.
-
-**Fix:** shape-guard before coercing, so the parser accepts what the label describes:
+**Fix:** shape-guard the string form before coercing, so a knob accepts what its documentation describes:
 
 ```ts
-if (!/^\d+$/.test(text.trim())) {
-  return { kind: 'invalid' };
+if (typeof raw === 'string' && !/^\s*-?\d+(\.\d+)?\s*$/.test(raw)) {
+  warn(`ignoring malformed ${name}="${raw}"; using ${fallback ?? 'the built-in default'}`);
+  return fallback;
 }
 ```
 
-### IN-3: `onFinalize`'s first monitoring call sits outside its own try/catch
+### IN-02 (INFO): `parseWindow` has no upper bound, and a huge window reaches `setTimeout` unclamped when no cohort TTL is configured
 
-**File:** `packages/service/src/index.ts:1296-1303`
+**File:** `packages/web/src/lib/cohort-form.ts:52-61`, reaching `packages/service/src/operator-cohorts.ts:867-889`
 
-**Issue:**
+**Issue:** `parseWindow('99999999')` yields 5.99e12 ms, which `validateDraft` accepts as an integer. `armWindowTimer` skips arming only when `opts.cohortTtlMs` is set and the window is at or above it; a `createService` caller that omits `cohortTtlMs` (its own docstring notes that leaves cohorts pending forever) therefore reaches `setTimeout(fn, 5.99e12)`, which Node clamps to 1 ms with a `TimeoutOverflowWarning`, so the cohort is stopped almost immediately and filed as `window-expired`.
 
-```ts
-onFinalize: (cohortId: string) => {
-  monitor.noteOperatorAction(cohortId, OPERATOR_FINALIZED_TEXT);
-  try {
-    monitor.noteOperatorAction(finalizedCohortText(cohortId));
-  } catch (err) { ... }
-},
-```
+Not reachable on the documented deploy path: `demo-server.ts:268` always resolves `cohortTtlMs` to `DEFAULT_COHORT_TTL_MS` (30 min), and `validateDraft`'s ceiling refuses anything above it. Recorded as latent.
 
-The first call is unguarded while its identical sibling one line below is guarded, and both
-`onCancel` and `onSpawned` guard every call. It is harmless today only because
-`finalizeCohort` wraps the whole `opts.onFinalize?.()` invocation
-(`operator-cohorts.ts:1385-1390`), which means the asymmetry reads as an oversight rather than a
-decision and would become a real hole the moment the hook is called from anywhere else.
+**Fix:** bound the parser at the source (a window longer than the largest TTL this service will ever run is not a value worth accepting), and make `armWindowTimer` refuse a delay above `2_147_483_647` explicitly rather than relying on a caller-supplied TTL to have excluded it.
 
-**Fix:** move the first call inside the existing `try`, matching `onCancel`.
+## Known-deferred findings (owner scoped OUT of round 3)
 
-### IN-4: The funding-window setting is silently omitted whenever the health read has not landed
+Re-observed and confirmed still present. Recorded here rather than as new discoveries:
 
-**File:** `packages/web/src/components/operator/SettingsView.tsx:142-143, 89-101`
+- **Prior WR-5:** the endpoint verdict cache is still never cleared in shipped code. `clearEndpointCache` (`packages/web/src/lib/esplora.ts:219`) has callers only in `packages/web/tests/tx-client.spec.ts`; `useChainEndpoint` (`packages/web/src/stores/participant.ts:2637-2656`) does not call it, so a transient failure is cached for the life of the page.
+- **Prior WR-6:** `packages/web/src/lib/tx-client.ts` still contains no `AbortSignal.timeout`, so the two participant-supplied chain calls remain unbounded while every sibling client in the package carries the 8000 ms budget.
+- **Prior IN-1:** `verdictCache` (`packages/web/src/lib/esplora.ts:216`) is still an unbounded module-level singleton keyed by participant-typed input.
+- **Prior IN-2:** `parseWindow` still accepts hex, exponent and signed forms as minute values (see IN-02 above for the server-side twin).
 
-**Issue:** `broadcasts` is `mode === 'live'`, and `mode` is `useOperator((s) => s.health?.mode)`,
-which is `undefined` before the first successful list read and after `expireSession` /
-`signOut`. So "the service is not broadcasting" and "we have not been told yet" collapse into
-the same branch: the field is not rendered and `defaultFundingWindowMs` is dropped from the
-patch. The omission direction is safe (the stored default is left alone rather than cleared),
-but this is exactly the "make no claim you were not told" rule that `HealthStrip` follows with
-its `Checking mode` state, and the settings form does not.
+## Verification of the round-3 fixes
 
-**Fix:** render the field's slot with a `Checking mode` caption while `mode === undefined`,
-rather than rendering the non-broadcasting layout.
-
-### IN-5: `advertised` and `advertisedWindows` carry no bound of their own
-
-**File:** `packages/service/src/operator-cohorts.ts:808, 840`
-
-**Issue:** both are pruned only by `settleCompletion`, which runs when the completion promise
-settles. Every other per-cohort map in the phase (`terminal`, `dismissedCanceled`,
-`windowTimers`, `intents`, the `index.ts` side tables, the monitor's maps) carries an explicit
-oldest-first cap as the backstop for a cohort that reaches no terminal path. These two rely
-entirely on a runner-level `cohortTtlMs` being configured; a `createService` call that omits it
-(which the option's own docstring says leaves cohorts pending forever) gives them unbounded
-growth under an operator-triggerable action.
-
-**Fix:** route both through the same `rememberBounded` idiom `index.ts` already exports the
-pattern for, so the backstop matches every sibling structure.
+- **Prior CR-1:** FIXED. Round guard and paired provenance verified at every write and clear site; the `LifecycleActions` refusal is verified rendered, with an anti-vacuity control and negative rows asserting empty markup rather than a missing label. Residual scope gap recorded as WR-04.
+- **Prior WR-1:** FIXED. Genesis-first ordering verified against `packages/shared/src/networks.ts`: exactly one ambiguous genesis (mutinynet and signet), both carrying a `distinguishingBlock`, so no registry pairing can reach `ok` that could not before. The preserved "refuses rather than passing when a required second marker was not observed" row is correctly identified as the boundary of the new rule.
+- **Prior WR-2:** FIXED for numeric seeds. Integrality is opt-in, the eleven existing call sites are unchanged, and the `PORT` minimum-zero case is pinned. Violated for string seeds (CR-01).
+- **Prior WR-3:** FIXED on the settings path. Every window the holder serves is a whole minute, quantized at all three points, and the browser round trip is stated as a property in `cohort-form.spec.ts`. Not fixed on the per-draft path (WR-03), and the new clamp message is inaccurate (WR-02).
 
 ---
 
-_Reviewed: 2026-07-30_
-_Reviewer: gsd-code-reviewer_
-_Depth: standard_
+_Reviewed: 2026-08-02_
+_Reviewer: Claude (gsd-code-reviewer)_
+_Depth: deep_
