@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Completed 05-29-PLAN.md
-last_updated: "2026-08-02T16:14:33.844Z"
+stopped_at: Completed 05-30-PLAN.md
+last_updated: "2026-08-02T16:31:14.287Z"
 last_activity: 2026-08-02
 last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 5
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 60
-  completed_plans: 59
+  completed_plans: 60
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 3 of 30
+Plan: 4 of 30
 Status: Ready to execute
 Last activity: 2026-08-02 — Phase 05 execution started
 
-Progress: [██████████] 98%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -120,6 +120,7 @@ Progress: [██████████] 98%
 | Phase 05 P27 | ~70m | 3 tasks | 8 files |
 | Phase 05 P28 | 6 min | 2 tasks | 4 files |
 | Phase 05 P29 | 12 min | 2 tasks | 4 files |
+| Phase 05 P30 | 15 min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -224,6 +225,9 @@ Recent decisions affecting current work (Phase 2):
 - [Phase 05]: 05-28: the drill-down poll captures the cohort it asked about before the await and re-checks the open view after it, so a late answer about another cohort can write neither the served document nor the freshness flag; the 401 branch stays AHEAD of that guard because a session expiry is session-scoped, pinned by its own row
 - [Phase 05]: 05-28: detailCohortId is a CLIENT-side provenance cleared beside detail at all five sites, never a new key on the served CohortDetailDTO, because which cohort was asked about is a fact the caller already holds; LifecycleActions refuses to render any lifecycle control it cannot tie to its own cohortId prop, a refusal rather than a fallback since there is no safe default rung to guess
 - [Phase 05]: 05-29: classifyEndpoint identifies the chain from block zero first; the distinguishing marker is required only where block zero is ambiguous. A block zero that is not ours is already a different chain, so the mismatch verdict (SC 6, PART-05) is now reachable on mutinynet, the default network
+- [Phase 05]: 05-30: close the boot-seed settings wedge at the HOLDER, never at each env read, because the holder is the one place every seed path meets including the derived ones (minParticipants, cohortTtlMs, fundingWindowMs) that need no malformed DEFAULT_* value at all
+- [Phase 05]: 05-30: numericKnob's integrality check is OPT-IN and defaults off, so the eleven existing call sites (including PORT with a minimum of 0) resolve byte-identically and the demo-server diff is empty; a non-integer takes the SAME warn-and-fall-back branch as a NaN
+- [Phase 05]: 05-30: a non-whole-minute window is FLOORED (never rounded up, never refused, never a boot abort), the ceiling is quantized BEFORE it is a clamp target and the discovery window AFTER the clamp, so every window the console is served survives msToMinutesText into parseWindow unchanged
 
 ### Pending Todos
 
@@ -263,7 +267,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-02T16:14:26.937Z
-Stopped at: Completed 05-29-PLAN.md
+Last session: 2026-08-02T16:30:52.168Z
+Stopped at: Completed 05-30-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
