@@ -363,7 +363,7 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
   // asks for integrality too, because it is a clamp TARGET: a fractional ceiling would be written
   // straight into the stored window by the clamp below, which is the same wedge arriving through a
   // different door.
-  const discoveryWindowCeilingMs = numericKnob(
+  const seededCeilingMs = numericKnob(
     'discoveryWindowCeilingMs',
     seed.discoveryWindowCeilingMs,
     undefined,
@@ -371,6 +371,49 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
     ONE_MINUTE_MS,
     true,
   );
+
+  /**
+   * Floor a resolved ms window to a whole number of minutes, warning with BOTH numbers when that
+   * changed anything (review WR-3).
+   *
+   * THE INVARIANT: any ms value this holder will SERVE must survive `msToMinutesText` into
+   * `parseWindow` in `packages/web/src/lib/cohort-form.ts` unchanged. The console seeds its minutes
+   * fields from the served snapshot and validates the WHOLE form before it will post, so one
+   * unrepresentable window (90000 renders as "1.5", which `parseWindow` rightly calls invalid)
+   * blocks a save of every other field, including a rename the operator did type.
+   *
+   * FLOOR rather than round or refuse, and the choice is load-bearing three ways. Flooring
+   * preserves the operator's intent as closely as a representable value allows. It can only ever
+   * SHORTEN a window, which is the same safe direction the ceiling clamp below already moves in and
+   * never a promise this service cannot keep. And refusing would either drop a window the operator
+   * did choose or, worse, abort a boot over a value that is only unrepresentable in the console's
+   * units, which is exactly the crash-loop-on-a-typo posture the clamp comment below rejects.
+   *
+   * Nothing under one minute ever reaches here: {@link numericKnob} refuses it first against the
+   * `ONE_MINUTE_MS` minimum, so the floor can never produce a zero.
+   */
+  function floorToWholeMinute(name: string, ms: number | undefined): number | undefined {
+    if (ms === undefined) {
+      return undefined;
+    }
+    const floored = Math.floor(ms / ONE_MINUTE_MS) * ONE_MINUTE_MS;
+    if (floored !== ms) {
+      // Both figures, in the ms the operator supplied, mirroring the clamp's disclosure discipline
+      // below: boot output should say what happened rather than leave the operator to infer a
+      // truncation from a number they never typed.
+      warn(
+        `${name}=${ms} is not a whole number of minutes; using ${floored} instead, ` +
+          `the longest whole-minute window at or below it`,
+      );
+    }
+    return floored;
+  }
+
+  // QUANTIZER POINT 1 of 3: the resolved ceiling, BEFORE it is used as a clamp target below or as
+  // the refusal threshold in `applySettings`, so the maximum this service enforces is itself a
+  // value the console can express. `discoveryWindowCeilingError` already renders it with a floor to
+  // whole minutes, so an unquantized ceiling produced a message that understated its own limit.
+  const discoveryWindowCeilingMs = floorToWholeMinute('discoveryWindowCeilingMs', seededCeilingMs);
 
   // Apply the ceiling to the SEED as well, clamping down with a loud warning (D-11/D-12,
   // `05-AUDIT.md` entry 7). It happens here, where the seed and the ceiling are both already
@@ -410,12 +453,23 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
     );
   }
 
+  // QUANTIZER POINT 2 of 3: the discovery window AFTER the clamp, so both the seed path and the
+  // clamp path end at a whole minute. Applying it after rather than before is deliberate: a value
+  // clamped to an already-quantized ceiling is whole by construction, and a value that was never
+  // clamped still needs its own floor. Running it first would leave the clamp as an unguarded
+  // second writer.
+  const resolvedDiscoveryWindowMs = floorToWholeMinute('defaultDiscoveryWindowMs', clampedDiscoveryWindowMs);
+
+  // QUANTIZER POINT 3 of 3: the funding window, which has no ceiling and therefore no clamp that
+  // could have quantized it in passing.
+  const resolvedFundingWindowMs = floorToWholeMinute('defaultFundingWindowMs', seededFundingWindowMs);
+
   const serviceName: FieldState<string | undefined> = field(trimToUndefined(seed.serviceName));
   const defaultBeaconType: FieldState<BeaconType> = field(seededBeaconType);
   const defaultSize: FieldState<number> = field(seededSize);
   const defaultThreshold: FieldState<number> = field(seededThreshold);
-  const defaultDiscoveryWindowMs: FieldState<number | undefined> = field(clampedDiscoveryWindowMs);
-  const defaultFundingWindowMs: FieldState<number | undefined> = field(seededFundingWindowMs);
+  const defaultDiscoveryWindowMs: FieldState<number | undefined> = field(resolvedDiscoveryWindowMs);
+  const defaultFundingWindowMs: FieldState<number | undefined> = field(resolvedFundingWindowMs);
   const termsText: FieldState<string | undefined> = field(trimToUndefined(seed.termsText));
 
   /** A field whose current value and boot value start out identical. */

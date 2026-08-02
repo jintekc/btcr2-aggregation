@@ -73,6 +73,40 @@ describe('window parsing', () => {
   });
 });
 
+/**
+ * The BROWSER half of the service's whole-minute invariant (`05-VERIFICATION.md` W3, review WR-3).
+ *
+ * The console seeds each minutes field from the served settings snapshot with {@link msToMinutesText}
+ * and reads it back with {@link parseWindow}, and `SettingsView` validates the WHOLE form before it
+ * will post. So a served window that cannot survive that round trip does not just spoil its own
+ * field: it blocks a save of every other field, including a rename the operator did type, behind a
+ * message about a window they never set. `DraftEditForm` is blocked identically.
+ *
+ * These two rows state the round trip as a property, and the SECOND one is the reason the SERVICE
+ * quantizes every window it stores to a whole minute (`packages/service/src/runtime-settings.ts`).
+ * Neither function is changing: they are correct, and review IN-2 (their acceptance of hex, exponent
+ * and signed forms) is recorded and out of this round's scope. What was missing was any statement of
+ * WHICH values survive them, which is the fact the server-side rule is derived from.
+ */
+describe('the served-window round trip, which is WHY the service stores only whole minutes (WR-3)', () => {
+  it('is TOTAL over whole-minute values: every served window comes back as the same ms', () => {
+    // A spread rather than one value: the minimum, the shipped defaults, and a long window, so a
+    // rule that happened to hold at 30 minutes and nowhere else could not pass.
+    for (const wholeMinutes of [1, 2, 5, 12, 20, 30, 60, 720, 1440]) {
+      const ms = wholeMinutes * ONE_MINUTE_MS;
+      expect(parseWindow(msToMinutesText(ms))).toEqual({ kind: 'ms', ms });
+    }
+  });
+
+  it('is INVALID for a non-whole-minute ms, which is why the service must never store one', () => {
+    // 90000 ms renders as "1.5", and parseWindow refuses it because it mirrors the server's own
+    // whole-minute guard. Served, it would block the entire settings form until a restart.
+    expect(msToMinutesText(90_000)).toBe('1.5');
+    expect(parseWindow(msToMinutesText(90_000)).kind).toBe('invalid');
+    expect(parseWindow(msToMinutesText(119_999)).kind).toBe('invalid');
+  });
+});
+
 describe('the wire keys', () => {
   it('OMITS an unset window entirely rather than sending a null or a zero', () => {
     expect(windowKeys({ kind: 'unset' }, { kind: 'unset' })).toEqual({});

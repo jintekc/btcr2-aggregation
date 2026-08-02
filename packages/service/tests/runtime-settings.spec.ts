@@ -726,6 +726,25 @@ const HOSTILE_SEEDS: readonly HostileSeed[] = [
     // arriving through a different door. With the ceiling refused there is nothing to clamp to.
     stored: (s) => expect(s.defaultDiscoveryWindowMs.value).toBe(30 * MINUTE_MS),
   },
+  {
+    what: 'a non-whole-minute discovery window',
+    seed: { defaultDiscoveryWindowMs: 90_000 },
+    // Quantized DOWN to the nearest whole minute rather than refused: flooring preserves the
+    // operator's intent as closely as a representable value allows.
+    stored: (s) => expect(s.defaultDiscoveryWindowMs.value).toBe(MINUTE_MS),
+  },
+  {
+    what: 'a non-whole-minute funding window',
+    seed: { defaultFundingWindowMs: 90_000 },
+    stored: (s) => expect(s.defaultFundingWindowMs.value).toBe(MINUTE_MS),
+  },
+  {
+    what: 'a non-whole-minute CEILING with a seed above it',
+    seed: { defaultDiscoveryWindowMs: 30 * MINUTE_MS, discoveryWindowCeilingMs: 150_000 },
+    // The ceiling is quantized BEFORE it is used as a clamp target, so the value the clamp writes
+    // is already a whole minute at or below what the operator's ceiling allowed.
+    stored: (s) => expect(s.defaultDiscoveryWindowMs.value).toBe(2 * MINUTE_MS),
+  },
 ];
 
 /**
@@ -745,6 +764,10 @@ function expectHolderInvariants(settings: RuntimeSettings): void {
     }
     expect(Number.isInteger(window)).toBe(true);
     expect(window).toBeGreaterThanOrEqual(MINUTE_MS);
+    // The browser half of the invariant, stated as arithmetic (review WR-3): a window that does
+    // not divide evenly by one minute cannot round-trip through the console's minutes field, and
+    // the console validates the WHOLE form before it will post.
+    expect(window % MINUTE_MS).toBe(0);
   }
 }
 
@@ -761,6 +784,21 @@ describe('no seed the holder ACCEPTS is a value it would REFUSE (W3, review WR-2
       expect(settings.serviceName.value).toBe('renamed');
     });
   }
+
+  it('stores only WHOLE-MINUTE windows across the entire table, asserted as a property', () => {
+    // Row by row, a missed window would only fail the row that produced it. As a property over
+    // the whole table it fails for any seed anybody adds later without thinking about the round
+    // trip, which is the drift this whole block exists to stop.
+    for (const row of HOSTILE_SEEDS) {
+      const { warn } = withWarnings();
+      const settings = createRuntimeSettings({ ...row.seed, warn });
+      for (const window of [settings.defaultDiscoveryWindowMs.value, settings.defaultFundingWindowMs.value]) {
+        if (window !== undefined) {
+          expect(window % MINUTE_MS).toBe(0);
+        }
+      }
+    }
+  });
 
   it('warns on a malformed seed rather than storing it, naming the value it ignored', () => {
     const { warnings, warn } = withWarnings();
@@ -840,6 +878,29 @@ describe('the DERIVED boot seeds reach the same defect, and the holder-level fix
     });
   });
 
+  it('closes a non-whole-minute COHORT_TTL_MS with no DEFAULT_DISCOVERY_WINDOW_MS anywhere', async () => {
+    // The reachable-without-any-malformed-value case, and the one most likely to be met in the
+    // field: `COHORT_TTL_MS=90000` seeds BOTH the discovery-window default and its own ceiling.
+    await withBootedService({ cohortTtlMs: 90_000 }, (settings) => {
+      const stored = settings.defaultDiscoveryWindowMs.value;
+      expect(stored).toBeDefined();
+      expect(stored! % MINUTE_MS).toBe(0);
+      expect(stored).toBeLessThanOrEqual(90_000);
+      expect(settings.applySettings({ serviceName: 'renamed' })).toBeUndefined();
+      expect(settings.serviceName.value).toBe('renamed');
+    });
+  });
+
+  it('closes a non-whole-minute FUNDING_WINDOW_MS with no DEFAULT_FUNDING_WINDOW_MS anywhere', async () => {
+    // The funding window has no ceiling, so it needs its own quantizer call; without one this row
+    // stores 90000 and the rename below fails behind a message about a window nobody set.
+    await withBootedService({ fundingWindowMs: 90_000 }, (settings) => {
+      expect(settings.defaultFundingWindowMs.value).toBe(MINUTE_MS);
+      expect(settings.applySettings({ serviceName: 'renamed' })).toBeUndefined();
+      expect(settings.serviceName.value).toBe('renamed');
+    });
+  });
+
   it('warns LOUDLY on the real console, naming the malformed value it ignored', async () => {
     // Observed, not assumed, matching the clamp block's discipline: a real boot passes no `warn`
     // sink, so the warning goes to `console.warn` behind the module's own `[settings]` prefix.
@@ -889,5 +950,82 @@ describe('numericKnob: the integrality check is OPT-IN (existing call sites unch
     const { warnings, warn } = withWarnings();
     expect(numericKnob('defaultSize', '4', 2, warn, 1, true)).toBe(4);
     expect(warnings).toEqual([]);
+  });
+});
+
+/**
+ * The QUANTIZER half of the invariant (review WR-3), asserted on the stored NUMBER rather than only
+ * on a save succeeding: a fix that stored the right value for the wrong reason must not pass here.
+ *
+ * A window that is integral but not a whole number of minutes is legal at the knob, so integrality
+ * alone does not close this. It is FLOORED rather than rounded or refused, and the reasoning is
+ * recorded beside the helper in the source: flooring preserves the operator's intent as closely as
+ * a representable value allows, it can only ever SHORTEN a window (the same safe direction the
+ * ceiling clamp already moves in, and never a promise this service cannot keep), and refusing would
+ * drop a window the operator did choose over a value that is only unrepresentable in the console's
+ * own units.
+ */
+describe('every window this holder will serve is a whole number of minutes (review WR-3)', () => {
+  it('quantizes a non-whole-minute discovery seed DOWN, warning with BOTH numbers', () => {
+    const { warnings, warn } = withWarnings();
+    const settings = createRuntimeSettings({ defaultDiscoveryWindowMs: 90_000, warn });
+    // Both halves: `value` is what every new draft inherits, `envDefault` is what the console
+    // captions as this service's environment default, and neither may be unrepresentable.
+    expect(settings.defaultDiscoveryWindowMs.value).toBe(MINUTE_MS);
+    expect(settings.defaultDiscoveryWindowMs.envDefault).toBe(MINUTE_MS);
+    expect(settings.defaultDiscoveryWindowMs.changed).toBe(false);
+    // A truncation the operator cannot see in boot output is indistinguishable from the silent
+    // acceptance this row exists to end, so the message carries the supplied ms and the stored ms.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/defaultDiscoveryWindowMs/);
+    expect(warnings[0]).toMatch(/90000/);
+    expect(warnings[0]).toMatch(/60000/);
+  });
+
+  it('quantizes the funding seed by the same rule, on its own call', () => {
+    const { warnings, warn } = withWarnings();
+    const settings = createRuntimeSettings({ defaultFundingWindowMs: 12 * MINUTE_MS + 1, warn });
+    expect(settings.defaultFundingWindowMs.value).toBe(12 * MINUTE_MS);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/defaultFundingWindowMs/);
+  });
+
+  it('never quantizes BELOW one minute, because the knob refused anything under it first', () => {
+    // 119999 ms is the worst case: one tick short of two minutes, floored to one, never to zero.
+    // Anything under a minute never reaches the quantizer at all, so no floor can produce a 0.
+    const { warn } = withWarnings();
+    const settings = createRuntimeSettings({ defaultDiscoveryWindowMs: 119_999, warn });
+    expect(settings.defaultDiscoveryWindowMs.value).toBe(MINUTE_MS);
+    const belowMinimum = createRuntimeSettings({ defaultDiscoveryWindowMs: 59_999, warn });
+    expect(belowMinimum.defaultDiscoveryWindowMs.value).toBeUndefined();
+  });
+
+  it('quantizes the CEILING too, so the clamp cannot write a fractional-minute value', () => {
+    // Drive a seed ABOVE a non-whole-minute ceiling: without quantizing the clamp TARGET, the
+    // clamp writes 150000 straight into the stored window and the console is wedged again.
+    const { warn } = withWarnings();
+    const settings = createRuntimeSettings({
+      defaultDiscoveryWindowMs: 30 * MINUTE_MS,
+      discoveryWindowCeilingMs: 150_000,
+      warn,
+    });
+    expect(settings.defaultDiscoveryWindowMs.value).toBe(2 * MINUTE_MS);
+    expect(settings.defaultDiscoveryWindowMs.value! % MINUTE_MS).toBe(0);
+    expect(settings.defaultDiscoveryWindowMs.value!).toBeLessThanOrEqual(150_000);
+  });
+
+  it('leaves a whole-minute seed byte-unchanged and SILENT', () => {
+    // The control. Without it a quantizer that rewrote every value would satisfy the rows above
+    // just as happily as one that only touches what it must, and every default boot would warn.
+    const { warnings, warn } = withWarnings();
+    const settings = createRuntimeSettings({
+      defaultDiscoveryWindowMs: 30 * MINUTE_MS,
+      defaultFundingWindowMs: 12 * MINUTE_MS,
+      discoveryWindowCeilingMs: 30 * MINUTE_MS,
+      warn,
+    });
+    expect(warnings).toEqual([]);
+    expect(settings.defaultDiscoveryWindowMs.value).toBe(30 * MINUTE_MS);
+    expect(settings.defaultFundingWindowMs.value).toBe(12 * MINUTE_MS);
   });
 });
