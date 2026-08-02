@@ -129,6 +129,7 @@ function finalizeBody(k: number, n: number) {
 export function LifecycleActions({ baseUrl, cohortId }: { baseUrl: string; cohortId: string }) {
   // Subscribe per field (never the whole store), matching CreateCohortForm.
   const detail = useOperator((s) => s.detail);
+  const detailCohortId = useOperator((s) => s.detailCohortId);
   const cancelling = useOperator((s) => s.cancelling);
   const finalizing = useOperator((s) => s.finalizing);
   const cancelCohort = useOperator((s) => s.cancelCohort);
@@ -143,7 +144,17 @@ export function LifecycleActions({ baseUrl, cohortId }: { baseUrl: string; cohor
   const finalize = finalizeAvailability(detail);
   // Nothing observed yet, and nothing to act on or explain: render NO section at all, so a control
   // never appears and then vanishes (UI-SPEC E1 loading). The `detail` guard also narrows the type.
-  if (!detail || (availability === 'unavailable' && finalize === 'unavailable')) {
+  //
+  // The provenance condition is the second barrier behind the store's round guard
+  // (`05-VERIFICATION.md` Gap 1, review CR-1). This component receives the cohort it will ACT on as
+  // a prop and reads the data it REASONS about from a store slot shared by every drill-down, so
+  // during a navigation race the two can describe different cohorts: every availability, rung, seat
+  // count and recovery-key disclosure below is derived from the slot while the confirm click
+  // targets the prop. Refusing to render is the honest answer to "these describe different
+  // cohorts", and it is deliberately a REFUSAL rather than a fallback, because there is no safe
+  // default rung to guess. An absent provenance is refused for the same reason: an unattributed
+  // document is not evidence about any cohort.
+  if (!detail || detailCohortId !== cohortId || (availability === 'unavailable' && finalize === 'unavailable')) {
     return null;
   }
 

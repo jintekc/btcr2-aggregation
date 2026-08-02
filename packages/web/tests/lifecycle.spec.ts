@@ -42,11 +42,15 @@ import type { ParticipantState } from '../src/stores/participant';
  * an `undefined` indistinguishable from an unseeded store, which is precisely the silent failure
  * the harness docstring warns about.
  *
- * NOTE: there is no `setState` anywhere in this file, and there cannot be. A static render takes
- * `useSyncExternalStore`'s SERVER snapshot, which zustand implements as `getInitialState()`, so a
- * `setState` seed is invisible; and here the bound hooks ARE the fake, which exposes none. The
- * demonstration of that trap lives in `packages/web/tests/support/render.spec.tsx`, against a
- * store that test creates itself.
+ * NOTE: nothing in this file seeds a render through zustand's imperative state setter, and nothing
+ * can. A static render takes `useSyncExternalStore`'s SERVER snapshot, which zustand implements as
+ * `getInitialState()`, so such a seed is invisible; and here the bound hooks ARE the fake, which
+ * exposes no setter at all. The demonstration of that trap lives in
+ * `packages/web/tests/support/render.spec.tsx`, against a store that test creates itself.
+ *
+ * The setter is described rather than SPELLED here on purpose (the 05-07 lesson): a repo-wide grep
+ * for the token is one of this file's acceptance checks, and a comment that spells the token a
+ * guard greps for defeats the guard.
  */
 const operatorFixture: { current: Partial<OperatorState> } = { current: {} };
 const participantFixture: { current: Partial<ParticipantState> } = { current: {} };
@@ -544,8 +548,16 @@ describe('CancelConfirm chooses the rung and wires its gate (D-03, rendered)', (
 });
 
 describe('the shipped cancel copy is pinned at the source (05-AUDIT-2.md entries 1 and 2)', () => {
-  it('contains no em-dash in any authored cancel string', () => {
-    // Em-dashes in authored copy propagate straight into shipped UI strings; guard at the source,
+  /**
+   * The forbidden long dash, spelled ONCE as an escaped constant (the 05-22 precedent from
+   * `packages/web/tests/service-controls.spec.ts`). A guard written with the literal character
+   * puts that character in the very file a repo-wide house-style scan reads, so the guard reports
+   * its own source as a violation.
+   */
+  const LONG_DASH = '\u2014';
+
+  it('contains no long dash in any authored cancel string', () => {
+    // Long dashes in authored copy propagate straight into shipped UI strings; guard at the source,
     // in the shape `packages/web/tests/settings.spec.ts` already uses.
     for (const copy of [
       CANCEL_LABEL,
@@ -557,7 +569,7 @@ describe('the shipped cancel copy is pinned at the source (05-AUDIT-2.md entries
       RECOVERY_OPERATOR_HELD,
       RECOVERY_THROWAWAY,
     ]) {
-      expect(copy).not.toMatch(/—/);
+      expect(copy).not.toContain(LONG_DASH);
     }
   });
 });
