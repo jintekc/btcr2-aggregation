@@ -498,6 +498,20 @@ export interface OperatorState {
   /** Last-known monitoring detail for the open drill-down; undefined until the first poll lands. */
   detail?: CohortDetailDTO;
   /**
+   * The cohort id the currently held {@link detail} is an answer ABOUT
+   * (`05-VERIFICATION.md` Gap 1, review CR-1).
+   *
+   * It exists because the served `CohortDetailDTO` carries no id of its own and this `detail` slot
+   * is SHARED by every drill-down, so the identity of the painted data would otherwise be an
+   * inference from {@link view} rather than a stored fact. A component that acts on one cohort
+   * (`LifecycleActions` receives it as a prop) while reasoning about this slot needs to be able to
+   * prove the two are the same cohort, and during a navigation race they can differ.
+   *
+   * Always written and cleared in the SAME `set` call as `detail`: a provenance id that outlives
+   * the document it names is a stale claim the next reader would believe.
+   */
+  detailCohortId?: string;
+  /**
    * True when the last detail poll was unreachable, so the displayed `detail` is frozen
    * last-known state (D-25); cleared on the next successful poll.
    */
@@ -736,6 +750,7 @@ export const useOperator = create<OperatorState>((set, get) => ({
   addingTestPeers: undefined,
   testPeerError: undefined,
   detail: undefined,
+  detailCohortId: undefined,
   detailStale: false,
   lastUpdated: undefined,
 
@@ -826,6 +841,7 @@ export const useOperator = create<OperatorState>((set, get) => ({
         addingTestPeers: undefined,
         testPeerError: undefined,
         detail: undefined,
+        detailCohortId: undefined,
         detailStale: false,
         lastUpdated: undefined,
       });
@@ -865,6 +881,7 @@ export const useOperator = create<OperatorState>((set, get) => ({
       addingTestPeers: undefined,
       testPeerError: undefined,
       detail: undefined,
+      detailCohortId: undefined,
       detailStale: false,
       lastUpdated: undefined,
     });
@@ -1235,13 +1252,20 @@ export const useOperator = create<OperatorState>((set, get) => ({
       view: { kind: 'detail', cohortId: id },
       actionError: undefined,
       detail: undefined,
+      detailCohortId: undefined,
       detailStale: false,
       lastUpdated: undefined,
     });
   },
 
   closeCohort() {
-    set({ view: { kind: 'list' }, detail: undefined, detailStale: false, lastUpdated: undefined });
+    set({
+      view: { kind: 'list' },
+      detail: undefined,
+      detailCohortId: undefined,
+      detailStale: false,
+      lastUpdated: undefined,
+    });
   },
 
   async pollDetail(baseUrl) {
@@ -1249,12 +1273,30 @@ export const useOperator = create<OperatorState>((set, get) => ({
     if (view.kind !== 'detail') {
       return;
     }
-    const result = await fetchCohortDetail(baseUrl, view.cohortId);
+    // Capture the cohort this question is ABOUT, exactly as `fetchCohortFate` does in
+    // `stores/participant.ts`. Nothing cancels a request already in flight, so by the time the
+    // answer arrives the operator may have opened a different cohort (`05-VERIFICATION.md`
+    // Gap 1, review CR-1).
+    const askedFor = view.cohortId;
+    const result = await fetchCohortDetail(baseUrl, askedFor);
     if (result.kind === 'unauthorized') {
+      // Handled FIRST, ahead of the round guard below, and deliberately so: a session expiry is
+      // SESSION-scoped, not cohort-scoped. It is true no matter which cohort asked, and deferring
+      // it to the next poll tick would leave the operator working a dead session for no reason.
       // Session expired mid-monitoring (D-16): honest re-login. Drop to the login screen
       // and back to the list view so the next sign-in starts clean; distinct from an
       // unreachable fault, which freezes the view below.
       get().expireSession();
+      return;
+    }
+    // The round guard. Everything BELOW this point is a fact about ONE cohort, the freshness flag
+    // as much as the document, so an answer about a cohort no longer in view is discarded whole: a
+    // stale request's failure must not mark the current cohort's view stale, and a stale request's
+    // success must not paint it. The shipped precedent is `fetchCohortFate` in
+    // `stores/participant.ts`: ask about one id, and apply the answer only if that is still what
+    // the store holds.
+    const current = get().view;
+    if (current.kind !== 'detail' || current.cohortId !== askedFor) {
       return;
     }
     if (result.kind === 'unreachable') {
@@ -1263,6 +1305,7 @@ export const useOperator = create<OperatorState>((set, get) => ({
       set({ detailStale: true });
       return;
     }
-    set({ detail: result.value, detailStale: false, lastUpdated: Date.now() });
+    // The provenance is written in the SAME call as the document, so the two can never be set apart.
+    set({ detail: result.value, detailCohortId: askedFor, detailStale: false, lastUpdated: Date.now() });
   },
 }));
