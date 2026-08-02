@@ -19,7 +19,11 @@
  *   1. parse and scheme-check    -> `malformed`, and NO request is made
  *   2. probe the chain markers   -> a thrown fetch is `browser-rejected`;
  *                                   an answer that cannot be read is `unreachable`
- *   3. compare against our chain -> `mismatch`, naming both chains
+ *   3. compare against our chain -> a block zero that is not ours already names the observed
+ *                                   chain, so it is `mismatch` naming both chains; only where
+ *                                   block zero is AMBIGUOUS (the signet family shares one) is
+ *                                   the second marker required, and an observation missing it
+ *                                   is `unreachable` because it cannot be verified
  *
  * Step 2's split is best-effort by construction (that is why `unreachable` is the
  * documented fallback), but it is honest: after a successful URL parse, a throw is far
@@ -171,12 +175,28 @@ export function classifyEndpoint(input: {
   }
   const ours = NETWORKS[input.ourNetwork];
   const observed = { genesis: input.probe.genesis, distinguishing: input.probe.distinguishing };
-  // A required second marker that was not observed leaves the chain UNVERIFIED. Refusing
-  // is the A3 mitigation: an endpoint we cannot check is not an endpoint we may trust.
+  const theirName = identifyChain(observed);
+  // Block zero IS the chain's identity, so a block zero that is not ours is already a
+  // different chain and no second marker could rescue it. Asking for corroboration here
+  // would be asking to confirm something that is settled, and the participant would be told
+  // their host could not be reached when it answered perfectly (05-VERIFICATION.md Gap 2,
+  // review WR-1). That misdirection was reachable on mutinynet, this project's own
+  // DEFAULT_NETWORK, for every foreign chain family.
+  if (observed.genesis !== ours.genesisHash) {
+    return {
+      kind: 'mismatch',
+      theirNetwork: theirName ? NETWORKS[theirName].label : UNRECOGNIZED_CHAIN,
+      ourNetwork: ours.label,
+    };
+  }
+  // Below here the observed block zero already EQUALS ours, which is the one case the marker
+  // guard was written for: the signet family shares a genesis, so block zero is ambiguous and
+  // the second marker is the only evidence left. A required marker that was not observed
+  // leaves the chain UNVERIFIED, and refusing is the A3 mitigation: an endpoint we cannot
+  // check is not an endpoint we may trust.
   if (ours.distinguishingBlock && observed.distinguishing === undefined) {
     return { kind: 'unreachable' };
   }
-  const theirName = identifyChain(observed);
   const theirPrint = theirName ? chainFingerprint(NETWORKS[theirName]) : null;
   if (theirPrint !== null && theirPrint === chainFingerprint(ours)) {
     return { kind: 'ok', base };

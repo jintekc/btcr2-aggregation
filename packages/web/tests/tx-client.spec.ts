@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { NETWORKS } from '@btcr2-aggregation/shared';
+import { NETWORKS, type NetworkName } from '@btcr2-aggregation/shared';
 import { chainEndpointFor, useParticipant } from '../src/stores/participant';
 import { broadcastTx, fetchUtxos, TxProxyError } from '../src/lib/tx-client';
 import {
@@ -292,6 +292,10 @@ describe('esplora - classifyEndpoint is a pure verdict over one observation', ()
 
   it('refuses rather than passing when a required second marker was not observed', () => {
     // A3 mitigation: "cannot verify" is refused with honest copy, never waved through.
+    // PRESERVED, and load-bearing: this is the boundary of the genesis-first rule below.
+    // Our OWN block zero arrived, so block zero settles nothing and the marker is genuinely
+    // required. If this row ever goes green as `mismatch`, the marker requirement was
+    // deleted rather than narrowed.
     expect(
       classifyEndpoint({
         raw: ENDPOINT,
@@ -299,6 +303,76 @@ describe('esplora - classifyEndpoint is a pure verdict over one observation', ()
         probe: { status: 'hashes', genesis: NETWORKS.mutinynet.genesisHash },
       }),
     ).toEqual({ kind: 'unreachable' });
+  });
+
+  /**
+   * The default network against every foreign chain family (05-VERIFICATION.md Gap 2, review
+   * WR-1). This is the configuration the product actually ships in, and it is the one the
+   * matrix above never had: every existing mismatch row pairs `regtest` (no second marker, so
+   * the marker guard is never reached) or signet with signet (the marker already observed).
+   * On `mutinynet`, the project's own DEFAULT_NETWORK, a foreign chain's block zero never
+   * earns a second probe, so before this was fixed all four families were reported as a host
+   * that could not be reached, and the participant was sent to debug a working endpoint.
+   */
+  const FOREIGN_FAMILIES: NetworkName[] = ['bitcoin', 'testnet3', 'testnet4', 'regtest'];
+  for (const theirs of FOREIGN_FAMILIES) {
+    it(`names ${theirs} against the DEFAULT network, where no second marker can ever arrive`, () => {
+      expect(
+        classifyEndpoint({
+          raw: ENDPOINT,
+          ourNetwork: 'mutinynet',
+          probe: { status: 'hashes', genesis: NETWORKS[theirs].genesisHash },
+        }),
+      ).toEqual({
+        kind: 'mismatch',
+        theirNetwork: NETWORKS[theirs].label,
+        ourNetwork: NETWORKS.mutinynet.label,
+      });
+    });
+  }
+
+  it('names an unregistered chain honestly on the DEFAULT network too', () => {
+    // The honest fallback has to survive the same reordering: a chain we cannot name is still
+    // a chain we can tell apart from ours, and guessing a network name would be worse copy
+    // than admitting we do not know which one it is.
+    expect(
+      classifyEndpoint({
+        raw: ENDPOINT,
+        ourNetwork: 'mutinynet',
+        probe: { status: 'hashes', genesis: 'ab'.repeat(32) },
+      }),
+    ).toEqual({
+      kind: 'mismatch',
+      theirNetwork: UNRECOGNIZED_CHAIN,
+      ourNetwork: NETWORKS.mutinynet.label,
+    });
+  });
+
+  it('accepts NOTHING new: every registry pairing, with no marker observed', () => {
+    // The safety half of the reordering (T-05-29-02). Moving a verdict from `unreachable` to
+    // `mismatch` moves it between two refusals; widening acceptance instead would let a
+    // foreign chain answer UTXO and confirmation questions on a real-funds path, which is
+    // strictly worse than the defect being fixed. So the whole registry is driven both ways
+    // and the ONLY pairing allowed to return `ok` is our own chain where block zero is
+    // already unambiguous; everything else must refuse, and a foreign block zero must refuse
+    // by NAMING the chain rather than by claiming the host could not be reached.
+    const names = Object.keys(NETWORKS) as NetworkName[];
+    for (const ours of names) {
+      for (const theirs of names) {
+        const verdict = classifyEndpoint({
+          raw: ENDPOINT,
+          ourNetwork: ours,
+          probe: { status: 'hashes', genesis: NETWORKS[theirs].genesisHash },
+        });
+        const row = `${ours} <- ${theirs}`;
+        const sameBlockZero = NETWORKS[theirs].genesisHash === NETWORKS[ours].genesisHash;
+        const ambiguous = NETWORKS[ours].distinguishingBlock !== undefined;
+        expect(verdict.kind === 'ok', row).toBe(sameBlockZero && !ambiguous);
+        if (!sameBlockZero) {
+          expect(verdict.kind, row).toBe('mismatch');
+        }
+      }
+    }
   });
 });
 
@@ -335,14 +409,37 @@ describe('esplora - checkEndpoint orders parse, probe, compare', () => {
     // The second probe is gated on block zero ALREADY agreeing, and that gate is load-bearing in
     // both directions. It keeps the common case to one request, and it stops a height-one marker
     // that happens to match ours from rescuing an endpoint whose genesis is somebody else's
-    // chain entirely. Our own marker was never observed here, so the honest verdict is that we
-    // could not verify the endpoint, not that we identified it.
+    // chain entirely. Both of those are still true, and both are still asserted here: one
+    // request, and a matching height-one marker that rescues nothing.
+    //
+    // What changed (05-VERIFICATION.md Gap 2, review WR-1): the verdict this observation earns.
+    // A block zero that is not ours already identifies the chain, so the honest answer is that
+    // we know which chain it is, not that we could not verify it. This row read `unreachable`
+    // until 05-29 and was the shape of the shipped defect on the default network.
     stubChain({
       0: NETWORKS.regtest.genesisHash,
       [NETWORKS.mutinynet.distinguishingBlock!.height]:
         NETWORKS.mutinynet.distinguishingBlock!.hash,
     });
-    expect(await checkEndpoint(ENDPOINT, 'mutinynet')).toEqual({ kind: 'unreachable' });
+    expect(await checkEndpoint(ENDPOINT, 'mutinynet')).toEqual({
+      kind: 'mismatch',
+      theirNetwork: NETWORKS.regtest.label,
+      ourNetwork: NETWORKS.mutinynet.label,
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('names a mainnet endpoint on the DEFAULT network, in ONE request', async () => {
+    // The orchestrated half of the Gap 2 rows above, and the scenario a participant actually
+    // reaches: a mainnet esplora pasted into a mutinynet service. One request is all this
+    // costs, because block zero settled it, and a third-party host is owed no more questions
+    // than the check needs.
+    stubChain({ 0: NETWORKS.bitcoin.genesisHash });
+    expect(await checkEndpoint(ENDPOINT, 'mutinynet')).toEqual({
+      kind: 'mismatch',
+      theirNetwork: NETWORKS.bitcoin.label,
+      ourNetwork: NETWORKS.mutinynet.label,
+    });
     expect(calls).toHaveLength(1);
   });
 
