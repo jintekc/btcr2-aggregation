@@ -38,7 +38,7 @@ key-decisions:
 patterns-established:
   - "Test matrices must pair the project's OWN default configuration with the adversarial case, not only the rule in the abstract: every pre-existing mismatch row used `ourNetwork: 'regtest'` or signet-vs-signet, which is why a complete-looking matrix shipped green over this defect"
 
-requirements-completed: [PART-05]
+requirements-completed: [PART-05]  # declared by this plan; left UNCHECKED in REQUIREMENTS.md, see "PART-05 stays open" below
 
 coverage:
   - id: D1
@@ -182,6 +182,10 @@ The round brief stated that `05-UAT.md` test 15 carried a note saying the mismat
 
 **Total deviations:** 2 auto-fixed (1 missing critical, 1 bug in a stated criterion)
 **Impact on plan:** Both keep the plan's own goal intact rather than widening it. No scope creep: no source file outside `packages/web/src/lib/esplora.ts` changed, and nothing under `packages/web/src/components` was touched.
+
+## PART-05 stays open
+
+`requirements.mark-complete PART-05` flips the checkbox in `REQUIREMENTS.md` but refuses to rewrite the traceability row, which reads `Gaps Found` from the verification pass. That half-applied write was reverted: a checked box beside a `Gaps Found` row is a claim the document contradicts on the next line. PART-05 also still has a genuinely open live leg (05-UAT test 15, a real CORS host and a real wrong-chain host). It should move to Complete when phase verification re-runs after 05-30, not on this plan's authority. This matches 05-28, which left SVC-04 open for its own reason.
 
 ## Issues Encountered
 

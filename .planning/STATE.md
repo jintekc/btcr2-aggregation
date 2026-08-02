@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Completed 05-28-PLAN.md (gap round 3, Gap 1 closed)
-last_updated: "2026-08-02T16:05:30.041Z"
+stopped_at: Completed 05-29-PLAN.md
+last_updated: "2026-08-02T16:14:33.844Z"
 last_activity: 2026-08-02
 last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 60
-  completed_plans: 58
+  completed_plans: 59
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 2 of 30
+Plan: 3 of 30
 Status: Ready to execute
 Last activity: 2026-08-02 — Phase 05 execution started
 
-Progress: [██████████] 97%
+Progress: [██████████] 98%
 
 ## Performance Metrics
 
@@ -119,6 +119,7 @@ Progress: [██████████] 97%
 | Phase 05 P26 | 55m | 3 tasks | 7 files |
 | Phase 05 P27 | ~70m | 3 tasks | 8 files |
 | Phase 05 P28 | 6 min | 2 tasks | 4 files |
+| Phase 05 P29 | 12 min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -222,6 +223,7 @@ Recent decisions affecting current work (Phase 2):
 - [Phase ?]: 05-27: 05-UAT.md reconciled from 18 items to 16 (2 retired, 13 narrowed), residue grouped by kind of human input, with a fifth group the triage did not predict (clauses behind a click) recorded rather than counted as judgment
 - [Phase 05]: 05-28: the drill-down poll captures the cohort it asked about before the await and re-checks the open view after it, so a late answer about another cohort can write neither the served document nor the freshness flag; the 401 branch stays AHEAD of that guard because a session expiry is session-scoped, pinned by its own row
 - [Phase 05]: 05-28: detailCohortId is a CLIENT-side provenance cleared beside detail at all five sites, never a new key on the served CohortDetailDTO, because which cohort was asked about is a fact the caller already holds; LifecycleActions refuses to render any lifecycle control it cannot tie to its own cohortId prop, a refusal rather than a fallback since there is no safe default rung to guess
+- [Phase 05]: 05-29: classifyEndpoint identifies the chain from block zero first; the distinguishing marker is required only where block zero is ambiguous. A block zero that is not ours is already a different chain, so the mismatch verdict (SC 6, PART-05) is now reachable on mutinynet, the default network
 
 ### Pending Todos
 
@@ -261,7 +263,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-02T16:05:20.013Z
-Stopped at: Completed 05-28-PLAN.md (gap round 3, Gap 1 closed)
+Last session: 2026-08-02T16:14:26.937Z
+Stopped at: Completed 05-29-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
