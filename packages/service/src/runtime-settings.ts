@@ -73,6 +73,21 @@ import {
  * holder seeds every one of its numeric fields from the environment too, and the plan's rule is
  * one implementation rather than a second copy: a guard that exists twice is a guard that can be
  * fixed once. `demo-server.ts` imports it from here for its own boot knobs.
+ *
+ * THE INVARIANT `requireInteger` EXISTS FOR (`05-VERIFICATION.md` W3, review WR-2). No seed this
+ * holder ACCEPTS may be a value {@link RuntimeSettings.applySettings} would REFUSE. That is not a
+ * tidiness rule, it is the difference between a usable settings surface and a wedged one:
+ * `applySettings` re-reads the STORED value for every key a patch OMITS and validates it with
+ * `Number.isInteger`, so an accepted-but-invalid seed does not fail its own field. It fails every
+ * later save AS A SET, including a save of a field the operator did touch, behind a message naming
+ * a field they never set, until the service is restarted. `createDraft` is wedged the same way,
+ * because a draft's absent size is filled from the stored default and `validateDraft` refuses it.
+ *
+ * The check is OPT-IN and defaults OFF so every existing call site resolves byte-identically:
+ * `PORT` in particular passes a minimum of 0 and must keep accepting an ephemeral-port request,
+ * and the runner knobs are free to be any finite ms value. A non-integer takes the SAME
+ * warn-and-fall-back branch as a NaN, an infinity or an under-minimum value: one branch, one
+ * message shape, one posture.
  */
 export function numericKnob(
   name: string,
@@ -80,12 +95,13 @@ export function numericKnob(
   fallback: number | undefined,
   warn: (msg: string) => void,
   minimum = 1,
+  requireInteger = false,
 ): number | undefined {
   if (raw === undefined || raw === '') {
     return fallback;
   }
   const n = typeof raw === 'number' ? raw : Number(raw);
-  if (!Number.isFinite(n) || n < minimum) {
+  if (!Number.isFinite(n) || n < minimum || (requireInteger && !Number.isInteger(n))) {
     warn(`ignoring malformed ${name}="${String(raw)}"; using ${fallback ?? 'the built-in default'}`);
     return fallback;
   }
@@ -315,10 +331,14 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
     seed.defaultBeaconType && KNOWN_BEACON_TYPES.has(seed.defaultBeaconType)
       ? seed.defaultBeaconType
       : BUILT_IN_BEACON_TYPE;
-  const seededSize = numericKnob('defaultSize', seed.defaultSize, BUILT_IN_SIZE, warn)!;
+  // Every seed below asks numericKnob for INTEGRALITY (the trailing `true`), because every one of
+  // their consumers demands a whole number and `applySettings` re-reads each stored value on every
+  // later save. See the invariant paragraph in numericKnob's docstring: a fractional seed that
+  // passed here did not fail its own field, it wedged the whole settings surface until restart.
+  const seededSize = numericKnob('defaultSize', seed.defaultSize, BUILT_IN_SIZE, warn, 1, true)!;
   // k defaults to n (the honest n-of-n default the create form already uses), and is clamped to
   // the resolved size so a malformed pair can never seed an unsatisfiable k > n draft default.
-  const seededThresholdRaw = numericKnob('defaultThreshold', seed.defaultThreshold, seededSize, warn)!;
+  const seededThresholdRaw = numericKnob('defaultThreshold', seed.defaultThreshold, seededSize, warn, 1, true)!;
   const seededThreshold = Math.min(seededThresholdRaw, seededSize);
   const seededDiscoveryWindowMs = numericKnob(
     'defaultDiscoveryWindowMs',
@@ -326,6 +346,7 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
     undefined,
     warn,
     ONE_MINUTE_MS,
+    true,
   );
   const seededFundingWindowMs = numericKnob(
     'defaultFundingWindowMs',
@@ -333,17 +354,22 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
     undefined,
     warn,
     ONE_MINUTE_MS,
+    true,
   );
 
   // The shorten-only ceiling on the discovery-window DEFAULT (see the seed's docstring). Guarded
   // through numericKnob for the same NaN reason as every other numeric seed: a NaN ceiling makes
-  // every `> ceiling` comparison false, which silently disables the very guard it configures.
+  // every `> ceiling` comparison false, which silently disables the very guard it configures. It
+  // asks for integrality too, because it is a clamp TARGET: a fractional ceiling would be written
+  // straight into the stored window by the clamp below, which is the same wedge arriving through a
+  // different door.
   const discoveryWindowCeilingMs = numericKnob(
     'discoveryWindowCeilingMs',
     seed.discoveryWindowCeilingMs,
     undefined,
     warn,
     ONE_MINUTE_MS,
+    true,
   );
 
   // Apply the ceiling to the SEED as well, clamping down with a loud warning (D-11/D-12,
@@ -406,12 +432,24 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
     return { value: state.value, envDefault: state.envDefault, changed: !Object.is(state.value, state.envDefault) };
   }
 
-  /** Validate one timing window in ms: absent stays absent, else a whole minute or more. */
+  /**
+   * Validate one timing window in ms: absent stays absent, else a WHOLE NUMBER OF MINUTES, at
+   * least one, which is exactly what both window messages have always claimed.
+   *
+   * The modulo is the half that was missing (review WR-3). A window that is integral but not a
+   * whole number of minutes (90000) stored cleanly and then reached the console as a fractional
+   * minutes field, which `parseWindow` in `packages/web/src/lib/cohort-form.ts` calls invalid
+   * because it mirrors this rule; the settings view validates the WHOLE form before it will post,
+   * so one unrepresentable window blocked a save of every other field. The browser cannot produce
+   * such a value, but a headless operator client posting straight at the gated route can, and it
+   * would re-wedge the console the moment it landed. The message is untouched: this predicate is
+   * what makes it TRUE.
+   */
   function validateWindow(ms: number | undefined, message: string): string | undefined {
     if (ms === undefined) {
       return undefined;
     }
-    if (!Number.isInteger(ms) || ms < ONE_MINUTE_MS) {
+    if (!Number.isInteger(ms) || ms < ONE_MINUTE_MS || ms % ONE_MINUTE_MS !== 0) {
       return message;
     }
     return undefined;

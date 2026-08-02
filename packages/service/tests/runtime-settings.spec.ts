@@ -7,8 +7,18 @@ import { buildCohortConfig, createIdentity, resolveNetwork } from '@btcr2-aggreg
 import { createCohortIntents } from '../src/cohort-intent.js';
 import { createHonoApp } from '../src/hono-adapter.js';
 import { createService } from '../src/index.js';
-import { createOperatorCohorts, discoveryWindowCeilingError } from '../src/operator-cohorts.js';
-import { createRuntimeSettings, type RuntimeSettingsSeed } from '../src/runtime-settings.js';
+import {
+  createOperatorCohorts,
+  discoveryWindowCeilingError,
+  DISCOVERY_WINDOW_ERROR,
+  FUNDING_WINDOW_ERROR,
+} from '../src/operator-cohorts.js';
+import {
+  createRuntimeSettings,
+  numericKnob,
+  type RuntimeSettings,
+  type RuntimeSettingsSeed,
+} from '../src/runtime-settings.js';
 
 /**
  * Hermetic coverage of the per-service runtime settings holder (SVC-04, D-08/D-12/D-16): the
@@ -642,5 +652,242 @@ describe('service defaults are read ONCE at createDraft time and never re-read (
     expect(draft.capacity).toBe(5);
     expect(draft.threshold).toBe(5);
     runner.stop();
+  });
+});
+
+/** One minute in ms, retyped here rather than imported: the spec states the unit it asserts on. */
+const MINUTE_MS = 60_000;
+
+/**
+ * THE INVARIANT (`05-VERIFICATION.md` W3, review WR-2 and WR-3): no value this holder ACCEPTS at
+ * boot may be a value its own {@link RuntimeSettings.applySettings} would REFUSE.
+ *
+ * Every block above tests one guard against its own input. None of them took a value the holder
+ * ACCEPTED and then asked whether the holder would still accept it on the next save, and that gap
+ * is the shape of both defects this block closes. `applySettings` re-reads the STORED value for
+ * every key a patch OMITS, so an accepted-but-invalid seed does not fail its own field: it fails
+ * every later save AS A SET, including a save of a field the operator did touch, behind a message
+ * naming a field they never set. `createDraft` is wedged the same way, because a draft's absent
+ * size is filled from the stored default and `validateDraft` then refuses it.
+ *
+ * Two independent boot values could do it. A FRACTIONAL numeric passed `numericKnob` (which
+ * validated finiteness and a lower bound but never integrality) and then failed `Number.isInteger`
+ * on every save. And a window that was integral but NOT a whole number of minutes stored cleanly,
+ * then reached the console as a fractional minutes field (`msToMinutesText(90000)` is `"1.5"`),
+ * which `parseWindow` calls invalid because it mirrors this service's own whole-minute guard; the
+ * settings view validates the WHOLE form before it will post, so one unrepresentable window blocks
+ * a save of every other field.
+ *
+ * The table below is the hostile-seed set. Each row carries a seed plus what it must end up
+ * storing, and EVERY row additionally runs the same two checks through
+ * {@link expectHolderInvariants} and the rename-only save: asserting the stored value alone would
+ * pass against a fix that stored a good number while leaving the save broken for another reason,
+ * and the rename-only save is the exact operator experience the defect ruins.
+ */
+interface HostileSeed {
+  /** What the row is hostile ABOUT, read into the test name. */
+  readonly what: string;
+  readonly seed: RuntimeSettingsSeed;
+  /** The row-specific expectation about what the holder ended up storing. */
+  readonly stored: (settings: RuntimeSettings) => void;
+}
+
+const HOSTILE_SEEDS: readonly HostileSeed[] = [
+  {
+    what: 'a fractional cohort size',
+    seed: { defaultSize: 2.5 },
+    // The built-in default, exactly as a NaN or an under-minimum size already fell back.
+    stored: (s) => expect(s.defaultSize.value).toBe(2),
+  },
+  {
+    what: 'a fractional signing threshold',
+    seed: { defaultSize: 4, defaultThreshold: 2.5 },
+    // k falls back to its own fallback, the resolved n, which is the honest n-of-n default.
+    stored: (s) => {
+      expect(s.defaultSize.value).toBe(4);
+      expect(s.defaultThreshold.value).toBe(4);
+    },
+  },
+  {
+    what: 'a fractional discovery window',
+    seed: { defaultDiscoveryWindowMs: 90_000.5 },
+    // No built-in window default exists, so the fallback is absent: the service's own default.
+    stored: (s) => expect(s.defaultDiscoveryWindowMs.value).toBeUndefined(),
+  },
+  {
+    what: 'a fractional funding window',
+    seed: { defaultFundingWindowMs: 600_000.5 },
+    stored: (s) => expect(s.defaultFundingWindowMs.value).toBeUndefined(),
+  },
+  {
+    what: 'a fractional discovery-window CEILING, which is a clamp TARGET',
+    seed: { defaultDiscoveryWindowMs: 30 * MINUTE_MS, discoveryWindowCeilingMs: 1_800_000.5 },
+    // A fractional ceiling would be written into the stored window by the clamp: the same wedge
+    // arriving through a different door. With the ceiling refused there is nothing to clamp to.
+    stored: (s) => expect(s.defaultDiscoveryWindowMs.value).toBe(30 * MINUTE_MS),
+  },
+];
+
+/**
+ * Everything {@link RuntimeSettings.applySettings} demands of a value it re-reads, asserted against
+ * what the holder actually STORED. This is the invariant stated as a predicate: a stored value that
+ * fails any line here is a value the holder accepted and would then refuse.
+ */
+function expectHolderInvariants(settings: RuntimeSettings): void {
+  expect(Number.isInteger(settings.defaultSize.value)).toBe(true);
+  expect(settings.defaultSize.value).toBeGreaterThanOrEqual(1);
+  expect(Number.isInteger(settings.defaultThreshold.value)).toBe(true);
+  expect(settings.defaultThreshold.value).toBeGreaterThanOrEqual(1);
+  expect(settings.defaultThreshold.value).toBeLessThanOrEqual(settings.defaultSize.value);
+  for (const window of [settings.defaultDiscoveryWindowMs.value, settings.defaultFundingWindowMs.value]) {
+    if (window === undefined) {
+      continue;
+    }
+    expect(Number.isInteger(window)).toBe(true);
+    expect(window).toBeGreaterThanOrEqual(MINUTE_MS);
+  }
+}
+
+describe('no seed the holder ACCEPTS is a value it would REFUSE (W3, review WR-2 and WR-3)', () => {
+  for (const row of HOSTILE_SEEDS) {
+    it(`stores a self-consistent value for ${row.what}, and a rename-only save still succeeds`, () => {
+      const { warn } = withWarnings();
+      const settings = createRuntimeSettings({ serviceName: 'boot', ...row.seed, warn });
+      row.stored(settings);
+      expectHolderInvariants(settings);
+      // The operator experience the defect ruins: a save of the ONE field they did touch, with
+      // every other key absent and therefore re-read from what this boot stored.
+      expect(settings.applySettings({ serviceName: 'renamed' })).toBeUndefined();
+      expect(settings.serviceName.value).toBe('renamed');
+    });
+  }
+
+  it('warns on a malformed seed rather than storing it, naming the value it ignored', () => {
+    const { warnings, warn } = withWarnings();
+    createRuntimeSettings({ defaultSize: 2.5, warn });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/defaultSize/);
+    expect(warnings[0]).toMatch(/2\.5/);
+  });
+
+  it('unwedges createDraft too: the shipped draft path succeeds under a fractional size seed', () => {
+    // The other half of the same wedge. A draft that supplies no shape fills its size from the
+    // stored default, and `validateDraft` refused a fractional one, so the operator could not
+    // create a cohort at all on a service booted from an ordinary typo.
+    const { runner, operatorCohorts } = draftDefaultsApp({ defaultSize: 2.5 });
+    const draft = operatorCohorts.createDraft({});
+    expect(draft.capacity).toBe(2);
+    expect(draft.threshold).toBe(2);
+    runner.stop();
+  });
+
+  it('refuses a SAVE of a window that is integral but not a whole number of minutes', () => {
+    // The browser cannot produce this, but a headless operator client can, and it would re-wedge
+    // the console the moment it landed. The message is unchanged: this rule makes it TRUE.
+    const settings = createRuntimeSettings({});
+    expect(settings.applySettings({ defaultDiscoveryWindowMs: 90_000 })).toBe(DISCOVERY_WINDOW_ERROR);
+    expect(settings.defaultDiscoveryWindowMs.value).toBeUndefined();
+    expect(settings.applySettings({ defaultFundingWindowMs: 90_000 })).toBe(FUNDING_WINDOW_ERROR);
+    expect(settings.defaultFundingWindowMs.value).toBeUndefined();
+    // The whole-minute values either side of it still save, so the rule bounds nothing legal.
+    expect(settings.applySettings({ defaultDiscoveryWindowMs: MINUTE_MS })).toBeUndefined();
+    expect(settings.applySettings({ defaultFundingWindowMs: 2 * MINUTE_MS })).toBeUndefined();
+  });
+});
+
+/**
+ * The DERIVED boot paths, which both the verification note and the review understated: no
+ * malformed `DEFAULT_*` value is required to reach this defect at all.
+ *
+ * `createService` fills the size seed from `config.minParticipants`, the discovery-window seed from
+ * `cohortTtlMs`, and the funding-window seed from `fundingWindowMs` whenever the matching `DEFAULT_*`
+ * option is absent. Every one of those has its own env var with no integrality and no whole-minute
+ * constraint, so `COHORT_TTL_MS=90000` (a perfectly reasonable thing to set, and nothing in the
+ * runbook warned against it) wedged every settings save and every draft edit on a service where no
+ * `DEFAULT_*` variable was set at all.
+ *
+ * A bare holder call cannot show that, because the derivation lives in `createService` and not in
+ * the holder. These rows therefore boot a REAL service, following the block above that proves the
+ * ceiling is supplied by a real boot.
+ */
+describe('the DERIVED boot seeds reach the same defect, and the holder-level fix closes them (W3)', () => {
+  /**
+   * Boot a real service and read its holder back through the service handle's own `settings`.
+   * Nothing binds a port and nothing is mocked: the holder is built during `createService` itself.
+   */
+  async function withBootedService(
+    opts: { minParticipants?: number; cohortTtlMs?: number; fundingWindowMs?: number },
+    body: (settings: ReturnType<typeof createService>['settings']) => void,
+  ): Promise<void> {
+    const service = createService({
+      identity: createIdentity(resolveNetwork('signet')),
+      config: buildCohortConfig(opts.minParticipants ?? 2, 'CASBeacon', 'signet'),
+      ...(opts.cohortTtlMs !== undefined ? { cohortTtlMs: opts.cohortTtlMs } : {}),
+      ...(opts.fundingWindowMs !== undefined ? { fundingWindowMs: opts.fundingWindowMs } : {}),
+    });
+    try {
+      body(service.settings);
+    } finally {
+      await service.stop();
+    }
+  }
+
+  it('closes a fractional MIN_PARTICIPANTS with no DEFAULT_SIZE anywhere', async () => {
+    await withBootedService({ minParticipants: 2.5 }, (settings) => {
+      expect(settings.defaultSize.value).toBe(2);
+      expect(settings.applySettings({ serviceName: 'renamed' })).toBeUndefined();
+      expect(settings.serviceName.value).toBe('renamed');
+    });
+  });
+
+  it('warns LOUDLY on the real console, naming the malformed value it ignored', async () => {
+    // Observed, not assumed, matching the clamp block's discipline: a real boot passes no `warn`
+    // sink, so the warning goes to `console.warn` behind the module's own `[settings]` prefix.
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await withBootedService({ minParticipants: 2.5 }, () => {});
+      const lines = spy.mock.calls.map((call) => String(call[0]));
+      const sizeWarning = lines.filter((line) => /defaultSize/.test(line));
+      expect(sizeWarning).toHaveLength(1);
+      expect(sizeWarning[0]).toMatch(/\[settings\]/);
+      expect(sizeWarning[0]).toMatch(/2\.5/);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+/**
+ * The integrality check is OPT-IN, so the eleven existing `numericKnob` call sites resolve
+ * byte-identically and the diff at `demo-server.ts` is empty. `PORT` is the one that would notice
+ * first if the new parameter were not opt-in: it passes a minimum of 0, and a port of 0 is a legal
+ * request for an ephemeral port.
+ */
+describe('numericKnob: the integrality check is OPT-IN (existing call sites unchanged)', () => {
+  it('accepts a non-integer when integrality is not requested', () => {
+    const { warnings, warn } = withWarnings();
+    expect(numericKnob('cohortTtlMs', 90_000.5, 1, warn)).toBe(90_000.5);
+    expect(warnings).toEqual([]);
+  });
+
+  it('still accepts zero for the PORT-shaped call with a minimum of zero', () => {
+    const { warnings, warn } = withWarnings();
+    expect(numericKnob('PORT', '0', 8080, warn, 0)).toBe(0);
+    expect(warnings).toEqual([]);
+  });
+
+  it('takes the SAME warn-and-fall-back path as a NaN when integrality IS requested', () => {
+    // One branch, one message shape, one posture: a non-integer is malformed in exactly the way
+    // an infinity or an under-minimum value already was.
+    const { warnings, warn } = withWarnings();
+    expect(numericKnob('defaultSize', 2.5, 2, warn, 1, true)).toBe(2);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toBe('ignoring malformed defaultSize="2.5"; using 2');
+  });
+
+  it('still accepts a whole number when integrality is requested', () => {
+    const { warnings, warn } = withWarnings();
+    expect(numericKnob('defaultSize', '4', 2, warn, 1, true)).toBe(4);
+    expect(warnings).toEqual([]);
   });
 });
