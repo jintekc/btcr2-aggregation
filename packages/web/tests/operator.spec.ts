@@ -464,7 +464,10 @@ describe('operator store session-ending parity (review IN-11)', () => {
    * unlisted field added to one path later shows up here as a difference.
    */
   function withoutSessionFacts(state: OperatorState): Record<string, unknown> {
-    const { auth, sessionRound, error, ...rest } = state;
+    const rest: Record<string, unknown> = { ...state };
+    for (const name of ['auth', 'sessionRound', 'error'] satisfies Array<keyof OperatorState>) {
+      delete rest[name];
+    }
     return rest;
   }
 
@@ -1780,6 +1783,283 @@ describe('operator store session identity across every gated read (review WR-08/
     expect(s.settings).toEqual(SESSION_A_SETTINGS);
     expect(s.settingsMessage).toBe(SETTINGS_SAVED_OK);
     expect(s.settingsStatus).toBe('idle');
+  });
+});
+
+/**
+ * A probe that DISCOVERS a session has ended must END it (review CR-03).
+ *
+ * `OperatorConsole` is mounted conditionally on the operator tab, so switching away and back
+ * re-runs `probe`. If the cookie expired while the operator was on the participant tab, where
+ * nothing polls and so no 401 is ever seen, the probe is what discovers it, and the discovery used
+ * to set a status string and nothing else. The next sign-in then opened on the previous session's
+ * cohort list, served health chip, operator-actions log and drill-down document (member DIDs,
+ * pubkeys, raw signed updates, the funding view), and the console shell's once-per-session settings
+ * latch never re-read at all, so the create form ran on a previous session's defaults indefinitely.
+ *
+ * Every row here drives the SHIPPED paths into a populated state rather than seeding fields, so
+ * what is asserted cleared is state a real session really accumulated.
+ */
+describe('operator store probe-discovered session end (review CR-03)', () => {
+  beforeEach(resetStore);
+
+  const PASSWORD = 'operator-password';
+
+  /** The settings snapshot the populated session reads, distinct from every other fixture here. */
+  const STAGED_SETTINGS: SettingsSnapshotDTO = {
+    serviceName: { value: 'Ended session service', envDefault: 'Ended session service', changed: false },
+    defaultBeaconType: { value: 'SMTBeacon', envDefault: 'SMTBeacon', changed: false },
+    defaultSize: { value: 4, envDefault: 4, changed: false },
+    defaultThreshold: { value: 4, envDefault: 4, changed: false },
+    defaultDiscoveryWindowMs: { value: 600_000, envDefault: 600_000, changed: false },
+    defaultFundingWindowMs: { value: 900_000, envDefault: 900_000, changed: false },
+    termsText: { value: 'Ended session terms', envDefault: 'Ended session terms', changed: false },
+  };
+
+  /** A visibly non-empty list body, so every cleared field is proven cleared rather than absent. */
+  const STAGED_LIST = {
+    cohorts: [
+      {
+        draftId: 'draft-1',
+        beaconType: 'CASBeacon',
+        network: 'regtest',
+        threshold: 2,
+        capacity: 3,
+        joined: 1,
+        state: 'advertised',
+      },
+    ],
+    monitoring: {
+      rows: [{ cohortId: 'cohort-1', chip: 'filling', seatsJoined: 1, capacity: 3, phase: 'CollectingUpdates' }],
+      metrics: { open: 1, inFlight: 0, anchored: 0, failed: 0 },
+      health: { mode: 'live', esploraReachable: true, paused: false },
+      operatorActions: [{ id: 1, t: 5, level: 'info', text: 'ended session paused advertising' }],
+    },
+    defaults: { discoveryWindowMs: 600_000, fundingWindowMs: 900_000 },
+  };
+
+  /** A promise plus its settle handles, so a row controls exactly WHEN an answer lands. */
+  function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
+    let resolve!: (v: T) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  /**
+   * Answer every gated read this block uses, with the session probe answered from a staged queue so
+   * a row decides what the probe discovers (and, for the overlapping rows, exactly when).
+   */
+  function stubService(probeAnswers: Array<Promise<Response>>): void {
+    let nextProbe = 0;
+    vi.stubGlobal('fetch', (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/v1/operator/session')) {
+        const staged = probeAnswers[nextProbe];
+        nextProbe += 1;
+        return staged ?? Promise.reject(new Error(`no staged answer for probe #${nextProbe}`));
+      }
+      if (url.endsWith('/v1/operator/login')) {
+        return Promise.resolve(new Response(null, { status: 200 }));
+      }
+      if (url.endsWith('/v1/operator/logout')) {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (url.endsWith('/v1/operator/settings') && (init?.method ?? 'GET') === 'GET') {
+        return Promise.resolve(new Response(JSON.stringify(STAGED_SETTINGS), { status: 200 }));
+      }
+      if (url.endsWith('/v1/operator/cohorts')) {
+        return Promise.resolve(new Response(JSON.stringify(STAGED_LIST), { status: 200 }));
+      }
+      if (url.includes('/v1/operator/cohorts/')) {
+        return Promise.resolve(new Response(JSON.stringify(SAMPLE_DETAIL), { status: 200 }));
+      }
+      return new Promise<Response>(() => {});
+    });
+  }
+
+  /**
+   * Sign in and drive the console into the state a working session really reaches: a settled list
+   * read, an open drill-down holding a served document, and a settings snapshot. Asserted non-empty
+   * here so no row below can pass because nothing was staged.
+   */
+  async function stagePopulatedSession(): Promise<void> {
+    await useOperator.getState().signIn(BASE, PASSWORD);
+    await useOperator.getState().refreshCohorts(BASE);
+    useOperator.getState().openCohort('cohort-1');
+    await useOperator.getState().pollDetail(BASE);
+    await useOperator.getState().loadSettings(BASE);
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-in');
+    expect(s.cohorts).toEqual(STAGED_LIST.cohorts);
+    expect(s.health).toEqual(STAGED_LIST.monitoring.health);
+    expect(s.operatorActions).toEqual(STAGED_LIST.monitoring.operatorActions);
+    expect(s.detail).toEqual(SAMPLE_DETAIL);
+    expect(s.settings).toEqual(STAGED_SETTINGS);
+    expect(s.view).toEqual({ kind: 'detail', cohortId: 'cohort-1' });
+    expect(typeof s.lastUpdated).toBe('number');
+  }
+
+  /** Every gated field the console renders, asserted cleared by name rather than by a shape. */
+  function expectGatedSliceEmpty(): void {
+    const s = useOperator.getState();
+    expect(s.cohorts).toEqual([]);
+    expect(s.rows).toEqual([]);
+    expect(s.metrics).toBeUndefined();
+    expect(s.health).toBeUndefined();
+    expect(s.operatorActions).toEqual([]);
+    expect(s.settings).toBeUndefined();
+    expect(s.detail).toBeUndefined();
+    expect(s.detailCohortId).toBeUndefined();
+    expect(s.lastUpdated).toBeUndefined();
+    expect(s.defaults).toBeUndefined();
+    expect(s.view).toEqual({ kind: 'list' });
+  }
+
+  it('ends the session it discovers has ended, clearing the whole gated slice', async () => {
+    stubService([
+      Promise.resolve(new Response(null, { status: 401 })),
+    ]);
+    await stagePopulatedSession();
+    const before = useOperator.getState().sessionRound;
+
+    await useOperator.getState().probe(BASE);
+
+    expectGatedSliceEmpty();
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-out');
+    expect(s.error).toBe(SESSION_EXPIRED);
+    expect(s.sessionRound).not.toBe(before);
+  });
+
+  it('leaves the console shell free to re-read settings for the NEXT session (the latch)', async () => {
+    // The shell's own once-per-session condition (`OperatorConsole.tsx:65-69`), computed here rather
+    // than described: that effect re-reads settings only while the snapshot is undefined, so a
+    // retained snapshot made the new session skip its own read entirely and open the create form on
+    // a previous session's defaults, indefinitely rather than transiently.
+    stubService([
+      Promise.resolve(new Response(null, { status: 401 })),
+    ]);
+    await stagePopulatedSession();
+
+    await useOperator.getState().probe(BASE);
+    await useOperator.getState().signIn(BASE, PASSWORD);
+
+    const s = useOperator.getState();
+    expect(s.auth === 'logged-in' && s.settings === undefined).toBe(true);
+  });
+
+  it('clears the slice on a transport FAULT without ever claiming an expiry', async () => {
+    // A network fault is not evidence a session ended, so the copy must stay the unreachable line:
+    // a probe that narrated a fault as an expiry would satisfy every clearing row here and would be
+    // its own regression. It equally must not hand the gated slice to whoever signs in next.
+    stubService([Promise.reject(new Error('network down'))]);
+    await stagePopulatedSession();
+
+    await useOperator.getState().probe(BASE);
+
+    expectGatedSliceEmpty();
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-out');
+    expect(s.error).toContain('Could not reach the service');
+    expect(s.error).not.toBe(SESSION_EXPIRED);
+  });
+
+  it('clears the slice on the fail-closed answer AND keeps the disabled notice', async () => {
+    // A service restarted without an operator password still owes the operator that notice, and it
+    // lands AFTER the slice has gone rather than instead of it.
+    stubService([
+      Promise.resolve(new Response(null, { status: 404 })),
+    ]);
+    await stagePopulatedSession();
+
+    await useOperator.getState().probe(BASE);
+
+    expectGatedSliceEmpty();
+    const s = useOperator.getState();
+    expect(s.auth).toBe('disabled');
+    expect(s.error).toBeUndefined();
+  });
+
+  it('clears NOTHING when the probe merely confirms the session already live', async () => {
+    // The anti-vacuity control, beside the ending it must not perform: a routing that ended a
+    // session on every probe would satisfy all three rows above.
+    stubService([
+      Promise.resolve(new Response(null, { status: 200 })),
+    ]);
+    await stagePopulatedSession();
+    const before = useOperator.getState().sessionRound;
+    const detail = useOperator.getState().detail;
+
+    await useOperator.getState().probe(BASE);
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-in');
+    expect(s.sessionRound).toBe(before);
+    expect(s.cohorts).toEqual(STAGED_LIST.cohorts);
+    expect(s.settings).toEqual(STAGED_SETTINGS);
+    expect(s.detail).toEqual(detail);
+    expect(s.view).toEqual({ kind: 'detail', cohortId: 'cohort-1' });
+  });
+
+  it('ends NOTHING when a probe finds no session on a console holding none', async () => {
+    // The second control: a console that never had a session must not be told one expired, and its
+    // round must not move. Staged through a real sign-out rather than by seeding a status.
+    stubService([
+      Promise.resolve(new Response(null, { status: 401 })),
+    ]);
+    await stagePopulatedSession();
+    await useOperator.getState().signOut(BASE);
+    const before = useOperator.getState().sessionRound;
+
+    await useOperator.getState().probe(BASE);
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-out');
+    expect(s.error).toBeUndefined();
+    expect(s.sessionRound).toBe(before);
+  });
+
+  it('still gives a RETURNING session a fresh round after a probe ended the previous one', async () => {
+    // The third control: the ending must not cost the next session its own identity.
+    stubService([
+      Promise.resolve(new Response(null, { status: 401 })),
+      Promise.resolve(new Response(null, { status: 200 })),
+    ]);
+    await stagePopulatedSession();
+
+    await useOperator.getState().probe(BASE);
+    const ended = useOperator.getState().sessionRound;
+    await useOperator.getState().probe(BASE);
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-in');
+    expect(s.sessionRound).not.toBe(ended);
+  });
+
+  it('ends the session EXACTLY once when two overlapping probes both discover it has ended', async () => {
+    // Where the stored live-session fact of the previous task stops being tidiness and becomes
+    // load-bearing: without it the second probe would end an already-ended session and land the
+    // session-expired copy on a console that has already moved on.
+    const first = deferred<Response>();
+    const second = deferred<Response>();
+    stubService([first.promise, second.promise]);
+    await stagePopulatedSession();
+    const before = useOperator.getState().sessionRound;
+
+    const p1 = useOperator.getState().probe(BASE);
+    const p2 = useOperator.getState().probe(BASE);
+    first.resolve(new Response(null, { status: 401 }));
+    second.resolve(new Response(null, { status: 401 }));
+    await Promise.all([p1, p2]);
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-out');
+    expect(s.sessionRound).toBe(before + 1);
   });
 });
 

@@ -917,12 +917,36 @@ export const useOperator = create<OperatorState>((set, get) => ({
           set({ auth: state });
         }
         void get().refreshCohorts(baseUrl);
+      } else if (get().liveSessionRound !== undefined) {
+        // A live session ENDED, discovered HERE rather than by a read's 401 (review CR-03). The tab
+        // switch is what reaches this: `OperatorConsole` is mounted conditionally on the operator
+        // tab, and nothing polls while the operator is on the participant tab, so an idle
+        // server-side expiry is seen for the first time on the way back. It is the same fact
+        // `expireSession` exists for, so it takes the same path: the round is retired and the whole
+        // gated slice goes with it, which is exactly what the session-expired copy already promises
+        // ("Monitoring rebuilds from this service's state after you sign in").
+        //
+        // Decided from the stored fact, so two overlapping probes end ONE session between them.
+        get().expireSession();
+        if (state === 'disabled') {
+          // The service rebooted without an operator password, and that notice is owed to the
+          // operator. It lands AFTER the slice has been cleared rather than instead of it.
+          set({ auth: 'disabled', error: undefined });
+        }
       } else {
-        // `logged-out` and `disabled` start no session, so neither takes a round: a round retired
-        // by a probe no session ever held would be a number that identifies nothing.
+        // The other case this branch is reached on, and the only one it used to reason about: no
+        // session was live, so none ended. A round retired by a probe no session ever held would be
+        // a number that identifies nothing, and an expiry narrated to a console that never signed
+        // in would be an event the operator did not have.
         set({ auth: state });
       }
     } catch {
+      if (get().liveSessionRound !== undefined) {
+        // A transport fault is NOT evidence that a session ended, so this path claims no expiry
+        // (the copy below stays the unreachable line). It equally must not hand a live session's
+        // gated slice to whoever signs in next, so the slice goes either way (review CR-03).
+        get().expireSession();
+      }
       // A network/stall signal on the probe leaves the operator at the login screen
       // (not 'disabled', which is reserved for the explicit 404 fail-closed signal).
       set({ auth: 'logged-out', error: UNREACHABLE });
