@@ -1,15 +1,21 @@
+import { createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  droppedSeedCaption,
+  droppedSeedFor,
   envDefaultText,
   formFromSnapshot,
   settingsPatch,
   sourceCaption,
   windowEnvDefaultText,
+  REFUSED_SEEDS,
   SAVE_SETTINGS_BUSY,
   SAVE_SETTINGS_LABEL,
   SOURCE_ENV_DEFAULT,
   SOURCE_UNSET,
+  SourceCaption,
 } from '../src/components/operator/SettingsView';
+import { renderStatic } from './support/render';
 import {
   createFormDefaults,
   SHIPPED_BEACON_TYPE,
@@ -42,6 +48,15 @@ import type { SettingsSnapshotDTO } from '../src/lib/operator';
 const ONE_MINUTE_MS = 60_000;
 const BASE = 'http://svc.test';
 
+/**
+ * The character house style forbids in authored copy, spelled as an ESCAPE and once, following the
+ * 05-22 precedent in `service-controls.spec.ts`. A guard that must contain the character it forbids
+ * reads as a violation to every repo-wide scan that looks, which is what kept this file on the list
+ * (`05-35-PLAN.md` task 2 acceptance). The comparison below is byte-identical, so the assertion did
+ * not change meaning.
+ */
+const LONG_DASH = '\u2014';
+
 /** A served snapshot with every field untouched, matching the shape `snapshot()` serves. */
 const UNTOUCHED: SettingsSnapshotDTO = {
   serviceName: { value: 'Acme Aggregation', envDefault: 'Acme Aggregation', changed: false },
@@ -53,7 +68,7 @@ const UNTOUCHED: SettingsSnapshotDTO = {
   termsText: { changed: false },
 };
 
-describe('the per-setting source caption has exactly two formats (D-12, UI-SPEC E8)', () => {
+describe('the per-setting source caption has exactly three formats (D-12, UI-SPEC E8)', () => {
   it('reads `env default` for an untouched field', () => {
     expect(sourceCaption(false, 'Acme Aggregation')).toBe(SOURCE_ENV_DEFAULT);
     expect(SOURCE_ENV_DEFAULT).toBe('env default');
@@ -89,6 +104,89 @@ describe('the per-setting source caption has exactly two formats (D-12, UI-SPEC 
       expect(caption.length).toBeGreaterThan(0);
       expect(caption).not.toMatch(/badge|color/i);
     }
+  });
+
+  /*
+   * THE THIRD FORMAT (`05-REVIEW.md` WR-07). A boot seed this service REFUSED as too long is
+   * dropped rather than truncated, which is right, and the field then holds undefined for both its
+   * value and its boot value: `changed` is false and the two formats above caption the emptiness as
+   * `env default`. That tells the operator the environment set nothing when the environment set a
+   * hundred thousand characters, and for the terms the drop also turns the SVC-05 acceptance gate
+   * off. The rows below are asserted against the caption the COMPONENT produces, because the data
+   * behind it was already correct and it was the caption that lied.
+   */
+
+  it('names the refused VARIABLE and what the refusal COST, for each of the two free-text fields', () => {
+    // Both halves. The variable alone leaves an operator knowing something was refused and not what
+    // it disabled, which is the whole difference between the terms field and the display name.
+    expect(droppedSeedCaption(REFUSED_SEEDS.termsText)).toContain('TERMS_TEXT');
+    expect(droppedSeedCaption(REFUSED_SEEDS.termsText)).toContain('no terms step');
+    expect(droppedSeedCaption(REFUSED_SEEDS.serviceName)).toContain('SERVICE_NAME');
+    expect(droppedSeedCaption(REFUSED_SEEDS.serviceName)).toContain('display name');
+    // The cost copy is per field rather than one generic sentence, so the smaller loss is not
+    // dressed in the larger one's words.
+    expect(REFUSED_SEEDS.termsText.cost).not.toBe(REFUSED_SEEDS.serviceName.cost);
+  });
+
+  it('THE PIN: a field whose seed was refused can never render the environment-default caption', () => {
+    const markup = renderStatic(
+      createElement(SourceCaption, {
+        field: { changed: false },
+        text: SOURCE_UNSET,
+        dropped: REFUSED_SEEDS.termsText,
+      }),
+    );
+    expect(markup).not.toContain(SOURCE_ENV_DEFAULT);
+    expect(markup).toContain('TERMS_TEXT');
+    expect(markup).toContain('no terms step');
+    // Rendered in the bad tone this surface already uses for its error paragraph, so the line reads
+    // as something to act on rather than as another grey caption.
+    expect(markup).toContain('text-bad');
+  });
+
+  it('leaves a field NOT in the refused list rendering exactly what it renders today', () => {
+    // The anti-vacuity control for this block: without it a component that rendered the refused
+    // caption unconditionally would satisfy the pin above.
+    const markup = renderStatic(
+      createElement(SourceCaption, { field: { changed: false }, text: 'Acme Aggregation' }),
+    );
+    expect(markup).toContain(SOURCE_ENV_DEFAULT);
+    expect(markup).not.toContain('text-bad');
+    expect(markup).not.toContain('TERMS_TEXT');
+  });
+
+  it('gives a field the operator has CHANGED this session its changed caption, refusal or not', () => {
+    // The precedence decision, pinned because the opposite is defensible: a changed field holds a
+    // value the operator chose, so the refusal is history about a boot value nothing now renders.
+    const markup = renderStatic(
+      createElement(SourceCaption, {
+        field: { changed: true },
+        text: SOURCE_UNSET,
+        dropped: REFUSED_SEEDS.termsText,
+      }),
+    );
+    expect(markup).toContain('changed this session');
+    expect(markup).not.toContain('TERMS_TEXT');
+  });
+
+  it('reads a service that serves NO refused list as none refused, never as unknown', () => {
+    // An older service, or any clean boot, must render exactly today's captions. The middle
+    // assertion is what proves the lookup reaches the served list at all.
+    expect(droppedSeedFor(UNTOUCHED, 'termsText')).toBeUndefined();
+    expect(droppedSeedFor({ ...UNTOUCHED, droppedSeeds: ['TERMS_TEXT'] }, 'termsText')).toEqual(
+      REFUSED_SEEDS.termsText,
+    );
+    // A refusal on one field says nothing about the other.
+    expect(droppedSeedFor({ ...UNTOUCHED, droppedSeeds: ['TERMS_TEXT'] }, 'serviceName')).toBeUndefined();
+    expect(droppedSeedFor(undefined, 'termsText')).toBeUndefined();
+  });
+
+  it('still renders NOTHING before a snapshot has landed, refused list or not', () => {
+    // The component's existing deliberate behavior, which the new branch must not reach past:
+    // before the service has reported anything, saying nothing is still the honest posture.
+    expect(
+      renderStatic(createElement(SourceCaption, { text: SOURCE_UNSET, dropped: REFUSED_SEEDS.termsText })),
+    ).toBe('');
   });
 });
 
@@ -208,8 +306,12 @@ describe('the settings copy is the UI-SPEC contract, free of the long dash', () 
       TERMS_HONEST_LIMIT,
       TERMS_RETENTION_NOTE,
       SOURCE_ENV_DEFAULT,
+      // This row enumerates rather than scanning, so a new authored string joins it or it covers
+      // one string fewer than the surface ships (`05-REVIEW.md` WR-07).
+      droppedSeedCaption(REFUSED_SEEDS.serviceName),
+      droppedSeedCaption(REFUSED_SEEDS.termsText),
     ]) {
-      expect(copy).not.toMatch(/—/);
+      expect(copy).not.toContain(LONG_DASH);
     }
   });
 });

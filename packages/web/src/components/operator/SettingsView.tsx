@@ -32,16 +32,87 @@ export const SOURCE_UNSET = 'not set';
 /**
  * The per-setting source caption (D-12, UI-SPEC E8 populated).
  *
- * Two formats and no third: `env default` when the field still holds its boot value, and
- * `changed this session (environment default: {value})` when it does not. The caption CARRIES the
- * fact rather than reinforcing a colored badge, which is the point: an operator reading this
- * console needs to know which values will survive a restart, and a color cannot say that.
+ * TWO of the three formats live here: `env default` when the field still holds its boot value, and
+ * `changed this session (environment default: {value})` when it does not. The third,
+ * {@link droppedSeedCaption}, covers a case neither of these describes, a boot seed this service
+ * REFUSED, and both formats below keep their exact wording and their exact conditions.
+ *
+ * The caption CARRIES the fact rather than reinforcing a colored badge, which is the point: an
+ * operator reading this console needs to know which values will survive a restart, and a color
+ * cannot say that. It is also why the third format is a sentence and not a chip.
  *
  * `changed` comes from the SERVICE, never from a local comparison, so the caption is a fact the
  * service reported rather than a guess about a boot value this browser never saw.
  */
 export function sourceCaption(changed: boolean, envDefaultText: string): string {
   return changed ? `changed this session (environment default: ${envDefaultText})` : SOURCE_ENV_DEFAULT;
+}
+
+/** One free-text setting's boot variable and what this service refusing its seed COST that field. */
+export interface RefusedSeed {
+  readonly variable: string;
+  readonly cost: string;
+}
+
+/**
+ * The two settings whose boot seed this service can refuse, and what each refusal costs
+ * (`05-REVIEW.md` WR-07). Named here beside the call sites rather than derived from a general
+ * lookup: there are exactly two, and naming both is clearer than deriving either.
+ *
+ * The two costs are deliberately DIFFERENT sentences. Dropping the display name loses a label.
+ * Dropping the participation terms turns the SVC-05 acceptance gate off: the acceptance route
+ * refuses every acceptance, `GET /v1/config` omits the key, and the join flow has no terms step at
+ * all, which is the sentence `textKnob`'s own boot warning already states. Borrowing the terms
+ * wording for the name would overstate one loss; borrowing the name's wording for the terms would
+ * hide the one that matters.
+ */
+export const REFUSED_SEEDS: Record<'serviceName' | 'termsText', RefusedSeed> = {
+  serviceName: {
+    variable: 'SERVICE_NAME',
+    cost: 'the display name stays unset until the value is shortened and this service restarts',
+  },
+  termsText: {
+    variable: 'TERMS_TEXT',
+    cost:
+      'the join flow has no terms step at all, and this service refuses every acceptance, ' +
+      'until the value is shortened and this service restarts',
+  },
+};
+
+/**
+ * The THIRD source caption: this service refused what the environment set for this field.
+ *
+ * It exists because the two formats above were both wrong here. A refused seed leaves the field's
+ * value AND its boot value undefined, so the service reports `changed: false` and the console
+ * captioned the emptiness `env default`: an affirmative false statement that the environment set
+ * nothing, about a field whose environment value this service read, measured and refused. That
+ * removes the operator's reason to look, which is worse than getting a value wrong.
+ *
+ * It carries the VARIABLE and the COST, and never the refused value: the variable is what the
+ * operator can act on, and a disclosure added for honesty must not become a disclosure of something
+ * they did not mean to serve.
+ *
+ * PRECEDENCE, decided here because the opposite is defensible and a later reader will wonder which
+ * was meant: a field the operator has already CHANGED this session holds a value they chose, so the
+ * refusal is history about a boot value nothing on screen renders any more, and the existing changed
+ * caption is the honest one. See {@link SourceCaption}.
+ */
+export function droppedSeedCaption(seed: RefusedSeed): string {
+  return `${seed.variable} was set at boot, but this service refused it as too long, so ${seed.cost}.`;
+}
+
+/**
+ * The refusal record for one field, or undefined when this service refused nothing for it.
+ *
+ * A snapshot carrying NO list reads as none refused (see `SettingsSnapshotDTO.droppedSeeds`), so a
+ * clean boot and a service that predates the record both render exactly today's captions.
+ */
+export function droppedSeedFor(
+  snapshot: SettingsSnapshotDTO | undefined,
+  key: keyof typeof REFUSED_SEEDS,
+): RefusedSeed | undefined {
+  const seed = REFUSED_SEEDS[key];
+  return snapshot?.droppedSeeds?.includes(seed.variable) ? seed : undefined;
 }
 
 /** A plain value's caption text; an absent boot value reads as {@link SOURCE_UNSET}. */
@@ -228,7 +299,13 @@ export function SettingsView({ baseUrl }: { baseUrl: string }) {
                 Shown on the public directory and on this console. Leave it empty to show only this
                 service&apos;s address.
               </p>
-              <SourceCaption field={snapshot?.serviceName} text={envDefaultText(snapshot?.serviceName.envDefault)} />
+              {/* One of the two fields whose boot seed this service can refuse, so it is one of the
+                  two that can carry the third caption (WR-07). */}
+              <SourceCaption
+                field={snapshot?.serviceName}
+                text={envDefaultText(snapshot?.serviceName.envDefault)}
+                dropped={droppedSeedFor(snapshot, 'serviceName')}
+              />
             </Field>
           </Card>
 
@@ -345,7 +422,13 @@ export function SettingsView({ baseUrl }: { baseUrl: string }) {
               </p>
               <p className="mt-1 text-xs text-faint">{TERMS_HONEST_LIMIT}</p>
               <p className="mt-1 text-xs text-faint">{TERMS_RETENTION_NOTE}</p>
-              <SourceCaption field={snapshot?.termsText} text={envDefaultText(snapshot?.termsText.envDefault)} />
+              {/* The other one, and the one where the refusal costs an enforcement control rather
+                  than a label (WR-07). */}
+              <SourceCaption
+                field={snapshot?.termsText}
+                text={envDefaultText(snapshot?.termsText.envDefault)}
+                dropped={droppedSeedFor(snapshot, 'termsText')}
+              />
             </Field>
           </Card>
 
@@ -367,11 +450,33 @@ export function SettingsView({ baseUrl }: { baseUrl: string }) {
 
 /**
  * One field's source caption. Absent until a snapshot has landed: before the service has reported
- * a source, this says nothing rather than claiming the value is still the environment's.
+ * a source, this says nothing rather than claiming the value is still the environment's. That
+ * posture survives the refusal branch below, which is why the `!field` guard stays first.
+ *
+ * `dropped` is present only for a field whose boot seed this service REFUSED (`05-REVIEW.md`
+ * WR-07). It renders in the bad tone this surface already uses for its error paragraph, and NOT in
+ * the uppercase treatment the other two formats take, because it is a sentence to act on rather
+ * than a label. A CHANGED field takes the changed caption regardless: see the precedence paragraph
+ * in {@link droppedSeedCaption}.
+ *
+ * Exported so a render test can assert the caption this component PRODUCES. The data behind the
+ * caption was already correct when the defect shipped; it was the caption that lied, so that is
+ * where the pin belongs.
  */
-function SourceCaption({ field, text }: { field?: SettingFieldDTO<unknown>; text: string }) {
+export function SourceCaption({
+  field,
+  text,
+  dropped,
+}: {
+  field?: SettingFieldDTO<unknown>;
+  text: string;
+  dropped?: RefusedSeed;
+}) {
   if (!field) {
     return null;
+  }
+  if (dropped && !field.changed) {
+    return <p className="mt-1 text-xs text-bad">{droppedSeedCaption(dropped)}</p>;
   }
   return <p className="mt-1 text-xs uppercase tracking-[0.14em] text-faint">{sourceCaption(field.changed, text)}</p>;
 }

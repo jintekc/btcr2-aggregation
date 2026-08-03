@@ -287,6 +287,17 @@ export interface SettingsSnapshotDTO {
   defaultDiscoveryWindowMs: SettingFieldDTO<number>;
   defaultFundingWindowMs: SettingFieldDTO<number>;
   termsText: SettingFieldDTO<string>;
+  /**
+   * The environment variables whose boot seeds this service REFUSED as too long, by NAME only
+   * (`05-REVIEW.md` WR-07). Never the refused value: the console needs the variable in order to
+   * caption the field honestly, and nothing more.
+   *
+   * OPTIONAL and additive, matching the wire posture the fields above already document. An ABSENT
+   * list means none refused, never unknown: "this service refused nothing" and "this service did
+   * not tell me" render identically to an operator, and only one of them is worth a different
+   * caption, so the console must not invent a distinction the wire does not carry.
+   */
+  droppedSeeds?: readonly string[];
 }
 
 /**
