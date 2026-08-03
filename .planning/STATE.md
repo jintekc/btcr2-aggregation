@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Completed 05-33-PLAN.md
-last_updated: "2026-08-03T18:36:49.886Z"
+stopped_at: Completed 05-34-PLAN.md
+last_updated: "2026-08-03T18:48:46.971Z"
 last_activity: 2026-08-03
 last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 65
-  completed_plans: 63
+  completed_plans: 64
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 2 of 35
+Plan: 3 of 35
 Status: Ready to execute
 Last activity: 2026-08-03 — Phase 05 execution started
 
-Progress: [██████████] 97%
+Progress: [██████████] 98%
 
 ## Performance Metrics
 
@@ -124,6 +124,7 @@ Progress: [██████████] 97%
 | Phase 05 P31 | 47 min | 3 tasks | 4 files |
 | Phase 05 P32 | 6 min | 2 tasks | 2 files |
 | Phase 05 P33 | 27 min | 3 tasks | 7 files |
+| Phase 05 P34 | 7 min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -241,6 +242,7 @@ Recent decisions affecting current work (Phase 2):
 - [Phase 05]: 05-33: the derivation is pinned by MEASURING the encoded body across five encoding classes at the cap plus an anti-vacuity row proving the rejected multiplier would have FAILED a real class; a row recomputing the arithmetic from the same constants passes against any multiplier, which is exactly how a five times disagreement between two thoroughly-tested layers passed a 1234 test gate with both halves green
 - [Phase 05]: 05-33: review IN-03 closed by DELETING the static serviceName option rather than documenting it - a bound that holds only because another code path (createService always constructing a holder) happens to run first is a bound a refactor can drop without failing anything; the evidence is a compile failure (TS2353), not a passing test
 - [Phase 05]: 05-33: review IN-04's retained last-write whole-minute guard is KEPT and pinned through boot OUTPUT across HOSTILE_SEEDS (at most one whole-minute line naming defaultDiscoveryWindowMs), because the guard is silent by construction on every reachable path so the warning count is the only observable a future second writer could move
+- [Phase 05]: 05-34: the operator list guard compares a session IDENTITY (a monotonic sessionRound bumped at every session start and every session end), never an auth STATUS: logged-in to logged-out to logged-in is the same string and a different session, so a status comparison let a dead session's answer repaint the whole gated slice of the session that replaced it (review WR-06). The status check is RETAINED alongside the round check because they refuse different things. Mutation runs proved the start and end bumps are REDUNDANT for the ABA sequence rather than each independently necessary (removing one alone reddens only its own coverage row); recorded as observed against the plan's prediction.
 
 ### Pending Todos
 
@@ -280,7 +282,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-03T18:36:34.703Z
-Stopped at: Completed 05-33-PLAN.md
+Last session: 2026-08-03T18:48:46.952Z
+Stopped at: Completed 05-34-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
