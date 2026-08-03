@@ -196,7 +196,7 @@ Plans:
 
 **Slip order** (CONTEXT D-22, three tiers): CORE never slips - SVC-04 lifecycle control (plans 01 through 07 and 10). SECOND - the four absorbed parked items (plans 08 and 09). SLIP-FIRST - the three folded scoping one-pagers (plans 11, 12, and 13), which re-park cleanly to Phase 6 or the next milestone if the phase runs long.
 
-**Plans**: 32/32 plans executed
+**Plans**: 35 plans (32 executed; 3 planned in gap round 5)
 Plans:
 **Wave 1**
 
@@ -329,6 +329,20 @@ Note on the `depends_on` chain: 05-22 through 05-26 each declare the previous pl
 **Gap round 4, wave 2** *(serialized behind 05-31)*
 
 - [x] 05-32-PLAN.md - A list read that outlives its session can no longer repopulate the console's gated slice (SVC-04, W5 / review WR-01, wave 2)
+
+**Fifth gap round** (planned 2026-08-03 from `05-VERIFICATION.md`, `status: gaps_found`, 6 of 7 Success Criteria verified, SC3 FAILED again through a second door; run with `/gsd-execute-phase 5 --gaps-only`). Owner-approved scope is exactly five items: the SC3 settings-save byte wedge (the round's only blocking gap, review CR-02), warnings WR-06 and WR-07, and the info pair IN-03 and IN-04. Waves restart at 1 and are SINGLETONS for the same reason as rounds 2 through 4: each plan deliberately puts the tree into a RED state (a failing row written before its fix, and a revert-the-fix mutation check afterwards) and each ends by running the whole suite, so two plans in one wave would read each other's transiently broken tree. 05-34 touches `packages/web` only and is serialized by that rule alone; 05-35 additionally has a genuine file dependency on 05-33, since both amend the settings holder and `lifecycle-routes.spec.ts`.
+
+**Gap round 5, wave 1**
+
+- [ ] 05-33-PLAN.md - A realistic participation-terms document can no longer wedge every settings save, and the display name has one path to the wire (SVC-04, Gap 1 / SC 3 / review CR-02, plus IN-03 and IN-04, wave 1)
+
+**Gap round 5, wave 2** *(serialized behind 05-33)*
+
+- [ ] 05-34-PLAN.md - The list-poll guard compares a session identity, so a dead session's answer can no longer repaint the session that replaced it (SVC-04, review WR-06, wave 2)
+
+**Gap round 5, wave 3** *(serialized behind 05-34; also a genuine file dependency on 05-33)*
+
+- [ ] 05-35-PLAN.md - A boot seed this service refused is disclosed on the field it cost, instead of captioning as the environment default (SVC-05/SVC-04, review WR-07, wave 3)
 
 **UI hint**: yes
 
