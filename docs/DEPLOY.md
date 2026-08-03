@@ -348,10 +348,14 @@ recorded as a DID-signed artifact, verified server-side before anything is store
 HASH of the exact document that was shown, so editing the terms afterwards cannot rewrite what
 somebody agreed to. Clearing the terms removes the step entirely; the feature is absent, not empty.
 
-The terms are capped at **20000 characters** (roughly 3500 words), on both paths that set them. A
-runtime save above the cap is refused with the limit named. A boot value above it is ignored with a
-warning and is never truncated to fit, because a truncated document is one participants would
-DID-sign in mutilated form; until you shorten it, the join flow has no terms step at all.
+The terms are capped at **20000 characters** (roughly 3500 words), on both paths that set them, and
+that character count is the only limit either path applies. A runtime save above the cap is refused
+with the limit named, and nothing else in that save is applied. A boot value above it is ignored
+with a warning and is never truncated to fit, because a truncated document is one participants would
+DID-sign in mutilated form; until you shorten it, the join flow has no terms step at all. Saving
+from the settings surface re-sends every field on the form, terms included, so a document sitting at
+the cap never stands in the way of changing something else: rename the service, or change the
+default cohort shape, with your full terms in place, and the save goes through.
 
 **Be honest with yourself about what this enforces.** The aggregation protocol carries no message
 that could hold an acceptance, so enforcement is app-level: it applies to participants joining
@@ -506,7 +510,7 @@ liveness on the response status, not on a fixed key set.
 | `DEFAULT_THRESHOLD` | same as `DEFAULT_SIZE` | Fallback signing threshold (k) a NEW cohort draft starts from; clamped to n. Must be a whole number: a fractional value warns at boot and falls back to n. Runtime-editable. |
 | `DEFAULT_DISCOVERY_WINDOW_MS` | unset (seeded from `COHORT_TTL_MS`) | Discovery window a NEW cohort draft starts from, in ms, minimum 60000. Stored to the nearest WHOLE MINUTE at or below what you supply (the console edits this field in minutes), with a boot warning naming both numbers; a non-integer value warns and falls back. Can only SHORTEN a cohort relative to `COHORT_TTL_MS`: a value above it here is CLAMPED down to that maximum at boot with a warning naming both numbers, while a runtime save above it is REFUSED with the maximum named. A value that is BOTH over the maximum and not a whole minute gets both warnings, the whole-minute one first, each naming the value it actually acted on. Every one of these lines names the variables that can set this window, so nothing sends you looking for an internal field name. Runtime-editable. |
 | `DEFAULT_FUNDING_WINDOW_MS` | unset (seeded from `FUNDING_WINDOW_MS`) | Per-cohort funding window a NEW cohort draft starts from, in ms, minimum 60000. Stored to the nearest WHOLE MINUTE at or below what you supply, with a boot warning naming both numbers; a non-integer value warns and falls back. Runtime-editable. |
-| `TERMS_TEXT` | unset | Participation terms shown at join in the web app, at most **20000 characters** (roughly 3500 words). Set = a DID-signed acceptance is required to join through the web app (app-level enforcement only, see above). Empty = no terms step at all. A LONGER value is IGNORED at boot with a warning naming both lengths, and is never truncated to fit (participants would otherwise sign a mutilated document), so the join flow has no terms step until you shorten it. Runtime-editable. |
+| `TERMS_TEXT` | unset | Participation terms shown at join in the web app, at most **20000 characters** (roughly 3500 words). Set = a DID-signed acceptance is required to join through the web app (app-level enforcement only, see above). Empty = no terms step at all. A LONGER value is IGNORED at boot with a warning naming both lengths, and is never truncated to fit (participants would otherwise sign a mutilated document), so the join flow has no terms step until you shorten it. Runtime-editable, and a runtime save above the cap is REFUSED naming the limit, with nothing else in that save applied. |
 | `PHASE_TIMEOUT_MS` | (built-in default) | Per-phase stall budget. Under `BROADCAST=1` it must exceed `FUNDING_WINDOW_MS` (boot-validated). |
 | `COHORT_TTL_MS` | (built-in default) | Overall wall-clock budget per cohort, from advertise to signing-complete. Also SEEDS `DEFAULT_DISCOVERY_WINDOW_MS` when that is unset (and supplies the shorten-only ceiling either way), so it is subject to the same whole-minute rule on that path: `COHORT_TTL_MS=90000` seeds a 1 min discovery default, with ONE boot warning, naming both numbers and naming `COHORT_TTL_MS` as a variable that sets the window. Setting this one variable never produces a second warning about a window you did not set. |
 | `OPERATOR_PASSWORD` | unset | Operator console password (HOST-01, ADR 0015). Set it to enable the login-gated console + gated telemetry. Unset = fail-closed: public participant surface still serves, operator surface disabled with a loud boot warning. Keep it in a `.env` file, never bake it into the image. |
