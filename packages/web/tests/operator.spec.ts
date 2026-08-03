@@ -12,6 +12,7 @@ import {
   EXPORT_FAILED,
   SESSION_EXPIRED,
   SETTINGS_SAVED_OK,
+  type OperatorState,
 } from '../src/stores/operator';
 
 /**
@@ -346,6 +347,169 @@ describe('operator store detail provenance clearing (Gap 1)', () => {
     await useOperator.getState().signOut(BASE);
     expect(useOperator.getState().detail).toBeUndefined();
     expect(useOperator.getState().detailCohortId).toBeUndefined();
+  });
+});
+
+/**
+ * Ending a session is ONE act, so the two paths that end one clear ONE list (review IN-11).
+ *
+ * `expireSession` cleared five fields fewer than `signOut` (`createStatus`, `formError`,
+ * `advertiseStatus`, `advertisingId`, `advertiseMessage`), so a failed advertise message from one
+ * session rendered on the next session's create form and a green confirmation from one session
+ * captioned another session's cohort list. Both surfaces are hidden while logged out, which is why
+ * the review files it as info rather than as a leak, but a divergence between two implementations
+ * of one act is a defect whose next instance is not predictable from this one.
+ *
+ * The parity row below is the shape that buys the property: it compares the WHOLE state after each
+ * ending path, excluding by NAME exactly the three fields that differ deliberately, so a field
+ * added to one path later fails here rather than diverging quietly.
+ */
+describe('operator store session-ending parity (review IN-11)', () => {
+  beforeEach(resetStore);
+
+  /** A served settings snapshot, staged so an expiry has something real to drop. */
+  const DIRTY_SETTINGS: SettingsSnapshotDTO = {
+    serviceName: { value: 'Previous session service', envDefault: 'Previous session service', changed: false },
+    defaultBeaconType: { value: 'CASBeacon', envDefault: 'CASBeacon', changed: false },
+    defaultSize: { value: 3, envDefault: 3, changed: false },
+    defaultThreshold: { value: 3, envDefault: 3, changed: false },
+    defaultDiscoveryWindowMs: { value: 600_000, envDefault: 600_000, changed: false },
+    defaultFundingWindowMs: { value: 900_000, envDefault: 900_000, changed: false },
+    termsText: { value: 'Previous session terms', envDefault: 'Previous session terms', changed: false },
+  };
+
+  /**
+   * Every field a session-ending path is expected to clear, staged to a value that is visibly NOT
+   * its cleared one. Typed as `Partial<OperatorState>` so a misspelled key is a compile error
+   * rather than a silent `undefined` that would make the parity comparison pass by coincidence.
+   */
+  const DIRTY: Partial<OperatorState> = {
+    auth: 'logged-in',
+    error: undefined,
+    cohorts: [
+      {
+        draftId: 'draft-1',
+        beaconType: 'CASBeacon',
+        network: 'regtest',
+        threshold: 2,
+        capacity: 3,
+        joined: 1,
+        state: 'advertised',
+      },
+    ],
+    rows: [{ cohortId: 'cohort-1', chip: 'filling', seatsJoined: 1, capacity: 3, phase: 'CollectingUpdates' }],
+    metrics: { open: 1, inFlight: 0, anchored: 0, failed: 0 },
+    health: { mode: 'live', esploraReachable: true, paused: false },
+    defaults: { discoveryWindowMs: 600_000, fundingWindowMs: 900_000 },
+    listStale: true,
+    createStatus: 'error',
+    formError: 'Could not advertise the draft. Try again.',
+    editingDraftId: 'draft-1',
+    editStatus: 'error',
+    editError: 'Cohort size must be at least 1 signer.',
+    advertiseStatus: 'error',
+    advertisingId: 'draft-1',
+    advertiseMessage: 'Advertised.',
+    actionError: 'Could not export the record. Try again.',
+    pauseBusy: true,
+    pauseMessage: 'Advertising paused.',
+    pauseError: 'Could not pause advertising. Try again.',
+    operatorActions: [{ id: 1, t: 5, level: 'info', text: 'previous session paused advertising' }],
+    broadcastBusy: true,
+    broadcastError: 'Could not stand broadcasting down. Try again.',
+    dismissing: 'cohort-1',
+    settings: DIRTY_SETTINGS,
+    settingsStatus: 'error',
+    settingsError: 'Service name is too long.',
+    settingsMessage: 'Settings saved.',
+    view: { kind: 'detail', cohortId: 'cohort-1' },
+    cancelling: 'cohort-1',
+    finalizing: 'cohort-1',
+    addingTestPeers: 'cohort-1',
+    testPeerError: 'Could not add test peers. Try again.',
+    detail: SAMPLE_DETAIL,
+    detailCohortId: 'cohort-1',
+    detailStale: true,
+    lastUpdated: 1234,
+  };
+
+  /** Put the console into the same populated, dirty state before each ending path. */
+  function stageDirty(): void {
+    useOperator.setState(DIRTY);
+  }
+
+  /**
+   * The whole state minus the three fields the two paths differ on DELIBERATELY: the auth status
+   * (identical today, but each path sets its own), the round (each path takes its own next number),
+   * and the error copy (undefined for a deliberate sign-out, the session-expired line for an
+   * expiry). Excluding by name rather than comparing a hand-listed subset is the point: an
+   * unlisted field added to one path later shows up here as a difference.
+   */
+  function withoutSessionFacts(state: OperatorState): Record<string, unknown> {
+    const { auth, sessionRound, error, ...rest } = state;
+    return rest;
+  }
+
+  it('clears the SAME fields whether a session ended by expiry or by deliberate sign-out', async () => {
+    stageDirty();
+    useOperator.getState().expireSession();
+    const afterExpiry = withoutSessionFacts(useOperator.getState());
+
+    stageDirty();
+    vi.stubGlobal('fetch', () => Promise.resolve(new Response(null, { status: 204 })));
+    await useOperator.getState().signOut(BASE);
+    const afterSignOut = withoutSessionFacts(useOperator.getState());
+
+    expect(afterExpiry).toEqual(afterSignOut);
+  });
+
+  it('drops a create-form error and an advertise confirmation raised under the ENDED session', async () => {
+    // Both raised through the SHIPPED paths rather than seeded, so the row names the harm (one
+    // session's transient copy rendering on the next session's forms) rather than the mechanism.
+    vi.stubGlobal('fetch', (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url.includes('/advertise')) {
+        return Promise.resolve(new Response(JSON.stringify({ draftId: 'cohort-live' }), { status: 200 }));
+      }
+      if (url.endsWith('/v1/operator/cohorts') && method === 'POST') {
+        return Promise.resolve(
+          new Response(JSON.stringify({ error: 'Cohort size must be at least 1 signer.' }), { status: 400 }),
+        );
+      }
+      return Promise.resolve(new Response(JSON.stringify({ cohorts: [] }), { status: 200 }));
+    });
+
+    await useOperator.getState().advertise(BASE, 'draft-1');
+    await useOperator.getState().submitDraft(BASE, { beaconType: 'CASBeacon', size: 0, threshold: 0 });
+
+    // Staged state confirmed before the act, so the assertions below cannot pass vacuously.
+    expect(useOperator.getState().advertiseMessage).toBeDefined();
+    expect(useOperator.getState().formError).toBe('Cohort size must be at least 1 signer.');
+    expect(useOperator.getState().createStatus).toBe('error');
+
+    useOperator.getState().expireSession();
+
+    const s = useOperator.getState();
+    expect(s.advertiseMessage).toBeUndefined();
+    expect(s.formError).toBeUndefined();
+    expect(s.createStatus).toBe('idle');
+  });
+
+  it('drops an in-flight advertise marker, so no row spins under the next session', async () => {
+    // The other two of the five. An advertise that is still in flight is the only state in which
+    // `advertiseStatus` and `advertisingId` are both set, and starting one clears the create-form
+    // error the row above raises, which is why these two are pinned in their own row.
+    vi.stubGlobal('fetch', () => new Promise<Response>(() => {}));
+    void useOperator.getState().advertise(BASE, 'draft-1');
+    expect(useOperator.getState().advertiseStatus).toBe('advertising');
+    expect(useOperator.getState().advertisingId).toBe('draft-1');
+
+    useOperator.getState().expireSession();
+
+    const s = useOperator.getState();
+    expect(s.advertiseStatus).toBe('idle');
+    expect(s.advertisingId).toBeUndefined();
   });
 });
 

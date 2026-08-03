@@ -701,6 +701,79 @@ export interface OperatorState {
 }
 
 /**
+ * The ONE set of fields every path that ENDS an operator session clears (review IN-11).
+ *
+ * The rule it holds: ending a session is one act, so a field added to one ending path can never be
+ * missed by the other, because there is only one list. Before this constant there were two, and
+ * they had already diverged by five fields ({@link OperatorState.createStatus},
+ * {@link OperatorState.formError}, {@link OperatorState.advertiseStatus},
+ * {@link OperatorState.advertisingId}, {@link OperatorState.advertiseMessage}), which is how a
+ * failed advertise message from one session reached the next session's create form.
+ *
+ * It deliberately holds NEITHER {@link OperatorState.auth}, NOR {@link OperatorState.sessionRound},
+ * NOR {@link OperatorState.error}: those three differ between the two paths on purpose (each sets
+ * its own status, takes its own next round, and carries its own copy - undefined for a deliberate
+ * sign-out, the session-expired line for an expiry), and folding them in would force every caller
+ * to override them immediately after spreading, which reads as an accident rather than a decision.
+ *
+ * The reasoning for clearing each group, recorded once here because it is now true of BOTH paths:
+ *
+ * - The served MODE and the timing DEFAULTS are facts about this service's current boot. The
+ *   ordinary reason a session ends is a service restart, so the next session must re-read them
+ *   rather than render a mode claim (whether this service can move Bitcoin) from a boot that is
+ *   gone.
+ * - An open EDIT form belongs to the session that opened it: an unsaved edit is not state the next
+ *   sign-in should inherit, and it must start from what the service holds.
+ * - The PAUSE slice is a claim about a service that may have been restarted, on the same reasoning
+ *   as the served mode.
+ * - The OPERATOR LOG and the kill-switch slice are session-scoped server-side too, so rendering
+ *   one session's actions under another's sign-in would attribute acts to an operator who never
+ *   took them.
+ * - The SETTINGS snapshot is this service's in-memory configuration, and the service may be
+ *   restarted into different values before the next sign-in. It is also what the console shell's
+ *   once-per-session read latch keys on, so retaining it makes the next session skip its own read.
+ * - Every IN-FLIGHT ACTION marker goes, so the next sign-in starts with no control claiming to be
+ *   mid-cancel, mid-finalize or mid-spawn.
+ */
+const GATED_SLICE_RESET: Partial<OperatorState> = {
+  cohorts: [],
+  rows: [],
+  metrics: undefined,
+  health: undefined,
+  defaults: undefined,
+  listStale: false,
+  createStatus: 'idle',
+  formError: undefined,
+  editingDraftId: undefined,
+  editStatus: 'idle',
+  editError: undefined,
+  advertiseStatus: 'idle',
+  advertisingId: undefined,
+  advertiseMessage: undefined,
+  actionError: undefined,
+  pauseBusy: false,
+  pauseMessage: undefined,
+  pauseError: undefined,
+  operatorActions: [],
+  broadcastBusy: false,
+  broadcastError: undefined,
+  dismissing: undefined,
+  settings: undefined,
+  settingsStatus: 'idle',
+  settingsError: undefined,
+  settingsMessage: undefined,
+  view: { kind: 'list' },
+  cancelling: undefined,
+  finalizing: undefined,
+  addingTestPeers: undefined,
+  testPeerError: undefined,
+  detail: undefined,
+  detailCohortId: undefined,
+  detailStale: false,
+  lastUpdated: undefined,
+};
+
+/**
  * The shared body of {@link OperatorState.pauseAdvertising} and
  * {@link OperatorState.resumeAdvertising} (SVC-04, D-06). Both toggles have identical mechanics
  * and differ only in which route they call and which confirmation they show, so they share one
@@ -848,103 +921,33 @@ export const useOperator = create<OperatorState>((set, get) => ({
       await apiLogout(baseUrl);
     } finally {
       set({
+        // The ONE list both ending paths clear (review IN-11); its docstring carries the reasoning
+        // for each group that used to sit inline here.
+        ...GATED_SLICE_RESET,
         auth: 'logged-out',
         // The session ENDS here, so its round is retired with the rest of its state: any read it
         // issued is now an answer about a session nobody is running.
         sessionRound: get().sessionRound + 1,
+        // A deliberate sign-out is not a failure, so it carries no copy at all.
         error: undefined,
-        cohorts: [],
-        rows: [],
-        metrics: undefined,
-        // Drop the served mode on sign-out: the next session must re-read it rather than render
-        // a stale mode claim against a service that may have been restarted into another mode.
-        health: undefined,
-        // Same reasoning for the timing defaults: they are this service's current values, and the
-        // service may be restarted into different ones before the next sign-in.
-        defaults: undefined,
-        listStale: false,
-        formError: undefined,
-        createStatus: 'idle',
-        // Close any open edit form with the rest of the gated state: an unsaved edit belongs to
-        // the session that opened it, and the next sign-in must start from what the service holds.
-        editingDraftId: undefined,
-        editStatus: 'idle',
-        editError: undefined,
-        advertiseStatus: 'idle',
-        advertisingId: undefined,
-        advertiseMessage: undefined,
-        actionError: undefined,
-        // Drop the pause slice with the rest of the gated state: the next session must re-read the
-        // served bit rather than render a claim about a service that may have been restarted.
-        pauseBusy: false,
-        pauseMessage: undefined,
-        pauseError: undefined,
-        // Drop the operator log and the kill-switch slice with the rest of the gated state: the
-        // log is session-scoped server-side too, and the next session must re-read it rather than
-        // render one session's actions under another's sign-in.
-        operatorActions: [],
-        broadcastBusy: false,
-        broadcastError: undefined,
-        dismissing: undefined,
-        // Drop the settings snapshot with the rest of the gated state: it is this service's
-        // in-memory configuration, and the service may be restarted into different values before
-        // the next sign-in.
-        settings: undefined,
-        settingsStatus: 'idle',
-        settingsError: undefined,
-        settingsMessage: undefined,
-        view: { kind: 'list' },
-        cancelling: undefined,
-        finalizing: undefined,
-        addingTestPeers: undefined,
-        testPeerError: undefined,
-        detail: undefined,
-        detailCohortId: undefined,
-        detailStale: false,
-        lastUpdated: undefined,
       });
     }
   },
 
   expireSession() {
     set({
+      // The SAME list `signOut` clears, spread from one definition (review IN-11). The five fields
+      // this path used to miss (`createStatus`, `formError`, `advertiseStatus`, `advertisingId`,
+      // `advertiseMessage`) come with it, so a failed advertise message from the session that just
+      // ended can no longer render on the next session's create form.
+      ...GATED_SLICE_RESET,
       auth: 'logged-out',
       // The session ENDS here too, on the same reasoning as `signOut` above: an expiry retires the
       // round so a read issued under it can never match the round of whoever signs in next.
       sessionRound: get().sessionRound + 1,
+      // The honest re-login copy (D-16): an expiry is a fact the operator has to be told, which is
+      // the one thing that distinguishes this path from a deliberate sign-out.
       error: SESSION_EXPIRED,
-      cohorts: [],
-      rows: [],
-      metrics: undefined,
-      health: undefined,
-      defaults: undefined,
-      listStale: false,
-      actionError: undefined,
-      editingDraftId: undefined,
-      editStatus: 'idle',
-      editError: undefined,
-      pauseBusy: false,
-      pauseMessage: undefined,
-      pauseError: undefined,
-      operatorActions: [],
-      broadcastBusy: false,
-      broadcastError: undefined,
-      dismissing: undefined,
-      settings: undefined,
-      settingsStatus: 'idle',
-      settingsError: undefined,
-      settingsMessage: undefined,
-      view: { kind: 'list' },
-      // Drop any in-flight action marker: the next sign-in must start with no control claiming
-      // to be mid-cancel.
-      cancelling: undefined,
-      finalizing: undefined,
-      addingTestPeers: undefined,
-      testPeerError: undefined,
-      detail: undefined,
-      detailCohortId: undefined,
-      detailStale: false,
-      lastUpdated: undefined,
     });
   },
 
