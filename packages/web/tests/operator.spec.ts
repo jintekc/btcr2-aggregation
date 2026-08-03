@@ -848,10 +848,72 @@ describe('operator store refreshCohorts concurrency (W5: a list answer belongs t
 
   it('starts a returning session on a fresh round (a probe finds a live session)', async () => {
     stubAuthOnly({ session: 200 });
+    // Seeded holding NO live session before the probe, which is the case this row has always
+    // named: a returning operator arrives at a console that is not signed in, carrying a cookie
+    // this service still accepts. A correction to the staging, not an accommodation of the guard -
+    // the two assertions below are unchanged.
+    seedEmptySlice('logged-out');
     const before = useOperator.getState().sessionRound;
     await useOperator.getState().probe(BASE);
     expect(useOperator.getState().auth).toBe('logged-in');
     expect(useOperator.getState().sessionRound).not.toBe(before);
+  });
+
+  it('keeps the round when a probe merely CONFIRMS the session already signed in (review IN-07)', async () => {
+    // `OperatorConsole` is mounted conditionally on the operator tab, so every switch away and back
+    // re-runs `probe` against the SAME live session. That crosses no session boundary, so retiring
+    // the round there would make the field identify a probe EVENT rather than the session its own
+    // docstring names, and three guards in this plan compare it.
+    stubAuthOnly({ session: 200 });
+    seedEmptySlice('logged-in');
+    const before = useOperator.getState().sessionRound;
+    await useOperator.getState().probe(BASE);
+    expect(useOperator.getState().auth).toBe('logged-in');
+    expect(useOperator.getState().sessionRound).toBe(before);
+  });
+
+  it('lets a list read started before a CONFIRMING probe still write when it lands (review IN-07)', async () => {
+    // The observable consequence of the row above. Without the transition condition the probe
+    // retires the live session's round, so a read that was in flight across the tab switch is
+    // discarded and the console skips one update.
+    //
+    // The one case this does NOT cover, recorded rather than claimed closed: an answer landing
+    // INSIDE the probe's own `checking` window is still discarded by the retained status check in
+    // `refreshCohorts`. That window is one probe round trip rather than one poll interval, and this
+    // plan leaves it exactly as it was.
+    const slow = deferred<Response>();
+    const probeOwnRead = deferred<Response>();
+    const staged = [slow.promise, probeOwnRead.promise];
+    let next = 0;
+    vi.stubGlobal('fetch', (input: unknown) => {
+      const url = String(input);
+      if (url.endsWith('/v1/operator/session')) {
+        return Promise.resolve(new Response(null, { status: 200 }));
+      }
+      const answer = staged[next];
+      next += 1;
+      return answer ?? Promise.reject(new Error(`no staged answer for list read #${next}`));
+    });
+    seedEmptySlice('logged-in');
+
+    const read = useOperator.getState().refreshCohorts(BASE);
+    // The operator switches away from the operator tab and back, re-mounting the console, which
+    // re-runs the probe. The probe's OWN follow-up read is staged and left in flight, so the read
+    // under test is unambiguously the one this row issued.
+    await useOperator.getState().probe(BASE);
+    expect(useOperator.getState().auth).toBe('logged-in');
+
+    slow.resolve(okList());
+    await read;
+
+    const s = useOperator.getState();
+    expect(s.cohorts).toEqual(POPULATED.cohorts);
+    expect(s.rows).toEqual(POPULATED.monitoring?.rows);
+    expect(s.metrics).toEqual(POPULATED.monitoring?.metrics);
+    expect(s.health).toEqual(POPULATED.monitoring?.health);
+    expect(s.operatorActions).toEqual(POPULATED.monitoring?.operatorActions);
+    expect(s.defaults).toEqual(POPULATED.defaults);
+    expect(typeof s.lastUpdated).toBe('number');
   });
 
   it('retires the round of the session an EXPIRY ended', () => {

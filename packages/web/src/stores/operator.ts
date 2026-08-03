@@ -355,13 +355,21 @@ export interface OperatorState {
    * gated read is evidence about exactly one of them. Any guard that must decide whether an answer
    * still belongs to the session that asked compares this, never `auth` alone.
    *
-   * Bumped on every path that makes a session LIVE (a successful `signIn`, a `probe` that lands on
-   * a live session) and on every path that ENDS one (`signOut`, `expireSession`). The correctness
-   * argument only needs the START bumps: if every new session takes a fresh round, two sessions can
-   * never share one. The END bumps are what make the field mean what its name says - with them a
-   * round identifies exactly one session, live or ended, and an ended round is retired the instant
-   * it ends; without them a round only identifies "at most one live session at a time", and a
-   * future guard that compared a round without also checking the status would be silently wrong.
+   * Bumped on every path that makes a session LIVE (a successful `signIn`, a `probe` that finds a
+   * session live where none was live before) and on every path that ENDS one (`signOut`,
+   * `expireSession`). The correctness argument only needs the START bumps: if every new session
+   * takes a fresh round, two sessions can never share one. The END bumps are what make the field
+   * mean what its name says - with them a round identifies exactly one session, live or ended, and
+   * an ended round is retired the instant it ends; without them a round only identifies "at most
+   * one live session at a time", and a future guard that compared a round without also checking the
+   * status would be silently wrong.
+   *
+   * The probe bump is a TRANSITION, not a landing (review IN-07). `OperatorConsole` is mounted
+   * conditionally on the operator tab, so an ordinary switch away and back re-runs `probe` against
+   * the session already signed in; bumping there would retire the round of a session that never
+   * ended and make this field identify a probe EVENT rather than a session. What the field
+   * guarantees, which every guard below leans on: two sessions never share a round, so an unchanged
+   * round means no session boundary was crossed.
    *
    * Client-side only: nothing puts this on the wire. Which session asked is a fact the caller
    * already holds, and serving it would add a second source of truth for a question already
@@ -779,13 +787,28 @@ export const useOperator = create<OperatorState>((set, get) => ({
   lastUpdated: undefined,
 
   async probe(baseUrl) {
+    // Captured BEFORE the `checking` assignment on the next line, and the order is the whole trap:
+    // this method's FIRST statement takes `auth` away from `logged-in`, so a transition condition
+    // measured against the status held when the ANSWER lands would read `checking` on every probe
+    // and bump exactly as the unguarded code did. Reading this at the top is what makes the
+    // condition below live code rather than a comment (review IN-07).
+    const wasLive = get().auth === 'logged-in';
     set({ auth: 'checking', error: undefined });
     try {
       const state = await sessionProbe(baseUrl);
       if (state === 'logged-in') {
-        // A live session STARTS here (a returning operator whose cookie is still good), so it takes
-        // a fresh round before the read it fires below captures one.
-        set({ auth: state, sessionRound: get().sessionRound + 1 });
+        if (wasLive) {
+          // The probe merely CONFIRMED the session already signed in. No session boundary was
+          // crossed, so the round stands: `OperatorConsole` is mounted conditionally on the
+          // operator tab, and retiring the round on every switch away and back would discard a read
+          // that was in flight across the switch and would make the round identify a probe event
+          // rather than a session (review IN-07).
+          set({ auth: state });
+        } else {
+          // A live session STARTS here (a returning operator whose cookie is still good), so it
+          // takes a fresh round before the read it fires below captures one.
+          set({ auth: state, sessionRound: get().sessionRound + 1 });
+        }
         void get().refreshCohorts(baseUrl);
       } else {
         // `logged-out` and `disabled` start no session, so neither takes a round: a round retired
