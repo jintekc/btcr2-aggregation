@@ -435,7 +435,11 @@ describe('operator store refreshCohorts concurrency (W5: a list answer belongs t
    * drill-down race block above uses none.
    *
    * The logout POST is answered separately so a `signOut` row does not consume a staged list
-   * answer, which would silently shift every later read onto the wrong promise.
+   * answer, which would silently shift every later read onto the wrong promise. The login POST is
+   * answered on the same reasoning (05-34): the ABA rows below sign back IN mid-race, and a login
+   * that consumed a staged list answer would move every later read onto the wrong promise in
+   * exactly the same way. Its follow-up list read (`signIn` fires one) is NOT special-cased: that
+   * read is a real read by the new session and takes the next staged answer like any other.
    */
   function stubListQueue(answers: Array<Promise<Response>>): void {
     let next = 0;
@@ -443,6 +447,9 @@ describe('operator store refreshCohorts concurrency (W5: a list answer belongs t
       const url = String(input);
       if (url.endsWith('/v1/operator/logout')) {
         return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (url.endsWith('/v1/operator/login')) {
+        return Promise.resolve(new Response(null, { status: 200 }));
       }
       const staged = answers[next];
       next += 1;
@@ -674,6 +681,107 @@ describe('operator store refreshCohorts concurrency (W5: a list answer belongs t
 
     expect(useOperator.getState().listStale).toBe(true);
     expect(useOperator.getState().auth).toBe('logged-in');
+  });
+
+  /**
+   * The ABA sequence (review WR-06), which every row above leaves uncovered.
+   *
+   * Each of the seven rows above ends on a console that is signed OUT, so all seven are satisfied
+   * by a guard that only asks "is anyone signed in". The case an ordinary operator hits is the one
+   * that RETURNS to the state it left: a session expires, they sign straight back in (a
+   * password-manager fill is a second or two, well inside the 4000 ms poll against the 8000 ms
+   * client timeout), and the PREVIOUS session's answer lands into the new one. `logged-in` to
+   * `logged-out` to `logged-in` is the same string and a different session, so only a comparison
+   * on a session IDENTITY can tell the two apart.
+   */
+  const PASSWORD = 'operator-password';
+
+  /**
+   * Stage the ABA race: session A starts a slow read, a second read 401s and expires A, then the
+   * operator signs back in as session B. Returns A's still-outstanding read so a row settles it.
+   *
+   * Session B's own follow-up read (`signIn` fires one) is staged and deliberately left IN FLIGHT:
+   * these rows assert about what A's answer does to B, not about what B reads for itself, and a
+   * settled B read would write the very fields the assertions are about.
+   */
+  async function stageSignBackIn(): Promise<{
+    slow: ReturnType<typeof deferred<Response>>;
+    slowRead: Promise<void>;
+  }> {
+    const slow = deferred<Response>();
+    const expiring = deferred<Response>();
+    const sessionBOwnRead = deferred<Response>();
+    stubListQueue([slow.promise, expiring.promise, sessionBOwnRead.promise]);
+    seedEmptySlice('logged-in');
+
+    const slowRead = useOperator.getState().refreshCohorts(BASE);
+    const expiringRead = useOperator.getState().refreshCohorts(BASE);
+    expiring.resolve(new Response('no', { status: 401 }));
+    await expiringRead;
+    expect(useOperator.getState().auth).toBe('logged-out');
+
+    await useOperator.getState().signIn(BASE, PASSWORD);
+    expect(useOperator.getState().auth).toBe('logged-in');
+    return { slow, slowRead };
+  }
+
+  it('discards a list answer from a session that ENDED even though a NEW session is now signed in', async () => {
+    const { slow, slowRead } = await stageSignBackIn();
+
+    // Session A's answer lands into session B, which is the whole race.
+    slow.resolve(okList());
+    await slowRead;
+
+    const s = useOperator.getState();
+    // Several fields, not one: a fix that guarded the list and left the health strip writable would
+    // repaint the broadcast-mode chip, which is a claim about whether this service can move money.
+    expect(s.cohorts).toEqual([]);
+    expect(s.rows).toEqual([]);
+    expect(s.metrics).toBeUndefined();
+    expect(s.health).toBeUndefined();
+    expect(s.operatorActions).toEqual([]);
+    expect(s.defaults).toBeUndefined();
+    // Asserted LOGGED IN, unlike every row above: the point is that the protection holds while a
+    // session is live, not only while none is.
+    expect(s.auth).toBe('logged-in');
+  });
+
+  it('leaves the new session with no freshness stamp it did not earn (the ABA sequence)', async () => {
+    const { slow, slowRead } = await stageSignBackIn();
+    expect(useOperator.getState().lastUpdated).toBeUndefined();
+
+    slow.resolve(okList());
+    await slowRead;
+
+    // The freshness pair is what the health strip captions the console with. A stamp earned by a
+    // dead session's answer would tell the new operator that another session's data is fresh.
+    expect(useOperator.getState().lastUpdated).toBeUndefined();
+    expect(useOperator.getState().listStale).toBe(false);
+  });
+
+  it('still writes everything for a read issued BY the new session and landing under it', async () => {
+    // The anti-vacuity control that matters most here: without it, the two rows above would pass
+    // against a guard that simply stopped writing after any sign-in.
+    const sessionBOwnRead = deferred<Response>();
+    stubListQueue([sessionBOwnRead.promise, Promise.resolve(okList())]);
+    seedEmptySlice('logged-out');
+
+    // `signIn` fires its own follow-up read; leave that one in flight so the read under test is
+    // unambiguously the one this row issues.
+    await useOperator.getState().signIn(BASE, PASSWORD);
+    useOperator.setState({ listStale: true });
+
+    await useOperator.getState().refreshCohorts(BASE);
+
+    const s = useOperator.getState();
+    expect(s.cohorts).toEqual(POPULATED.cohorts);
+    expect(s.rows).toEqual(POPULATED.monitoring?.rows);
+    expect(s.metrics).toEqual(POPULATED.monitoring?.metrics);
+    expect(s.health).toEqual(POPULATED.monitoring?.health);
+    expect(s.operatorActions).toEqual(POPULATED.monitoring?.operatorActions);
+    expect(s.defaults).toEqual(POPULATED.defaults);
+    expect(s.listStale).toBe(false);
+    expect(typeof s.lastUpdated).toBe('number');
   });
 });
 

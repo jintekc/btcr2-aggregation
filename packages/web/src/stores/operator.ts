@@ -346,6 +346,28 @@ export const NO_SEATS_LEFT_REASON = 'This cohort has no seats left.';
  */
 export interface OperatorState {
   auth: OperatorAuthStatus;
+  /**
+   * A monotonic identifier for ONE operator session (review WR-06).
+   *
+   * It sits beside {@link OperatorState.auth} because it qualifies it: `auth` reports whether SOME
+   * session is live, and this reports WHICH one. A status cannot serve as an identity, because
+   * `logged-in` to `logged-out` to `logged-in` is the same string and a different session, while a
+   * gated read is evidence about exactly one of them. Any guard that must decide whether an answer
+   * still belongs to the session that asked compares this, never `auth` alone.
+   *
+   * Bumped on every path that makes a session LIVE (a successful `signIn`, a `probe` that lands on
+   * a live session) and on every path that ENDS one (`signOut`, `expireSession`). The correctness
+   * argument only needs the START bumps: if every new session takes a fresh round, two sessions can
+   * never share one. The END bumps are what make the field mean what its name says - with them a
+   * round identifies exactly one session, live or ended, and an ended round is retired the instant
+   * it ends; without them a round only identifies "at most one live session at a time", and a
+   * future guard that compared a round without also checking the status would be silently wrong.
+   *
+   * Client-side only: nothing puts this on the wire. Which session asked is a fact the caller
+   * already holds, and serving it would add a second source of truth for a question already
+   * answered locally.
+   */
+  sessionRound: number;
   error?: string;
   /** The operator's own cohorts (drafts, advertised, and expired records). */
   cohorts: OperatorCohortDTO[];
@@ -717,6 +739,8 @@ async function runAdvertisingToggle(
 
 export const useOperator = create<OperatorState>((set, get) => ({
   auth: 'checking',
+  // No session has started yet, so no read can hold a matching round.
+  sessionRound: 0,
   error: undefined,
   cohorts: [],
   rows: [],
@@ -758,9 +782,15 @@ export const useOperator = create<OperatorState>((set, get) => ({
     set({ auth: 'checking', error: undefined });
     try {
       const state = await sessionProbe(baseUrl);
-      set({ auth: state });
       if (state === 'logged-in') {
+        // A live session STARTS here (a returning operator whose cookie is still good), so it takes
+        // a fresh round before the read it fires below captures one.
+        set({ auth: state, sessionRound: get().sessionRound + 1 });
         void get().refreshCohorts(baseUrl);
+      } else {
+        // `logged-out` and `disabled` start no session, so neither takes a round: a round retired
+        // by a probe no session ever held would be a number that identifies nothing.
+        set({ auth: state });
       }
     } catch {
       // A network/stall signal on the probe leaves the operator at the login screen
@@ -774,7 +804,9 @@ export const useOperator = create<OperatorState>((set, get) => ({
     try {
       const status = await apiLogin(baseUrl, password);
       if (status === 200) {
-        set({ auth: 'logged-in', error: undefined });
+        // A live session STARTS here. Every other branch below leaves no session live, so none of
+        // them takes a round.
+        set({ auth: 'logged-in', error: undefined, sessionRound: get().sessionRound + 1 });
         void get().refreshCohorts(baseUrl);
       } else if (status === 429) {
         set({ auth: 'logged-out', error: THROTTLED });
@@ -794,6 +826,9 @@ export const useOperator = create<OperatorState>((set, get) => ({
     } finally {
       set({
         auth: 'logged-out',
+        // The session ENDS here, so its round is retired with the rest of its state: any read it
+        // issued is now an answer about a session nobody is running.
+        sessionRound: get().sessionRound + 1,
         error: undefined,
         cohorts: [],
         rows: [],
@@ -851,6 +886,9 @@ export const useOperator = create<OperatorState>((set, get) => ({
   expireSession() {
     set({
       auth: 'logged-out',
+      // The session ENDS here too, on the same reasoning as `signOut` above: an expiry retires the
+      // round so a read issued under it can never match the round of whoever signs in next.
+      sessionRound: get().sessionRound + 1,
       error: SESSION_EXPIRED,
       cohorts: [],
       rows: [],
@@ -893,10 +931,13 @@ export const useOperator = create<OperatorState>((set, get) => ({
     // and raises the banner, and an ok read updates the list + monitoring + freshness stamp.
     //
     // Capture the SESSION this question is asked in, the way `pollDetail` below captures the
-    // cohort its question is about. Nothing cancels a request already in flight, and the console
-    // polls this read every 4000 ms against an 8000 ms client timeout, so two reads are routinely
-    // outstanding at once (`05-VERIFICATION.md` W5, review WR-01).
-    const askedWhileLive = get().auth === 'logged-in';
+    // cohort its question is about: an identity, not a status. Nothing cancels a request already in
+    // flight, and the console polls this read every 4000 ms against an 8000 ms client timeout, so
+    // two reads are routinely outstanding at once (`05-VERIFICATION.md` W5, review WR-01/WR-06).
+    //
+    // Undefined when no session is live, so an answer to a question nobody asked has nothing to
+    // match against and is refused below whatever session may have signed in meanwhile.
+    const askedInRound = get().auth === 'logged-in' ? get().sessionRound : undefined;
     const result = await fetchOperatorCohorts(baseUrl);
     if (result.kind === 'unauthorized') {
       // Session expired mid-monitoring (D-16): drop to the login screen with the honest
@@ -918,12 +959,20 @@ export const useOperator = create<OperatorState>((set, get) => ({
     // state after you sign in"). Without this, the late write repaints the cohort list, the metrics
     // and the broadcast-mode chip, which is a claim about whether this service can move money.
     //
+    // The comparison is on the session IDENTITY, never on the status alone (review WR-06). The
+    // sequence a status comparison lets through is ABA: session A expires, the operator signs
+    // straight back in as B (a password-manager fill is a second or two, well inside the poll
+    // window), and A's answer lands while `auth` reads `logged-in` again. The string is identical,
+    // the session is not, so B would be shown A's cohort list, metrics, operator log and
+    // broadcast-mode chip, plus a freshness stamp B never earned.
+    //
     // The shipped precedent is `pollDetail`'s round guard, keyed on the COHORT because that is what
     // a detail read is a fact about. One house rule, applied to each path's own subject.
     //
     // Both halves are wanted: the capture rejects an answer to a question no live session asked,
-    // and the re-check rejects an answer that outlived the session that did ask.
-    if (!askedWhileLive || get().auth !== 'logged-in') {
+    // the status check rejects an answer landing into a signed-out console, and the round check
+    // rejects an answer that outlived the session that did ask.
+    if (askedInRound === undefined || get().auth !== 'logged-in' || get().sessionRound !== askedInRound) {
       return;
     }
     if (result.kind === 'unreachable') {
