@@ -576,6 +576,105 @@ describe('operator store refreshCohorts concurrency (W5: a list answer belongs t
     expect(s.listStale).toBe(false);
     expect(typeof s.lastUpdated).toBe('number');
   });
+
+  it('discards a list answer that outlived an explicit sign-out, leaving the CLEAN signed-out state', async () => {
+    const slow = deferred<Response>();
+    stubListQueue([slow.promise]);
+    seedEmptySlice('logged-in');
+
+    // A poll issued just before the operator clicks Sign out, still outstanding when the
+    // `finally` clause clears the gated slice.
+    const read = useOperator.getState().refreshCohorts(BASE);
+    await useOperator.getState().signOut(BASE);
+    expect(useOperator.getState().auth).toBe('logged-out');
+
+    slow.resolve(okList());
+    await read;
+
+    const s = useOperator.getState();
+    expect(s.cohorts).toEqual([]);
+    expect(s.rows).toEqual([]);
+    expect(s.metrics).toBeUndefined();
+    expect(s.health).toBeUndefined();
+    expect(s.operatorActions).toEqual([]);
+    expect(s.defaults).toBeUndefined();
+    expect(s.listStale).toBe(false);
+    expect(s.lastUpdated).toBeUndefined();
+    // The point of the row is that a dead session's answer changes NOTHING, not that it changes
+    // something harmless: a deliberate sign-out must not end up wearing the expiry banner.
+    expect(s.auth).toBe('logged-out');
+    expect(s.error).toBeUndefined();
+  });
+
+  it('does not raise the staleness banner when the failed read belongs to a session that has ended', async () => {
+    const fresh = deferred<Response>();
+    const slow = deferred<Response>();
+    const expiring = deferred<Response>();
+    stubListQueue([fresh.promise, slow.promise, expiring.promise]);
+    seedEmptySlice('logged-in');
+
+    // A successful read FIRST, so this row asserts that a FRESH state stayed fresh rather than
+    // that an empty one stayed empty.
+    const readFresh = useOperator.getState().refreshCohorts(BASE);
+    fresh.resolve(okList());
+    await readFresh;
+    expect(useOperator.getState().listStale).toBe(false);
+    expect(typeof useOperator.getState().lastUpdated).toBe('number');
+
+    const readSlow = useOperator.getState().refreshCohorts(BASE);
+    const readExpiring = useOperator.getState().refreshCohorts(BASE);
+    expiring.resolve(new Response('no', { status: 401 }));
+    await readExpiring;
+    expect(useOperator.getState().auth).toBe('logged-out');
+
+    slow.reject(new Error('network down'));
+    await readSlow;
+
+    // Freshness is a fact about a list THIS session is watching, never about whichever request
+    // happened to fail, so a signed-out console has nothing to be stale about.
+    expect(useOperator.getState().listStale).toBe(false);
+  });
+
+  it('writes nothing for an answer to a question no live session asked (the pre-await half)', async () => {
+    const answer = deferred<Response>();
+    stubListQueue([answer.promise]);
+    seedEmptySlice('logged-out');
+
+    // A read issued while nobody is signed in: a poll tick the console had not torn down yet.
+    const read = useOperator.getState().refreshCohorts(BASE);
+    // A NEW session signs in while that answer is still in flight. `signIn` and `probe` both set
+    // `auth` synchronously before their own read, so this is the state they leave behind.
+    useOperator.setState({ auth: 'logged-in' });
+    answer.resolve(okList());
+    await read;
+
+    const s = useOperator.getState();
+    expect(s.cohorts).toEqual([]);
+    expect(s.rows).toEqual([]);
+    expect(s.metrics).toBeUndefined();
+    expect(s.health).toBeUndefined();
+    expect(s.operatorActions).toEqual([]);
+    expect(s.defaults).toBeUndefined();
+    expect(s.listStale).toBe(false);
+    expect(s.lastUpdated).toBeUndefined();
+    // The guard refused the WRITE, not the session: the new sign-in is left to read for itself.
+    expect(s.auth).toBe('logged-in');
+  });
+
+  it('still raises the staleness banner for a LIVE session read that could not reach the service', async () => {
+    // The negative control on scope: a guard that over-refused would silently disable the D-25
+    // freeze-and-banner path, and every assertion above would still pass.
+    const answer = deferred<Response>();
+    stubListQueue([answer.promise]);
+    seedEmptySlice('logged-in');
+
+    const read = useOperator.getState().refreshCohorts(BASE);
+    answer.reject(new Error('network down'));
+    await read;
+
+    expect(useOperator.getState().listStale).toBe(true);
+    expect(useOperator.getState().auth).toBe('logged-in');
+  });
 });
 
 /**
