@@ -349,8 +349,11 @@ HASH of the exact document that was shown, so editing the terms afterwards canno
 somebody agreed to. Clearing the terms removes the step entirely; the feature is absent, not empty.
 
 The terms are capped at **20000 characters** (roughly 3500 words), on both paths that set them, and
-that character count is the only limit either path applies. A runtime save above the cap is refused
-with the limit named, and nothing else in that save is applied. A boot value above it is ignored
+that character count is the limit you will meet. The console save path also streams under a request
+size budget, but that budget is derived from the same character cap rather than chosen separately,
+and it charges every character at the most expensive encoding JSON can give it, so a document at the
+cap fits whatever script you write it in. A runtime save above the cap is refused with the limit
+named, and nothing else in that save is applied. A boot value above it is ignored
 with a warning and is never truncated to fit, because a truncated document is one participants would
 DID-sign in mutilated form; until you shorten it, the join flow has no terms step at all. Saving
 from the settings surface re-sends every field on the form, terms included, so a document sitting at

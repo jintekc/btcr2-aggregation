@@ -341,21 +341,25 @@ const ONE_MINUTE_MS = 60_000;
  * injection but unbounded in-memory text on a surface an operator can save repeatedly; these
  * caps are generous enough that no realistic name or terms document hits them.
  */
-const MAX_SERVICE_NAME_CHARS = 200;
+export const MAX_SERVICE_NAME_CHARS = 200;
 /**
- * EXPORTED, deliberately, and deliberately alone among the two (`05-VERIFICATION.md` SC3, review
- * CR-02). `05-31-PLAN.md` prohibited exporting either cap; that was a round-4 SCOPE FENCE (keep this
- * module's surface still while bounding two seeds), not standing law, and it is superseded here
- * because the route that bounds the SAME field must derive its number from this one. See
- * {@link SETTINGS_BODY_LIMIT_BYTES}. `MAX_SERVICE_NAME_CHARS` stays module-local: nothing outside
- * this file needs it, so the round-4 reasoning still holds for it.
+ * BOTH caps are EXPORTED (`05-VERIFICATION.md` SC3, review CR-02 then review IN-06).
+ *
+ * `05-31-PLAN.md` prohibited exporting either; that was a round-4 SCOPE FENCE (keep this module's
+ * surface still while bounding two seeds), not standing law. Round 5 superseded it for
+ * `MAX_TERMS_CHARS` because the route that bounds the SAME field must derive its number from this
+ * one, and it is superseded here for `MAX_SERVICE_NAME_CHARS` for the same reason applied one field
+ * over: {@link SETTINGS_BODY_LIMIT_BYTES} has to carry the name too, and the measurement that bounds
+ * it RETYPED this value, so a cap change could not move the test that was watching it. A bound
+ * another layer derives from cannot stay private to this one, and here the other layer is this
+ * module's own spec.
  */
 export const MAX_TERMS_CHARS = 20_000;
 
 /**
- * The worst-case cost, in UTF-8 bytes of a JSON-encoded body, of ONE UTF-16 code unit of the terms
- * document. Six: a control character is emitted by `JSON.stringify` as a six-character
- * backslash-u escape, all ASCII. Every other class this field can hold is cheaper, which is what
+ * The worst-case cost, in UTF-8 bytes of a JSON-encoded body, of ONE UTF-16 code unit of ANY string
+ * field in that body. Six: a control character is emitted by `JSON.stringify` as a six-character
+ * backslash-u escape, all ASCII. Every other class a string can hold is cheaper, which is what
  * makes six the bound rather than one measurement among several:
  *
  * | class of character                     | code units | UTF-8 bytes | bytes per code unit |
@@ -367,24 +371,58 @@ export const MAX_TERMS_CHARS = 20_000;
  * | surrogate pair (`𝄞`, an emoji)         | 2          | 4           | 2                   |
  * | control character (`U+0001`)           | 1          | 6           | 6                   |
  *
- * `String.prototype.length` counts UTF-16 code units, which is the unit {@link MAX_TERMS_CHARS}
- * bounds, so the multiplier has to be per CODE UNIT and not per rendered character. That is why the
- * surrogate row costs two rather than four: four bytes spread across two code units.
+ * `String.prototype.length` counts UTF-16 code units, which is the unit both {@link MAX_TERMS_CHARS}
+ * and {@link MAX_SERVICE_NAME_CHARS} bound, so the multiplier has to be per CODE UNIT and not per
+ * rendered character. That is why the surrogate row costs two rather than four: four bytes spread
+ * across two code units.
+ *
+ * The name records where this was first derived (the terms field, review CR-02) and not what it
+ * applies to. It is a property of JSON string encoding, so it is true of EVERY string field in this
+ * body, which is what makes it correct to charge the service name at the same rate (review IN-06).
  */
 const WORST_CASE_TERMS_BYTES_PER_CODE_UNIT = 6;
 
 /**
- * Fixed headroom for the rest of the settings patch and its JSON punctuation. The whole non-terms
- * body the console posts measures 184 bytes today (six short fields, all of them numbers, an enum
- * or a 200-character name), so this is roughly twenty times what it needs. That slack is the right
- * shape for a field set that cannot grow without a code change, and it is the reason this number
- * may be round while the multiplier above may not.
+ * The allowance for everything in a settings patch that is NOT one of the two string fields: the
+ * five short scalar fields, the key names and the JSON punctuation around all seven.
+ *
+ * MEASURED, so the figure in this sentence is a fact rather than a rationale: the console-shaped
+ * patch with both string fields EMPTY encodes to 169 bytes, and a row asserts that
+ * (`runtime-settings.spec.ts`, "sizes its one chosen number against a MEASURED body"). 1024 is
+ * roughly six times that, and the slack is stated as slack: it absorbs a scalar field growing to
+ * its widest integer form or a later field name being longer, neither of which can happen without
+ * a code change.
+ *
+ * This is the ONE number in {@link SETTINGS_BODY_LIMIT_BYTES} still chosen rather than derived
+ * (T-05-38-06). What it replaces is a 4096 byte headroom whose docstring justified itself against a
+ * "184 byte" non-terms body: not the worst-case measurement (1369 bytes, a name at the cap in the
+ * class the multiplier is derived from) and not the ordinary one (369 bytes) either. That figure
+ * made a threefold margin read as twentyfold, and, worse, the headroom carried no name term at all,
+ * so raising {@link MAX_SERVICE_NAME_CHARS} past 655 would have re-opened the settings-save wedge
+ * through the NAME field with the whole suite green.
  */
-const SETTINGS_BODY_HEADROOM_BYTES = 4096;
+const SETTINGS_BODY_FIXED_FIELD_BYTES = 1024;
+
+/**
+ * The byte budget a settings body needs, derived from EVERY field it has to carry: both character
+ * caps at the worst encoding a JSON string can have, plus the measured allowance for the rest.
+ *
+ * Exported as a FUNCTION, not just as its application, because the property that matters is the
+ * rule rather than the number: the spec asserts it over a table of cap PAIRS including name caps
+ * far larger than today's, so a row goes red the moment the derivation stops carrying a term. A row
+ * that recomputed this arithmetic from the same constants would pass against any derivation at all,
+ * which is exactly how the original five times disagreement survived a green gate.
+ */
+export function settingsBodyLimitBytes(maxServiceNameChars: number, maxTermsChars: number): number {
+  return (
+    (maxServiceNameChars + maxTermsChars) * WORST_CASE_TERMS_BYTES_PER_CODE_UNIT +
+    SETTINGS_BODY_FIXED_FIELD_BYTES
+  );
+}
 
 /**
  * The byte budget the gated `PUT /v1/operator/settings` route streams under, DERIVED from
- * {@link MAX_TERMS_CHARS} rather than chosen.
+ * {@link MAX_TERMS_CHARS} and {@link MAX_SERVICE_NAME_CHARS} rather than chosen.
  *
  * THE DEFECT IT CLOSES (`05-VERIFICATION.md` SC3 / Gap 1, review CR-02). That route bounded the
  * same field this holder bounds, using a number derived from nothing (4 KiB, the value every other
@@ -400,9 +438,12 @@ const SETTINGS_BODY_HEADROOM_BYTES = 4096;
  * carefully worded terms refusal was unreachable over HTTP.
  *
  * WHY DERIVED AND NOT CHOSEN. The rule this constant exists to hold: a limit that governs a field
- * belongs to that field, derived once, at the place the field is defined, and any other layer that
- * has to bound the same thing derives its number from that one. A number nobody derived may never
- * be the thing that answers.
+ * belongs to that field, derived once, at the place the field is defined, from EVERY field it has
+ * to carry, and any other layer that has to bound the same thing derives its number from that one.
+ * A number nobody derived may never be the thing that answers. Round 5 held that rule for the terms
+ * field and left a chosen headroom beside it that carried no name term at all; review IN-06 is what
+ * that costs, so the whole budget is now one application of
+ * {@link settingsBodyLimitBytes} to the two shipped caps.
  *
  * WHY NOT THE SMALLER MULTIPLIER THE REVIEW SUGGESTED. `MAX_TERMS_CHARS * 2 + 4096` is 44096 bytes,
  * which fixes ASCII and fixes surrogate pairs and still REFUSES a terms document written in a
@@ -414,11 +455,14 @@ const SETTINGS_BODY_HEADROOM_BYTES = 4096;
  *
  * WHAT IT IS NOT. It is not a removal of the request-size bound (T-05-33-02). The route still
  * refuses an oversized body DURING streaming, before `c.req.json()` buffers it, and still answers
- * 413. Only the number moved, and the result (124096 bytes, roughly 121 KiB) sits well inside the
- * range this service already accepts on other routes, which run from 4 KiB to 512 KiB.
+ * 413. Only the number moved, and the result (122224 bytes, roughly 119 KiB) sits well inside the
+ * range this service already accepts on other routes, which run from 4 KiB to 512 KiB. It clears the
+ * largest legal console body, both string fields at their cap in the six-byte class, by 855 bytes.
  */
-export const SETTINGS_BODY_LIMIT_BYTES =
-  MAX_TERMS_CHARS * WORST_CASE_TERMS_BYTES_PER_CODE_UNIT + SETTINGS_BODY_HEADROOM_BYTES;
+export const SETTINGS_BODY_LIMIT_BYTES = settingsBodyLimitBytes(
+  MAX_SERVICE_NAME_CHARS,
+  MAX_TERMS_CHARS,
+);
 
 /** Built-in fallbacks, used only when a seed is absent or malformed. */
 const BUILT_IN_BEACON_TYPE: BeaconType = 'CASBeacon';

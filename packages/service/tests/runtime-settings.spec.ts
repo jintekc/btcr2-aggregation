@@ -15,9 +15,11 @@ import {
 } from '../src/operator-cohorts.js';
 import {
   createRuntimeSettings,
+  MAX_SERVICE_NAME_CHARS,
   MAX_TERMS_CHARS,
   numericKnob,
   SETTINGS_BODY_LIMIT_BYTES,
+  settingsBodyLimitBytes,
   type RuntimeSettings,
   type RuntimeSettingsSeed,
 } from '../src/runtime-settings.js';
@@ -666,16 +668,6 @@ describe('service defaults are read ONCE at createDraft time and never re-read (
 /** One minute in ms, retyped here rather than imported: the spec states the unit it asserts on. */
 const MINUTE_MS = 60_000;
 
-/**
- * The service-name ceiling, retyped here by the same convention {@link MINUTE_MS} uses rather than
- * imported: the module keeps it private, and the spec states the number it asserts on.
- *
- * `MAX_TERMS_CHARS` used to sit beside it under that same convention and is now IMPORTED instead
- * (review CR-02): the module exports it, because the gated settings route's byte budget is derived
- * from it, so retyping it here would leave two numbers that can drift apart while every test using
- * either one stays green.
- */
-const MAX_SERVICE_NAME_CHARS = 200;
 
 /**
  * THE INVARIANT (`05-VERIFICATION.md` W3, review WR-2 and WR-3): no value this holder ACCEPTS at
@@ -1253,10 +1245,29 @@ describe('the settings body budget bounds every encoding a terms document at the
     { what: 'escape-forcing control characters', terms: '\u0001'.repeat(MAX_TERMS_CHARS) },
   ];
 
-  /** The full console-shaped patch, so the measurement includes the rest of the form (D-12). */
-  function encodedBodyBytes(terms: string): number {
+  /**
+   * The character the multiplier is derived from: one UTF-16 code unit, six UTF-8 bytes once
+   * `JSON.stringify` escapes it. Constructed by code point rather than pasted, for the same reason
+   * the control-character row above is spelled as an escape: the class this bound is derived from
+   * has to be readable in the source that measures it.
+   */
+  const ESCAPE_FORCING = String.fromCharCode(1);
+
+  /** The worst-case name every row in this block already assumed before the helper took it. */
+  const ASCII_NAME_AT_CAP = 'x'.repeat(MAX_SERVICE_NAME_CHARS);
+
+  /**
+   * The full console-shaped patch, so the measurement includes the rest of the form (D-12).
+   *
+   * The NAME is a PARAMETER (review IN-06). It was a fixed ASCII name at the cap, which is what
+   * made this block structurally incapable of noticing the service-name cap at all: the table
+   * varied one of the two string fields the budget has to carry and froze the other. Every row
+   * this block shipped with passes {@link ASCII_NAME_AT_CAP}, the exact value it always assumed,
+   * so its measurement and its assertion are unchanged.
+   */
+  function encodedBodyBytes(terms: string, name: string): number {
     const body = JSON.stringify({
-      serviceName: 'x'.repeat(MAX_SERVICE_NAME_CHARS),
+      serviceName: name,
       defaultBeaconType: 'CASBeacon',
       defaultSize: 2,
       defaultThreshold: 2,
@@ -1270,7 +1281,7 @@ describe('the settings body budget bounds every encoding a terms document at the
   for (const row of ENCODING_CLASSES) {
     it(`fits a terms document at the cap written in ${row.what}`, () => {
       expect(row.terms).toHaveLength(MAX_TERMS_CHARS);
-      expect(SETTINGS_BODY_LIMIT_BYTES).toBeGreaterThanOrEqual(encodedBodyBytes(row.terms));
+      expect(SETTINGS_BODY_LIMIT_BYTES).toBeGreaterThanOrEqual(encodedBodyBytes(row.terms, ASCII_NAME_AT_CAP));
     });
   }
 
@@ -1278,8 +1289,25 @@ describe('the settings body budget bounds every encoding a terms document at the
     // Class by class, a missed encoding only fails its own row. As a property over the whole set it
     // fails for any class somebody adds later, which is the drift this block exists to stop.
     for (const row of ENCODING_CLASSES) {
-      expect(SETTINGS_BODY_LIMIT_BYTES).toBeGreaterThanOrEqual(encodedBodyBytes(row.terms));
+      expect(SETTINGS_BODY_LIMIT_BYTES).toBeGreaterThanOrEqual(encodedBodyBytes(row.terms, ASCII_NAME_AT_CAP));
     }
+  });
+
+  it('bounds the LARGEST legal console body: both string fields at their cap, both at the worst encoding', () => {
+    // The row this block could not express while its name was frozen (review IN-06). The console
+    // posts the whole form (D-12), so the largest body a legal save can produce is BOTH string
+    // fields at their cap in the class that costs six bytes per code unit, not the terms field
+    // alone beside a cheap name.
+    const worst = encodedBodyBytes(
+      ESCAPE_FORCING.repeat(MAX_TERMS_CHARS),
+      ESCAPE_FORCING.repeat(MAX_SERVICE_NAME_CHARS),
+    );
+    // It really is the worst: the same terms beside an ASCII name at the same cap is cheaper, which
+    // is the difference the shipped rows above were blind to.
+    expect(worst).toBeGreaterThan(
+      encodedBodyBytes(ESCAPE_FORCING.repeat(MAX_TERMS_CHARS), ASCII_NAME_AT_CAP),
+    );
+    expect(SETTINGS_BODY_LIMIT_BYTES).toBeGreaterThanOrEqual(worst);
   });
 
   it('is not vacuously large: the doubling the review suggested would have failed a real class', () => {
@@ -1290,9 +1318,90 @@ describe('the settings body budget bounds every encoding a terms document at the
     // own language. It also proves the budget bounds something: a limit that fit every class with
     // room to spare for a reason nobody stated would be the original defect facing the other way.
     const suggested = MAX_TERMS_CHARS * 2 + 4096;
-    const threeByteBytes = encodedBodyBytes('漢'.repeat(MAX_TERMS_CHARS));
+    const threeByteBytes = encodedBodyBytes('漢'.repeat(MAX_TERMS_CHARS), ASCII_NAME_AT_CAP);
     expect(threeByteBytes).toBeGreaterThan(suggested);
     expect(SETTINGS_BODY_LIMIT_BYTES).toBeGreaterThanOrEqual(threeByteBytes);
+  });
+
+  it('pins each cap against a retyped literal, so a cap change is deliberate and visible', () => {
+    // The ONE place in this suite that retypes either cap (review IN-06). Every other row derives
+    // from the imported constants, which is the property the previous shape lacked: the service
+    // name cap was retyped HERE, in the spec, so the measurement that was supposed to bound it
+    // could not see it move. A cap change now fails exactly one row, on purpose, and that row is
+    // the record of the decision rather than an accident.
+    expect(MAX_SERVICE_NAME_CHARS).toBe(200);
+    expect(MAX_TERMS_CHARS).toBe(20_000);
+  });
+
+  it('sizes its one chosen number against a MEASURED body rather than a hope', () => {
+    // The allowance for the five non-string fields and the JSON punctuation is the only number in
+    // the derivation still chosen, and it stays chosen because that field set cannot grow without
+    // a code change (T-05-38-06). What it must not be is unmeasured: the headroom it replaced
+    // claimed a 184 byte non-terms body and was wrong in both directions, and nothing checked it.
+    // A figure quoted in a comment is a claim, and it needs a row the same way the code does.
+    const bare = encodedBodyBytes('', '');
+    expect(bare).toBe(169);
+    // Applying the derivation with both caps at zero leaves exactly the allowance, which therefore
+    // has to cover the body with both string fields empty on its own.
+    expect(settingsBodyLimitBytes(0, 0)).toBeGreaterThanOrEqual(bare);
+  });
+
+  /**
+   * Cap PAIRS, the property that makes a future cap raise safe by construction rather than by
+   * somebody remembering (review IN-06).
+   *
+   * The break-even point measured against the fixed headroom this replaced: a body is
+   * `169 + 6 * nameCap + 120000` bytes at the worst encoding, so the old 124096 byte budget stopped
+   * bounding it at a name cap of 655. Raising `MAX_SERVICE_NAME_CHARS` past that would have
+   * re-opened CR-02 through the NAME field with the whole suite green, because the budget carried
+   * no name term and this block retyped the cap. The pairs below therefore include name caps well
+   * past that point, and one pair with the two caps swapped so neither field can be the special one.
+   */
+  const CAP_PAIRS: readonly { readonly what: string; readonly name: number; readonly terms: number }[] =
+    [
+      { what: "today's shipped caps", name: MAX_SERVICE_NAME_CHARS, terms: MAX_TERMS_CHARS },
+      { what: 'a name cap just past the old break-even point', name: 700, terms: MAX_TERMS_CHARS },
+      { what: 'a name cap far past it', name: 5_000, terms: MAX_TERMS_CHARS },
+      { what: 'the two caps swapped, so neither field is the special one', name: 20_000, terms: 200 },
+    ];
+
+  for (const pair of CAP_PAIRS) {
+    it(`derives a budget that bounds the worst legal body for ${pair.what}`, () => {
+      const worst = encodedBodyBytes(
+        ESCAPE_FORCING.repeat(pair.terms),
+        ESCAPE_FORCING.repeat(pair.name),
+      );
+      expect(settingsBodyLimitBytes(pair.name, pair.terms)).toBeGreaterThanOrEqual(worst);
+    });
+  }
+
+  it('bounds every cap pair at once, as a property over the table', () => {
+    // Pair by pair, a derivation that dropped one field's term only fails the pairs where that
+    // field is large. As a property over the whole table it fails the moment the derivation stops
+    // carrying either term, which is the coupling this closes.
+    for (const pair of CAP_PAIRS) {
+      const worst = encodedBodyBytes(
+        ESCAPE_FORCING.repeat(pair.terms),
+        ESCAPE_FORCING.repeat(pair.name),
+      );
+      expect(settingsBodyLimitBytes(pair.name, pair.terms)).toBeGreaterThanOrEqual(worst);
+    }
+  });
+
+  it('is not vacuously large in the NAME field either: the fixed headroom this replaced would have failed a real cap pair', () => {
+    // The same technique as the row above that kills the smaller multiplier, pointed at the other
+    // string field. `MAX_TERMS_CHARS * 6 + 4096` was the shipped budget, and it carried no name
+    // term at all, so it is a derivation that happens to bound today's caps and stops bounding
+    // anything the moment the name cap moves. Without this row the pairs above would pass just as
+    // happily against a name-blind derivation, and the pairs would prove slack rather than a rule.
+    const nameBlind = (_nameCap: number, termsCap: number): number => termsCap * 6 + 4096;
+    const pair = { name: 5_000, terms: MAX_TERMS_CHARS };
+    const worst = encodedBodyBytes(
+      ESCAPE_FORCING.repeat(pair.terms),
+      ESCAPE_FORCING.repeat(pair.name),
+    );
+    expect(nameBlind(pair.name, pair.terms)).toBeLessThan(worst);
+    expect(settingsBodyLimitBytes(pair.name, pair.terms)).toBeGreaterThanOrEqual(worst);
   });
 
   it('stays inside the range this service already accepts on its other routes', () => {
