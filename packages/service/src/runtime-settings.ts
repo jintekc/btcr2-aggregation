@@ -304,6 +304,20 @@ const MAX_TERMS_CHARS = 20_000;
 const BUILT_IN_BEACON_TYPE: BeaconType = 'CASBeacon';
 const BUILT_IN_SIZE = 2;
 
+/**
+ * Where each window value can have come from, named in every boot warning about it (review WR-02).
+ *
+ * A warning that names only the internal field sends the operator looking for a knob that appears
+ * in no environment reference, no compose file and no ADR. The field name is kept as well, because
+ * it is what the gated settings read and the console both call this value, so one line serves the
+ * operator reading a log and the developer reading the code. Each window names two variables
+ * because `index.ts` seeds it from either and the holder is never told which one it got;
+ * {@link RuntimeSettingsSeed.discoveryWindowCeilingMs} is the exception, seeded from `cohortTtlMs`
+ * ALONE, which is why the clamp can honestly name one variable.
+ */
+const DISCOVERY_WINDOW_SOURCES = 'DEFAULT_DISCOVERY_WINDOW_MS, or COHORT_TTL_MS when that is unset';
+const FUNDING_WINDOW_SOURCES = 'DEFAULT_FUNDING_WINDOW_MS, or FUNDING_WINDOW_MS when that is unset';
+
 /** Trim an optional string, collapsing empty/whitespace-only to `undefined`. */
 function trimToUndefined(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
@@ -365,6 +379,16 @@ function textKnob(
     return undefined;
   }
   return trimmed;
+}
+
+/**
+ * The longest whole number of minutes at or below `ms`, or `undefined` for an absent value. The
+ * arithmetic on its own, with no disclosure: the two callers differ only in whether the truncation
+ * is something an operator needs told about, and keeping the sum in one place is what makes
+ * "flooring is monotone" checkable rather than asserted twice.
+ */
+function wholeMinutesAtOrBelow(ms: number | undefined): number | undefined {
+  return ms === undefined ? undefined : Math.floor(ms / ONE_MINUTE_MS) * ONE_MINUTE_MS;
 }
 
 /** The internal mutable record behind one {@link SettingField}. */
@@ -455,19 +479,19 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
    *
    * Nothing under one minute ever reaches here: {@link numericKnob} refuses it first against the
    * `ONE_MINUTE_MS` minimum, so the floor can never produce a zero.
+   *
+   * `sources` names the environment variable or variables that can have produced `ms` (review
+   * WR-02). The field name alone is not actionable: it is not a knob anybody can set.
    */
-  function floorToWholeMinute(name: string, ms: number | undefined): number | undefined {
-    if (ms === undefined) {
-      return undefined;
-    }
-    const floored = Math.floor(ms / ONE_MINUTE_MS) * ONE_MINUTE_MS;
-    if (floored !== ms) {
+  function floorToWholeMinute(name: string, sources: string, ms: number | undefined): number | undefined {
+    const floored = wholeMinutesAtOrBelow(ms);
+    if (ms !== undefined && floored !== ms) {
       // Both figures, in the ms the operator supplied, mirroring the clamp's disclosure discipline
       // below: boot output should say what happened rather than leave the operator to infer a
       // truncation from a number they never typed.
       warn(
         `${name}=${ms} is not a whole number of minutes; using ${floored} instead, ` +
-          `the longest whole-minute window at or below it`,
+          `the longest whole-minute window at or below it. Set it with ${sources}.`,
       );
     }
     return floored;
@@ -477,7 +501,36 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
   // the refusal threshold in `applySettings`, so the maximum this service enforces is itself a
   // value the console can express. `discoveryWindowCeilingError` already renders it with a floor to
   // whole minutes, so an unquantized ceiling produced a message that understated its own limit.
-  const discoveryWindowCeilingMs = floorToWholeMinute('discoveryWindowCeilingMs', seededCeilingMs);
+  //
+  // SILENT, deliberately, and this is the one quantization that does not warn (review WR-02). The
+  // ceiling is not a knob: it is derived from `COHORT_TTL_MS`, and every truncation it CAUSES is
+  // already disclosed by the window's own line below, which names that same variable. Warning here
+  // as well printed a SECOND line about a single `COHORT_TTL_MS=90000` boot, saying the same thing
+  // twice under a name (`discoveryWindowCeilingMs`) that exists in no environment reference, no
+  // compose file and no ADR. One variable set, one warning.
+  const discoveryWindowCeilingMs = wholeMinutesAtOrBelow(seededCeilingMs);
+
+  // QUANTIZER POINT 2 of 3: the discovery-window SEED, before the ceiling comparison below rather
+  // than after it, so the clamp compares two whole-minute values and therefore fires only when the
+  // window genuinely exceeds what this service can enforce (`05-VERIFICATION.md` W6, review WR-02).
+  //
+  // The reordering is value-preserving on EVERY path, and the proof belongs here because a future
+  // reader will check it rather than take it on trust. Flooring is monotone and the ceiling is
+  // itself quantized at point 1, so: for a seed at or below the ceiling the result is the floored
+  // seed either way; and for a seed above it, the floored seed is still at or above the
+  // whole-minute ceiling, so the result is the ceiling either way. Only the warning output moves.
+  //
+  // What the old order printed for `COHORT_TTL_MS=90000`, which seeds the window and the ceiling
+  // from the same number: a whole-minute line about the ceiling, then a clamp line claiming a 90000
+  // ms window "exceeds this service's cohort TTL" of 90000 ms. The clamp had fired against the
+  // already-quantized ceiling, not against the TTL, so its sentence was simply false. It also hid a
+  // real truncation in the other direction: an over-ceiling seed that was ALSO not a whole minute
+  // was clamped and never told the operator its own value had been floored.
+  const flooredDiscoveryWindowMs = floorToWholeMinute(
+    'defaultDiscoveryWindowMs',
+    DISCOVERY_WINDOW_SOURCES,
+    seededDiscoveryWindowMs,
+  );
 
   // Apply the ceiling to the SEED as well, clamping down with a loud warning (D-11/D-12,
   // `05-AUDIT.md` entry 7). It happens here, where the seed and the ceiling are both already
@@ -503,30 +556,42 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
   // did touch: a rename failed behind an error about a window they never set. With no over-ceiling
   // value storable, the save path has nothing left to trip over.
   const clampedDiscoveryWindowMs =
-    seededDiscoveryWindowMs !== undefined &&
+    flooredDiscoveryWindowMs !== undefined &&
     discoveryWindowCeilingMs !== undefined &&
-    seededDiscoveryWindowMs > discoveryWindowCeilingMs
+    flooredDiscoveryWindowMs > discoveryWindowCeilingMs
       ? discoveryWindowCeilingMs
-      : seededDiscoveryWindowMs;
-  if (clampedDiscoveryWindowMs !== seededDiscoveryWindowMs) {
+      : flooredDiscoveryWindowMs;
+  if (clampedDiscoveryWindowMs !== flooredDiscoveryWindowMs) {
     // Both numbers, in the ms the operator supplied, so boot output says what happened and why
-    // rather than leaving the operator to infer a truncation from a number they never typed.
+    // rather than leaving the operator to infer a truncation from a number they never typed. The
+    // sentence itself is untouched: the reordering above is what makes it TRUE whenever it prints,
+    // the same discipline 05-30 applied to `validateWindow` rather than rewriting a message.
     warn(
-      `defaultDiscoveryWindowMs=${seededDiscoveryWindowMs} exceeds this service's cohort TTL; ` +
-        `using ${clampedDiscoveryWindowMs} instead, the longest discovery window this service can enforce`,
+      `defaultDiscoveryWindowMs=${flooredDiscoveryWindowMs} exceeds this service's cohort TTL; ` +
+        `using ${clampedDiscoveryWindowMs} instead, the longest discovery window this service can enforce. ` +
+        `Set it with ${DISCOVERY_WINDOW_SOURCES}; the maximum comes from COHORT_TTL_MS.`,
     );
   }
 
-  // QUANTIZER POINT 2 of 3: the discovery window AFTER the clamp, so both the seed path and the
-  // clamp path end at a whole minute. Applying it after rather than before is deliberate: a value
-  // clamped to an already-quantized ceiling is whole by construction, and a value that was never
-  // clamped still needs its own floor. Running it first would leave the clamp as an unguarded
-  // second writer.
-  const resolvedDiscoveryWindowMs = floorToWholeMinute('defaultDiscoveryWindowMs', clampedDiscoveryWindowMs);
+  // The LAST-WRITE GUARD the old point 2 comment described, kept rather than deleted along with its
+  // reasoning. It can no longer fire on any current path, because the clamp's only possible target
+  // is the already-quantized ceiling and the unclamped value was floored above. It stays because it
+  // is where the invariant is ENFORCED rather than merely arrived at: a future second writer into
+  // this value would otherwise be unguarded, which is exactly what the clamp itself was before the
+  // reordering. Silent by construction on every reachable path, so it adds no boot output.
+  const resolvedDiscoveryWindowMs = floorToWholeMinute(
+    'defaultDiscoveryWindowMs',
+    DISCOVERY_WINDOW_SOURCES,
+    clampedDiscoveryWindowMs,
+  );
 
   // QUANTIZER POINT 3 of 3: the funding window, which has no ceiling and therefore no clamp that
   // could have quantized it in passing.
-  const resolvedFundingWindowMs = floorToWholeMinute('defaultFundingWindowMs', seededFundingWindowMs);
+  const resolvedFundingWindowMs = floorToWholeMinute(
+    'defaultFundingWindowMs',
+    FUNDING_WINDOW_SOURCES,
+    seededFundingWindowMs,
+  );
 
   // The two free-text seeds run through {@link textKnob} for the same reason every numeric seed
   // runs through {@link numericKnob}: a seed this holder accepts must never be a value its own

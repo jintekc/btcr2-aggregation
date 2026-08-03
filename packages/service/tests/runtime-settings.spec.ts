@@ -930,14 +930,40 @@ describe('the DERIVED boot seeds reach the same defect, and the holder-level fix
   it('closes a non-whole-minute COHORT_TTL_MS with no DEFAULT_DISCOVERY_WINDOW_MS anywhere', async () => {
     // The reachable-without-any-malformed-value case, and the one most likely to be met in the
     // field: `COHORT_TTL_MS=90000` seeds BOTH the discovery-window default and its own ceiling.
-    await withBootedService({ cohortTtlMs: 90_000 }, (settings) => {
-      const stored = settings.defaultDiscoveryWindowMs.value;
-      expect(stored).toBeDefined();
-      expect(stored! % MINUTE_MS).toBe(0);
-      expect(stored).toBeLessThanOrEqual(90_000);
-      expect(settings.applySettings({ serviceName: 'renamed' })).toBeUndefined();
-      expect(settings.serviceName.value).toBe('renamed');
-    });
+    //
+    // The stored assertions below are the ones this row shipped with and are deliberately UNEDITED:
+    // they are the evidence that reordering the quantizer changed the boot OUTPUT and no stored
+    // value (05-VERIFICATION.md W6, review WR-02). The warning assertions are what this row was
+    // missing, and their absence is how a boot that printed two lines, the second of them false,
+    // sat under a passing test that was correct about everything it looked at.
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await withBootedService({ cohortTtlMs: 90_000 }, (settings) => {
+        const stored = settings.defaultDiscoveryWindowMs.value;
+        expect(stored).toBeDefined();
+        expect(stored! % MINUTE_MS).toBe(0);
+        expect(stored).toBeLessThanOrEqual(90_000);
+        expect(settings.applySettings({ serviceName: 'renamed' })).toBeUndefined();
+        expect(settings.serviceName.value).toBe('renamed');
+
+        const lines = spy.mock.calls.map((call) => String(call[0])).filter((line) => /\[settings\]/.test(line));
+        // ONE variable set wrongly, ONE warning. The count alone would pass against a fix that
+        // deleted the true line instead of the false one, so the content is asserted beside it.
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).toMatch(/whole number of minutes/);
+        expect(lines[0]).toMatch(/90000/);
+        expect(lines[0]).toMatch(/60000/);
+        // The naming half of the fix, stated as an assertion over EVERY captured line rather than
+        // the first: a boot line naming only an internal field sends the operator looking for a
+        // knob that appears in no environment reference, no compose file and no ADR.
+        for (const line of lines) {
+          expect(line).toMatch(/COHORT_TTL_MS/);
+          expect(line).not.toMatch(/discoveryWindowCeilingMs/);
+        }
+      });
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('closes a non-whole-minute FUNDING_WINDOW_MS with no DEFAULT_FUNDING_WINDOW_MS anywhere', async () => {
@@ -1189,5 +1215,104 @@ describe('every window this holder will serve is a whole number of minutes (revi
     expect(warnings).toEqual([]);
     expect(settings.defaultDiscoveryWindowMs.value).toBe(30 * MINUTE_MS);
     expect(settings.defaultFundingWindowMs.value).toBe(12 * MINUTE_MS);
+  });
+});
+
+/**
+ * EVERY WARNING THIS HOLDER PRINTS ABOUT A WINDOW IS TRUE, AND NAMES A VARIABLE THE OPERATOR CAN ACT
+ * ON (`05-VERIFICATION.md` W6, review WR-02).
+ *
+ * The suite that shipped 05-30 asserted what the holder STORED and, except where a row was written
+ * about a warning specifically, never read what it PRINTED. The `COHORT_TTL_MS=90000` row above
+ * existed, passed, and was correct about the stored value while the boot output beside it said
+ * something untrue: the clamp fired against the already-quantized CEILING rather than against the
+ * TTL, because the window's quantizer ran after the clamp, so a boot was told a 90000 ms window
+ * "exceeds this service's cohort TTL" of 90000 ms. The operator had set one variable and was warned
+ * about two others, one of them `discoveryWindowCeilingMs`, which appears in no environment
+ * reference, no compose file and no ADR.
+ *
+ * The reordering is value-preserving and the proof is arithmetic rather than a promise: flooring is
+ * monotone and the ceiling is itself quantized first, so for a seed at or below the ceiling the
+ * result is the floored seed either way, and for a seed above it the floored seed is still at or
+ * above the whole-minute ceiling and the result is the ceiling either way. The property row below
+ * asserts that over the whole hostile-seed table rather than row by row.
+ */
+describe('the window warnings are true, and name a variable the operator set (W6, review WR-02)', () => {
+  it('prints the whole-minute line THEN the clamp line for a seed above a non-whole-minute ceiling', () => {
+    // The case the reordering must not paper over: BOTH truncations really happened, so both are
+    // disclosed, in the order they were applied, each true of the number it names.
+    const { warnings, warn } = withWarnings();
+    const settings = createRuntimeSettings({
+      defaultDiscoveryWindowMs: 2_500_000,
+      discoveryWindowCeilingMs: 30 * MINUTE_MS,
+      warn,
+    });
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toMatch(/whole number of minutes/);
+    expect(warnings[0]).toMatch(/2500000/);
+    expect(warnings[0]).toMatch(/2460000/);
+    // The clamp names the FLOORED seed, which is the value that genuinely exceeded the ceiling.
+    expect(warnings[1]).toMatch(/exceeds this service's cohort TTL/);
+    expect(warnings[1]).toMatch(/2460000/);
+    expect(warnings[1]).toMatch(/1800000/);
+    expect(settings.defaultDiscoveryWindowMs.value).toBe(30 * MINUTE_MS);
+  });
+
+  it('still clamps, and its sentence is still true, when a window genuinely exceeds the ceiling', () => {
+    // The anti-vacuity control for the reordering: a change that simply stopped clamping would
+    // satisfy the single-warning row above just as happily as one that made the clamp accurate.
+    const { warnings, warn } = withWarnings();
+    const settings = createRuntimeSettings({
+      defaultDiscoveryWindowMs: 60 * MINUTE_MS,
+      discoveryWindowCeilingMs: 30 * MINUTE_MS,
+      warn,
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/exceeds this service's cohort TTL/);
+    expect(warnings[0]).toMatch(/3600000/);
+    expect(warnings[0]).toMatch(/1800000/);
+    expect(settings.defaultDiscoveryWindowMs.value).toBe(30 * MINUTE_MS);
+  });
+
+  it('names an environment variable in every window warning it prints, never a bare internal field', () => {
+    // Three boots, one per window warning this holder can emit: the whole-minute line, the clamp
+    // line, and the funding line. Each must hand the operator something they can act on.
+    const seeds: readonly RuntimeSettingsSeed[] = [
+      { defaultDiscoveryWindowMs: 90_000 },
+      { defaultDiscoveryWindowMs: 60 * MINUTE_MS, discoveryWindowCeilingMs: 30 * MINUTE_MS },
+      { defaultFundingWindowMs: 90_000 },
+    ];
+    for (const seed of seeds) {
+      const { warnings, warn } = withWarnings();
+      createRuntimeSettings({ ...seed, warn });
+      expect(warnings.length).toBeGreaterThan(0);
+      for (const line of warnings) {
+        expect(line).toMatch(/COHORT_TTL_MS|DEFAULT_DISCOVERY_WINDOW_MS|DEFAULT_FUNDING_WINDOW_MS|FUNDING_WINDOW_MS/);
+        // The one name that is not a variable anybody can set.
+        expect(line).not.toMatch(/discoveryWindowCeilingMs=/);
+      }
+    }
+  });
+
+  it('stores exactly what the hostile-seed table already expected, as a property over the table', () => {
+    // The reordering changes which warnings fire and nothing else. Row by row a changed value would
+    // only fail the row that produced it; as a property it fails for any seed at all, which is what
+    // makes "only the warnings moved" a fact rather than a claim in a comment.
+    for (const row of HOSTILE_SEEDS) {
+      const { warn } = withWarnings();
+      const settings = createRuntimeSettings({ ...row.seed, warn });
+      row.stored(settings);
+      for (const [stored, seeded] of [
+        [settings.defaultDiscoveryWindowMs.value, row.seed.defaultDiscoveryWindowMs],
+        [settings.defaultFundingWindowMs.value, row.seed.defaultFundingWindowMs],
+      ] as const) {
+        if (stored === undefined || seeded === undefined) {
+          continue;
+        }
+        // Never LONGER than what the operator asked for: every move this holder makes to a window
+        // is a shortening, which is the one safe direction.
+        expect(stored).toBeLessThanOrEqual(seeded);
+      }
+    }
   });
 });
