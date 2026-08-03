@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Completed 05-31-PLAN.md
-last_updated: "2026-08-03T16:29:38.807Z"
+stopped_at: Completed 05-32-PLAN.md
+last_updated: "2026-08-03T16:41:10.165Z"
 last_activity: 2026-08-03
 last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 5
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 62
-  completed_plans: 61
+  completed_plans: 62
 ---
 
 # Project State
@@ -28,17 +28,17 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 2 of 32
-Status: Ready to execute
-Last activity: 2026-08-03 — Phase 05 execution started
+Plan: 32 of 32 (gap-closure round 4 complete)
+Status: All 32 plans executed; ready to re-verify phase 05
+Last activity: 2026-08-03 - completed 05-32 (operator list-read session round guard)
 
-Progress: [██████████] 98%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 30
+- Total plans completed: 32
 - Average duration: - min
 - Total execution time: 0 hours
 
@@ -122,6 +122,7 @@ Progress: [██████████] 98%
 | Phase 05 P29 | 12 min | 2 tasks | 4 files |
 | Phase 05 P30 | 15 min | 2 tasks | 4 files |
 | Phase 05 P31 | 47 min | 3 tasks | 4 files |
+| Phase 05 P32 | 6 min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -232,6 +233,9 @@ Recent decisions affecting current work (Phase 2):
 - [Phase 05]: 05-31: textKnob bounds both free-text boot seeds at the holder, dropping (never truncating) an over-long SERVICE_NAME or TERMS_TEXT with a warning naming the length, the ceiling and the cost; a truncated terms document is one participants would DID-sign in mutilated form (SC3, review CR-01)
 - [Phase 05]: 05-31: the discovery-window quantizer runs on the SEED, before the ceiling comparison, so the clamp fires only when its own sentence is true; the ceiling's own floor went SILENT because it is derived from COHORT_TTL_MS and its truncations are disclosed by the window line, making one variable set produce one warning (W6, review WR-02)
 - [Phase 05]: 05-31: expectHolderInvariants now asserts the string fields too, plus a predicate-only property row, because inside the per-row test a row's own stored assertion fires first and masks a predicate that stopped covering a field
+- [Phase 05]: [Phase 05] 05-32: refreshCohorts re-checks the session across its await, so a list answer that outlived a sign-out or an expiry can no longer repaint the console's gated slice (cohort list, metrics, operator log, broadcast-mode chip); the guard is keyed on the SESSION because that is what a list read is a fact about, exactly as 05-28's pollDetail guard is keyed on the cohort (W5 / review WR-01).
+- [Phase 05]: [Phase 05] 05-32: the 401 branch deliberately stays AHEAD of the round guard - a guard may precede only a branch whose subject is narrower than its own, and here both are session-scoped, so keeping both read paths reading the same way costs nothing; the guard sits ahead of the unreachable branch too, because freshness is a fact about a list this session is watching.
+- [Phase 05]: [Phase 05] 05-32: both halves of the guard (pre-await capture + post-await re-check) were proven independently load-bearing by separate mutations - neutralizing the capture alone reds only the pre-await row while the expiry-race row stays green.
 
 ### Pending Todos
 
@@ -271,7 +275,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-03T16:29:38.772Z
-Stopped at: Completed 05-31-PLAN.md
+Last session: 2026-08-03T16:40:57.487Z
+Stopped at: Completed 05-32-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
