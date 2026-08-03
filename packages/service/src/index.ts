@@ -424,11 +424,16 @@ export interface CreateServiceOptions {
    */
   rosterPks?: Uint8Array[];
   /**
-   * Optional operator-supplied service display name (D-51). A boot-time constant (env
-   * `SERVICE_NAME`, resolved in {@link file://./demo-server.ts}) surfaced additively on
-   * `GET /v1/config` so the operator console health strip and the public directory header can
-   * label the service. Display text only (no edit surface, no markup); omitted from the config
-   * DTO when unset so the frozen public network fields stay byte-identical.
+   * Optional operator-supplied service display name (D-51). A boot SEED for this service's runtime
+   * settings holder, resolved from env `SERVICE_NAME` in {@link file://./demo-server.ts} exactly
+   * like the six seeds documented directly below, and runtime-editable from the operator console
+   * since D-16: this option's only consumer is the holder, and `GET /v1/config` reads the NAME back
+   * off the holder per request, which is why a rename applies without a restart.
+   *
+   * Surfaced additively on `GET /v1/config` so the operator console health strip and the public
+   * directory header can label the service. Display text only, rendered as plain auto-escaped text
+   * with no markup; omitted from the config DTO when unset so the frozen public network fields stay
+   * byte-identical.
    */
   serviceName?: string;
   /**
