@@ -355,7 +355,7 @@ Clean operator/service/aggregator framing. NO "booth" / "attendee" / "demo" / "f
 
 **Probed surfaces:** E1 lifecycle action block (Cancel / Finalize now), E2 cancel confirmation ceremony (rungs 3 and 4), E3 finalize confirmation, E4 service-controls card (pause / resume), E5 public directory paused notice, E6 draft-edit form, E7 advanced timing fields, E8 service settings surface, E9 broadcast kill switch, E10 ended-record dismissal, E11 test peers (action plus badged members), E12 canceled fate chip, ended row, and activity entries, E13 operator-actions log, E14 participant canceled narration, E15 participation-terms step, E16 chain-endpoint override, E17 PSBT registration round trip.
 
-Applicable state considerations resolved: **59 covered, 5 backstop, 23 dismissed, 1 unresolved** (86 engine-raised pairs across the 17 surfaces, every one resolved or explicitly carried; post-verification probe run reconciled 2026-07-28). The engine's one `unclassified` element (E10, the dismissal confirm) is manually classified as a confirmation panel and resolved by the confirm rows below.
+Applicable state considerations resolved: **59 covered, 6 backstop, 23 dismissed, 1 unresolved** (87 pairs across the 17 surfaces, every one resolved or explicitly carried; post-verification probe run reconciled 2026-07-28, one backstop added 2026-08-03 for the refused-seed caption on E8). The engine's one `unclassified` element (E10, the dismissal confirm) is manually classified as a confirmation panel and resolved by the confirm rows below.
 
 ### Covered (truth strings)
 
@@ -393,7 +393,7 @@ Applicable state considerations resolved: **59 covered, 5 backstop, 23 dismissed
 | error | E17 PSBT | covered | Each of the five documented validation outcomes renders its own string; broadcast stays disabled unless validation passed. |
 | populated | E4 service controls | covered | A running service renders the running state line plus `Pause advertising`; a live-broadcast service also renders `Disable broadcast`. |
 | populated | E5 paused notice | covered | With open rows the notice sits above the list and the rows keep rendering; the list is never suppressed by the notice. |
-| populated | E8 settings | covered | Every field renders its current value plus its source caption (`env default` or `changed this session (environment default: {value})`). |
+| populated | E8 settings | covered | Every field renders its current value plus one of THREE source captions: `env default`, `changed this session (environment default: {value})`, or, on a free-text field whose boot seed this service refused as too long, a bad-tone line naming the environment variable and what the refusal cost that field. |
 | populated | E11 members | covered | Test-peer members render the `Test peer` badge and line alongside ordinary members in the same list, never in a separate section. |
 | populated | E12 ended rows | covered | A canceled cohort renders the neutral `Canceled` chip in the `Ended` group with `Canceled by the operator at {time}.` |
 | populated | E13 operator log | covered | Entries render server wall-clock time plus text, tone by level, using the shipped `LogPanel`. |
@@ -430,6 +430,7 @@ Applicable state considerations resolved: **59 covered, 5 backstop, 23 dismissed
 | overflow | E15 terms body | Same container under a very long document. Backstop: the join controls stay reachable below the scrolled terms container at narrow viewport heights. |
 | long-text | E17 PSBT paste | A pasted PSBT is a long base64 blob. Backstop: pasting a large PSBT keeps the field scrolling internally and does not reflow the surrounding step. |
 | overflow | E1 lifecycle block | Cancel availability, finalize availability, and the seat-reclaim workaround note can co-occur with the funding disclosures already stacked in the drill-down. Backstop: the worst-case stack stays readable without overflow. |
+| long-text | E8 settings, refused-seed caption | The refused-seed caption is a full sentence in bad tone under a field that already carries two help lines. Backstop: at a real viewport it reads as a warning rather than as another grey caption, fits on the field it belongs to, and does not push the save control off screen. |
 
 ### Dismissed (with reasons)
 
