@@ -29,7 +29,7 @@ import {
   NOT_SIGNING_REASON,
   type OperatorCohortDTO,
 } from '../src/operator-cohorts.js';
-import { createRuntimeSettings } from '../src/runtime-settings.js';
+import { createRuntimeSettings, MAX_TERMS_CHARS, SETTINGS_BODY_LIMIT_BYTES } from '../src/runtime-settings.js';
 
 /**
  * The single home for the ROUTE-SEMANTICS matrix of every gated cohort-lifecycle route this
@@ -574,11 +574,114 @@ describe('GET and PUT /v1/operator/settings route semantics (05-07, ADR 0015)', 
     runner.stop();
   });
 
-  it('413s a body over the 4 KiB limit before it is parsed', async () => {
+  /**
+   * The EXACT body shape the console posts, built the way `settingsPatch` in
+   * `packages/web/src/components/operator/SettingsView.tsx` builds it: every field the surface
+   * renders, on every save, including the stored terms whether or not the operator touched that
+   * field. That is the deliberate all-or-nothing contract (D-12, UI-SPEC E8 `partial`) and it is
+   * the whole reason a byte budget sized for one field bites every field.
+   *
+   * The rows below assert against THIS shape rather than a minimal one on purpose: the property
+   * that matters is that the request an operator's browser actually sends is accepted, not that
+   * some smaller request is.
+   */
+  function consolePatch(termsText: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      serviceName: 'Acme Aggregation',
+      defaultBeaconType: 'CASBeacon',
+      defaultSize: 2,
+      defaultThreshold: 2,
+      defaultDiscoveryWindowMs: null,
+      defaultFundingWindowMs: null,
+      termsText,
+      ...overrides,
+    };
+  }
+
+  it('accepts a FULL console save carrying a terms document at the stored ceiling (SC3, review CR-02)', async () => {
+    // The gap, stated as a row. The holder stores 20000 characters and `docs/DEPLOY.md` advertises
+    // that it does, while the route's own 4 KiB budget refused every save once the stored terms
+    // passed roughly 3900 characters, whichever field the operator had edited.
+    //
+    // THREE assertions, because each alone passes against a wrong fix: a status check alone passes
+    // against a route that accepted the body and then dropped the field, and a stored-value check
+    // alone would not notice the 413 this row exists to end.
+    const { app, runner, settings } = lifecycleApp();
+    const cookie = await login(app);
+    const atCeiling = 'x'.repeat(MAX_TERMS_CHARS);
+
+    const res = await putSettings(app, cookie, consolePatch(atCeiling));
+    expect(res.status).not.toBe(413);
+    expect(res.status).toBe(200);
+    expect(settings.termsText.value).toHaveLength(MAX_TERMS_CHARS);
+    expect(settings.termsText.value).toBe(atCeiling);
+
+    runner.stop();
+  });
+
+  it('accepts the same save with the terms written in a three-byte-per-character script', async () => {
+    // The ANTI-VACUITY control for the derivation. Without this row a budget sized for ASCII alone
+    // satisfies every other row in this block, and the gap survives untouched for any operator who
+    // writes their own participation terms in their own language, which is the one class of
+    // operator who would ever find it. `MAX_TERMS_CHARS` bounds UTF-16 code units, so this document
+    // is exactly at the cap while costing three UTF-8 bytes per unit.
+    const { app, runner, settings } = lifecycleApp();
+    const cookie = await login(app);
+    const atCeiling = '漢'.repeat(MAX_TERMS_CHARS);
+
+    const res = await putSettings(app, cookie, consolePatch(atCeiling));
+    expect(res.status).not.toBe(413);
+    expect(res.status).toBe(200);
+    expect(settings.termsText.value).toBe(atCeiling);
+
+    runner.stop();
+  });
+
+  it('renames the service while a ceiling-length terms document is already stored', async () => {
+    // The operator's actual complaint, stated as a row: set real terms once, then come back to
+    // change something unrelated. Before the fix this second save was refused as a set, and so was
+    // every save after it, until the process restarted with shorter terms.
+    const { app, runner, settings } = lifecycleApp();
+    const cookie = await login(app);
+    const atCeiling = 'x'.repeat(MAX_TERMS_CHARS);
+    expect(settings.applySettings({ termsText: atCeiling })).toBeUndefined();
+
+    const res = await putSettings(app, cookie, consolePatch(atCeiling, { serviceName: 'Acme (maintenance)' }));
+    expect(res.status).toBe(200);
+    expect(settings.serviceName.value).toBe('Acme (maintenance)');
+    expect(settings.termsText.value).toBe(atCeiling);
+
+    runner.stop();
+  });
+
+  it("makes the holder's own terms refusal reachable over HTTP, naming the limit", async () => {
+    // The half that proves the fix did more than raise a number. One character past the cap is now
+    // answered by the FIELD's limit, carrying a sentence that names the field, the limit and
+    // therefore the remedy, instead of `request too large`, which names none of the three.
     const { app, runner, settings } = lifecycleApp();
     const cookie = await login(app);
 
-    const res = await putSettings(app, cookie, JSON.stringify({ termsText: 'x'.repeat(8 * 1024) }), true);
+    const res = await putSettings(app, cookie, consolePatch('x'.repeat(MAX_TERMS_CHARS + 1)));
+    expect(res.status).toBe(400);
+    expect((await res.json()) as { error: string }).toEqual({
+      error: `Participation terms must be ${MAX_TERMS_CHARS} characters or fewer.`,
+    });
+    expect(settings.termsText.value).toBeUndefined();
+
+    runner.stop();
+  });
+
+  it('413s a body over the derived settings limit before it is parsed', async () => {
+    // RESHAPED, not loosened (review CR-02): the exact 413 assertion and the exact nothing-was-
+    // applied assertion this row shipped with, over a body raised past the NEW boundary. The bound
+    // moved because it is now derived from the field cap; it was not removed. A body over the
+    // budget is still refused DURING streaming, before `c.req.json()` ever buffers it.
+    const { app, runner, settings } = lifecycleApp();
+    const cookie = await login(app);
+
+    const oversized = JSON.stringify({ termsText: 'x'.repeat(SETTINGS_BODY_LIMIT_BYTES + 1024) });
+    expect(oversized.length).toBeGreaterThan(SETTINGS_BODY_LIMIT_BYTES);
+    const res = await putSettings(app, cookie, oversized, true);
     expect(res.status).toBe(413);
     expect(settings.termsText.value).toBeUndefined();
 

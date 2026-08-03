@@ -39,7 +39,12 @@ import {
   type DraftInput,
   type OperatorCohorts,
 } from './operator-cohorts.js';
-import type { RuntimeSettings, SettingsPatch, SettingsSnapshot } from './runtime-settings.js';
+import {
+  SETTINGS_BODY_LIMIT_BYTES,
+  type RuntimeSettings,
+  type SettingsPatch,
+  type SettingsSnapshot,
+} from './runtime-settings.js';
 import type { AnchorState } from './anchor-state.js';
 import {
   BROADCAST_DISABLED_TEXT,
@@ -897,11 +902,22 @@ export function createHonoApp(
       app.get('/v1/operator/settings', (c) => c.json(runtimeSettings.snapshot()));
       app.put(
         '/v1/operator/settings',
-        // The SAME 4 KiB limit and 413 handler as every other gated write. It bounds the body
-        // DURING streaming, before `c.req.json()` buffers it, and layers under the holder's own
-        // explicit length caps on the two free-text fields (T-05-07-03): the terms are the one
-        // field an operator could otherwise grow without limit, on a surface they can re-save.
-        bodyLimit({ maxSize: 4 * 1024, onError: (c) => c.json({ error: 'request too large' }, 413) }),
+        // The one gated write whose budget is DERIVED rather than shared, because it is the one
+        // carrying a field with a documented character cap ({@link SETTINGS_BODY_LIMIT_BYTES},
+        // `05-VERIFICATION.md` SC3 / review CR-02). It is computed from `MAX_TERMS_CHARS` in
+        // `runtime-settings.ts`, so the FIELD's cap is what answers an over-long terms document and
+        // this route's budget is never the binding constraint on a value the holder documents as
+        // storable. The same 4 KiB constant every other gated write uses sat here before, and since
+        // the console posts the WHOLE form on every save (D-12), it refused every settings save once
+        // the stored terms passed roughly 3900 characters, well inside the 20000 the holder stores.
+        //
+        // What the route still guarantees is unchanged: an oversized body is refused DURING
+        // streaming, before `c.req.json()` buffers it, with the same 413 handler and the same body
+        // (T-05-33-02). The bound moved; it was not removed.
+        bodyLimit({
+          maxSize: SETTINGS_BODY_LIMIT_BYTES,
+          onError: (c) => c.json({ error: 'request too large' }, 413),
+        }),
         async (c) => {
           let body: unknown;
           try {

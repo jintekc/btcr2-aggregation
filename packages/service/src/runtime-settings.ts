@@ -298,7 +298,83 @@ const ONE_MINUTE_MS = 60_000;
  * caps are generous enough that no realistic name or terms document hits them.
  */
 const MAX_SERVICE_NAME_CHARS = 200;
-const MAX_TERMS_CHARS = 20_000;
+/**
+ * EXPORTED, deliberately, and deliberately alone among the two (`05-VERIFICATION.md` SC3, review
+ * CR-02). `05-31-PLAN.md` prohibited exporting either cap; that was a round-4 SCOPE FENCE (keep this
+ * module's surface still while bounding two seeds), not standing law, and it is superseded here
+ * because the route that bounds the SAME field must derive its number from this one. See
+ * {@link SETTINGS_BODY_LIMIT_BYTES}. `MAX_SERVICE_NAME_CHARS` stays module-local: nothing outside
+ * this file needs it, so the round-4 reasoning still holds for it.
+ */
+export const MAX_TERMS_CHARS = 20_000;
+
+/**
+ * The worst-case cost, in UTF-8 bytes of a JSON-encoded body, of ONE UTF-16 code unit of the terms
+ * document. Six: a control character is emitted by `JSON.stringify` as a six-character
+ * backslash-u escape, all ASCII. Every other class this field can hold is cheaper, which is what
+ * makes six the bound rather than one measurement among several:
+ *
+ * | class of character                     | code units | UTF-8 bytes | bytes per code unit |
+ * |----------------------------------------|------------|-------------|---------------------|
+ * | ordinary ASCII (`x`)                   | 1          | 1           | 1                   |
+ * | escaped quote, backslash, newline, tab | 1          | 2           | 2                   |
+ * | two-byte script (`é`)                  | 1          | 2           | 2                   |
+ * | three-byte script (`漢`)               | 1          | 3           | 3                   |
+ * | surrogate pair (`𝄞`, an emoji)         | 2          | 4           | 2                   |
+ * | control character (`U+0001`)           | 1          | 6           | 6                   |
+ *
+ * `String.prototype.length` counts UTF-16 code units, which is the unit {@link MAX_TERMS_CHARS}
+ * bounds, so the multiplier has to be per CODE UNIT and not per rendered character. That is why the
+ * surrogate row costs two rather than four: four bytes spread across two code units.
+ */
+const WORST_CASE_TERMS_BYTES_PER_CODE_UNIT = 6;
+
+/**
+ * Fixed headroom for the rest of the settings patch and its JSON punctuation. The whole non-terms
+ * body the console posts measures 184 bytes today (six short fields, all of them numbers, an enum
+ * or a 200-character name), so this is roughly twenty times what it needs. That slack is the right
+ * shape for a field set that cannot grow without a code change, and it is the reason this number
+ * may be round while the multiplier above may not.
+ */
+const SETTINGS_BODY_HEADROOM_BYTES = 4096;
+
+/**
+ * The byte budget the gated `PUT /v1/operator/settings` route streams under, DERIVED from
+ * {@link MAX_TERMS_CHARS} rather than chosen.
+ *
+ * THE DEFECT IT CLOSES (`05-VERIFICATION.md` SC3 / Gap 1, review CR-02). That route bounded the
+ * same field this holder bounds, using a number derived from nothing (4 KiB, the value every other
+ * gated write happens to use), and it was roughly five times smaller than what the field can hold.
+ * The console posts the WHOLE form on every save by design (D-12, UI-SPEC E8 `partial`: the service
+ * judges k against the n in the same patch), so the stored terms ride on a save of ANY field. The
+ * measured consequence, byte-exact against the real patch shape: a stored terms document of 3900
+ * characters made a 4084 byte body and saved; 4000 characters made a 4184 byte body and was refused
+ * 413; the 20000 character ceiling {@link textKnob} stores and `docs/DEPLOY.md` advertises made a
+ * 20184 byte body and was refused too. An operator who set a genuine 5000 character participation
+ * document through `TERMS_TEXT` therefore lost their entire settings surface until restart, behind
+ * `request too large`, a sentence naming no field, no limit and no remedy. The holder's own
+ * carefully worded terms refusal was unreachable over HTTP.
+ *
+ * WHY DERIVED AND NOT CHOSEN. The rule this constant exists to hold: a limit that governs a field
+ * belongs to that field, derived once, at the place the field is defined, and any other layer that
+ * has to bound the same thing derives its number from that one. A number nobody derived may never
+ * be the thing that answers.
+ *
+ * WHY NOT THE SMALLER MULTIPLIER THE REVIEW SUGGESTED. `MAX_TERMS_CHARS * 2 + 4096` is 44096 bytes,
+ * which fixes ASCII and fixes surrogate pairs and still REFUSES a terms document written in a
+ * three-byte-per-character script AT the cap. Measured at the 20000 character ceiling: ASCII is a
+ * 20184 byte body, surrogate pairs are 40184, a three-byte script is 60184. Shipping the doubling
+ * would have left this gap open for any operator writing their own terms in their own language, and
+ * left it open in exactly its original form, a number chosen rather than derived from what it has
+ * to carry. See {@link WORST_CASE_TERMS_BYTES_PER_CODE_UNIT} for the derivation this takes instead.
+ *
+ * WHAT IT IS NOT. It is not a removal of the request-size bound (T-05-33-02). The route still
+ * refuses an oversized body DURING streaming, before `c.req.json()` buffers it, and still answers
+ * 413. Only the number moved, and the result (124096 bytes, roughly 121 KiB) sits well inside the
+ * range this service already accepts on other routes, which run from 4 KiB to 512 KiB.
+ */
+export const SETTINGS_BODY_LIMIT_BYTES =
+  MAX_TERMS_CHARS * WORST_CASE_TERMS_BYTES_PER_CODE_UNIT + SETTINGS_BODY_HEADROOM_BYTES;
 
 /** Built-in fallbacks, used only when a seed is absent or malformed. */
 const BUILT_IN_BEACON_TYPE: BeaconType = 'CASBeacon';

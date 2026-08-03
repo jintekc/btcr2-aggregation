@@ -15,7 +15,9 @@ import {
 } from '../src/operator-cohorts.js';
 import {
   createRuntimeSettings,
+  MAX_TERMS_CHARS,
   numericKnob,
+  SETTINGS_BODY_LIMIT_BYTES,
   type RuntimeSettings,
   type RuntimeSettingsSeed,
 } from '../src/runtime-settings.js';
@@ -659,11 +661,15 @@ describe('service defaults are read ONCE at createDraft time and never re-read (
 const MINUTE_MS = 60_000;
 
 /**
- * The two free-text ceilings, retyped here by the same convention {@link MINUTE_MS} uses rather
- * than imported: the module keeps them private, and the spec states the numbers it asserts on.
+ * The service-name ceiling, retyped here by the same convention {@link MINUTE_MS} uses rather than
+ * imported: the module keeps it private, and the spec states the number it asserts on.
+ *
+ * `MAX_TERMS_CHARS` used to sit beside it under that same convention and is now IMPORTED instead
+ * (review CR-02): the module exports it, because the gated settings route's byte budget is derived
+ * from it, so retyping it here would leave two numbers that can drift apart while every test using
+ * either one stays green.
  */
 const MAX_SERVICE_NAME_CHARS = 200;
-const MAX_TERMS_CHARS = 20_000;
 
 /**
  * THE INVARIANT (`05-VERIFICATION.md` W3, review WR-2 and WR-3): no value this holder ACCEPTS at
@@ -1103,6 +1109,86 @@ describe('no free-text seed the holder ACCEPTS is a value it would REFUSE (SC3, 
     expect(warnings).toEqual([]);
     expect(settings.serviceName.value).toBeUndefined();
     expect(settings.termsText.value).toBeUndefined();
+  });
+});
+
+/**
+ * The DERIVATION behind the gated settings route's byte budget (`05-VERIFICATION.md` SC3, review
+ * CR-02), stated as a property over what the field can actually carry.
+ *
+ * The rows below MEASURE. A row that recomputed the arithmetic from the same two constants would
+ * pass against any multiplier at all and prove nothing, which is precisely how the shipped defect
+ * survived: `runtime-settings.spec.ts` proved this holder's character cap thoroughly,
+ * `lifecycle-routes.spec.ts` proved the route's byte cap thoroughly, the two specs never met, and a
+ * five times disagreement between them passed a 1234 test gate with both halves green.
+ *
+ * The general lesson, worth carrying past this phase: when two layers bound the same value, the
+ * test that matters is the one that sends the LARGEST legal value through BOTH.
+ */
+describe('the settings body budget bounds every encoding a terms document at the cap can have', () => {
+  /**
+   * The five encoding classes {@link MAX_TERMS_CHARS} code units can be made of, each built to sit
+   * EXACTLY at the cap so the measurement is of the largest legal value rather than a convenient
+   * one. The surrogate row repeats half as many times because one pair is two code units.
+   */
+  const ENCODING_CLASSES: readonly { readonly what: string; readonly terms: string }[] = [
+    { what: 'plain ASCII', terms: 'x'.repeat(MAX_TERMS_CHARS) },
+    { what: 'a two-byte script', terms: 'é'.repeat(MAX_TERMS_CHARS) },
+    { what: 'a three-byte script', terms: '漢'.repeat(MAX_TERMS_CHARS) },
+    { what: 'surrogate pairs', terms: '𝄞'.repeat(MAX_TERMS_CHARS / 2) },
+    // The last row is spelled as an escape rather than pasted: it is the class that costs six bytes
+    // per code unit, so it is the class the multiplier is derived from and it has to be readable.
+    { what: 'escape-forcing control characters', terms: '\u0001'.repeat(MAX_TERMS_CHARS) },
+  ];
+
+  /** The full console-shaped patch, so the measurement includes the rest of the form (D-12). */
+  function encodedBodyBytes(terms: string): number {
+    const body = JSON.stringify({
+      serviceName: 'x'.repeat(MAX_SERVICE_NAME_CHARS),
+      defaultBeaconType: 'CASBeacon',
+      defaultSize: 2,
+      defaultThreshold: 2,
+      defaultDiscoveryWindowMs: 1_800_000,
+      defaultFundingWindowMs: 720_000,
+      termsText: terms,
+    });
+    return new TextEncoder().encode(body).length;
+  }
+
+  for (const row of ENCODING_CLASSES) {
+    it(`fits a terms document at the cap written in ${row.what}`, () => {
+      expect(row.terms).toHaveLength(MAX_TERMS_CHARS);
+      expect(SETTINGS_BODY_LIMIT_BYTES).toBeGreaterThanOrEqual(encodedBodyBytes(row.terms));
+    });
+  }
+
+  it('bounds the worst case across EVERY class at once, as a property', () => {
+    // Class by class, a missed encoding only fails its own row. As a property over the whole set it
+    // fails for any class somebody adds later, which is the drift this block exists to stop.
+    for (const row of ENCODING_CLASSES) {
+      expect(SETTINGS_BODY_LIMIT_BYTES).toBeGreaterThanOrEqual(encodedBodyBytes(row.terms));
+    }
+  });
+
+  it('is not vacuously large: the doubling the review suggested would have failed a real class', () => {
+    // The anti-vacuity control for the derivation itself. `MAX_TERMS_CHARS * 2 + 4096` is 44096
+    // bytes, which fits ASCII and fits surrogate pairs and REFUSES a three-byte script AT the cap.
+    // Without this row the block above would pass just as happily against the smaller multiplier,
+    // and the gap would have survived for exactly the operators who write their own terms in their
+    // own language. It also proves the budget bounds something: a limit that fit every class with
+    // room to spare for a reason nobody stated would be the original defect facing the other way.
+    const suggested = MAX_TERMS_CHARS * 2 + 4096;
+    const threeByteBytes = encodedBodyBytes('漢'.repeat(MAX_TERMS_CHARS));
+    expect(threeByteBytes).toBeGreaterThan(suggested);
+    expect(SETTINGS_BODY_LIMIT_BYTES).toBeGreaterThanOrEqual(threeByteBytes);
+  });
+
+  it('stays inside the range this service already accepts on its other routes', () => {
+    // The bound MOVED, it was not removed (T-05-33-02). The largest limit any other route in
+    // `hono-adapter.ts` carries is 512 KiB, so a budget at or under that keeps the request-size
+    // denial-of-service property the original 4 KiB comment claimed.
+    expect(SETTINGS_BODY_LIMIT_BYTES).toBeLessThanOrEqual(512 * 1024);
+    expect(SETTINGS_BODY_LIMIT_BYTES).toBeGreaterThan(4 * 1024);
   });
 });
 
