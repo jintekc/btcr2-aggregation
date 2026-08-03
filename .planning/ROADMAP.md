@@ -196,7 +196,7 @@ Plans:
 
 **Slip order** (CONTEXT D-22, three tiers): CORE never slips - SVC-04 lifecycle control (plans 01 through 07 and 10). SECOND - the four absorbed parked items (plans 08 and 09). SLIP-FIRST - the three folded scoping one-pagers (plans 11, 12, and 13), which re-park cleanly to Phase 6 or the next milestone if the phase runs long.
 
-**Plans**: 38/38 plans executed
+**Plans**: 41 plans (38 executed; 05-39 through 05-41 planned 2026-08-03 as the seventh gap round)
 Plans:
 **Wave 1**
 
@@ -357,6 +357,20 @@ Note on the `depends_on` chain: 05-22 through 05-26 each declare the previous pl
 **Gap round 6, wave 3** *(serialized behind 05-37)*
 
 - [x] 05-38-PLAN.md - The settings body budget is derived from every field it carries, the deploy document and the option docstring match shipped behavior, and the traceability table matches this phase's status (SVC-04/SVC-05, review IN-06/IN-08 plus the REQUIREMENTS correction, wave 3)
+
+**Seventh gap round** (planned 2026-08-03 from `05-REVIEW.md`, the round-6 re-review, read with `05-VERIFICATION.md` pass 7: 7 of 7 Success Criteria verified at code level, `gaps: []`, `status: human_needed`, with a seventh round explicitly recommended before `/gsd-secure-phase 5` or milestone completion; run with `/gsd-execute-phase 5 --gaps-only`). Like round 6 this round is driven by the review's new findings rather than by a failed criterion. Owner-approved scope is the FULL SWEEP, exactly nine items: critical CR-03 (a `probe` that discovers a session has ended neither retires its round nor clears the gated slice, so the next sign-in inherits the dead session's cohort list, health chip, operator log, drill-down document and settings latch), warnings WR-11 (a pre-await status snapshot lets two overlapping probes both bump the round, routine under the app's own StrictMode dev configuration) and WR-12 (`advertise` and `readvertise` collapse a 401 and a 409 into one generic retry line, breaking the D-16 one-honest-re-login rule on the console's two most-used buttons), and the info findings IN-09 through IN-14. Waves restart at 1 and are SINGLETONS for the same reason as rounds 2 through 6: each plan deliberately puts the tree into a RED state (a failing row written before its fix, and a revert-the-fix mutation check afterwards) and each ends by running its own suite, so two plans in one wave would read each other's transiently broken tree. 05-40 additionally has a genuine file dependency on 05-39 (both amend the session-expiry paths in `stores/operator.ts` and both add rows to `tests/operator.spec.ts`); 05-41 is the only plan that touches `packages/service` and runs `pnpm e2e:gate` once for the round, which also covers the two web plans serialized ahead of it. `REQUIREMENTS.md` is deliberately untouched this round: all four Phase 5 rows already read `Gaps Found`.
+
+**Gap round 7, wave 1**
+
+- [ ] 05-39-PLAN.md - Ending a session is one act with one implementation, and the path that discovers a dead session without a 401 calls it (SVC-04, review CR-03/WR-11/IN-11, wave 1)
+
+**Gap round 7, wave 2** *(serialized behind 05-39; also a genuine file dependency on it)*
+
+- [ ] 05-40-PLAN.md - Both advertise verbs discriminate a 401 and a 409 like every other gated verb, and one shared comparison decides whether an answer still belongs to the session that asked (SVC-04, review WR-12/IN-09/IN-10, wave 2)
+
+**Gap round 7, wave 3** *(serialized behind 05-40)*
+
+- [ ] 05-41-PLAN.md - A refused boot seed reads the same way in the boot output, the console and the deploy document, and both descriptions of the settings budget describe the budget that shipped (SVC-04/SVC-05, review IN-13/IN-12/IN-14, wave 3)
 
 **UI hint**: yes
 
