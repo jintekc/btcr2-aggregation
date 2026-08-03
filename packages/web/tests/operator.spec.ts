@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fetchCohortDetail, type CohortDetailDTO } from '../src/lib/operator';
+import { fetchCohortDetail, type CohortDetailDTO, type OperatorCohortsDTO } from '../src/lib/operator';
 import {
   useOperator,
   actionFailedWith,
@@ -396,6 +396,185 @@ describe('operator store health (served broadcast mode, D-17/D-43)', () => {
     expect(useOperator.getState().health).toBeUndefined();
     expect(useOperator.getState().auth).toBe('logged-out');
     expect(useOperator.getState().error).toBe(SESSION_EXPIRED);
+  });
+});
+
+/**
+ * The concurrent LIST-read race (`05-VERIFICATION.md` W5, review WR-01).
+ *
+ * Round 3 gave `pollDetail` a round guard and left `refreshCohorts` without one, so the list read
+ * wrote `cohorts`, `rows`, `metrics`, `health`, `operatorActions`, `defaults` and the freshness pair
+ * with no re-check that the session that ASKED is still the session that is running.
+ *
+ * The window is ordinary, not exotic: `OperatorConsole.tsx` polls the list every 4000 ms and
+ * `lib/operator.ts` gives each read an 8000 ms timeout, so two reads are routinely in flight at
+ * once. If the fast one 401s and the slow one succeeds, `expireSession` runs first and the late ok
+ * write puts the whole gated slice back, including the broadcast-mode chip, which is a claim about
+ * whether this service can move money. `signOut` has the identical exposure.
+ *
+ * `pollDetail` is only INCIDENTALLY immune: `expireSession` sets `view` back to the list, and its
+ * cohort-keyed guard rejects on that. Closing the asymmetry is the point of this block.
+ */
+describe('operator store refreshCohorts concurrency (W5: a list answer belongs to ONE session)', () => {
+  beforeEach(resetStore);
+
+  /** A promise plus its settle handles, so a row controls exactly WHEN an answer lands. */
+  function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
+    let resolve!: (v: T) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  /**
+   * Answer the list read PER CALL, in staged order, so the settle ORDER is the thing under test
+   * rather than a property of the runner. Nothing here uses a timer, for the same reason the
+   * drill-down race block above uses none.
+   *
+   * The logout POST is answered separately so a `signOut` row does not consume a staged list
+   * answer, which would silently shift every later read onto the wrong promise.
+   */
+  function stubListQueue(answers: Array<Promise<Response>>): void {
+    let next = 0;
+    vi.stubGlobal('fetch', (input: unknown) => {
+      const url = String(input);
+      if (url.endsWith('/v1/operator/logout')) {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      const staged = answers[next];
+      next += 1;
+      if (!staged) {
+        return Promise.reject(new Error(`no staged answer for list read #${next}`));
+      }
+      return staged;
+    });
+  }
+
+  /**
+   * A visibly non-empty served body: every field the ok branch writes is present and distinct from
+   * the cleared post-expiry state, so an assertion cannot pass by coincidence.
+   */
+  const POPULATED: OperatorCohortsDTO = {
+    cohorts: [
+      {
+        draftId: 'draft-1',
+        beaconType: 'CASBeacon',
+        network: 'regtest',
+        threshold: 2,
+        capacity: 3,
+        joined: 1,
+        state: 'advertised',
+      },
+    ],
+    monitoring: {
+      rows: [{ cohortId: 'cohort-1', chip: 'filling', seatsJoined: 1, capacity: 3, phase: 'CollectingUpdates' }],
+      metrics: { open: 1, inFlight: 0, anchored: 0, failed: 0 },
+      health: { mode: 'live', esploraReachable: true, paused: false },
+      operatorActions: [{ id: 1, t: 5, level: 'info', text: 'advertised cohort-1' }],
+    },
+    defaults: { discoveryWindowMs: 600_000, fundingWindowMs: 900_000 },
+  };
+
+  /** An ok list response carrying {@link POPULATED}. */
+  function okList(): Response {
+    return new Response(JSON.stringify(POPULATED), { status: 200 });
+  }
+
+  /**
+   * Seed the gated slice `resetStore` does not touch, so each row asserts against emptiness it set
+   * for itself rather than emptiness inherited from whatever ran before it.
+   */
+  function seedEmptySlice(auth: 'logged-in' | 'logged-out'): void {
+    useOperator.setState({
+      auth,
+      error: undefined,
+      cohorts: [],
+      rows: [],
+      metrics: undefined,
+      health: undefined,
+      operatorActions: [],
+      defaults: undefined,
+      listStale: false,
+      lastUpdated: undefined,
+    });
+  }
+
+  /**
+   * The reproduced race: two reads started while signed in, the FIRST answering 401 and the SECOND
+   * answering ok, settled in that order. Returns both so a row can await them.
+   */
+  function stageExpiryRace(): { fast: ReturnType<typeof deferred<Response>>; slow: ReturnType<typeof deferred<Response>>; first: Promise<void>; second: Promise<void> } {
+    const fast = deferred<Response>();
+    const slow = deferred<Response>();
+    stubListQueue([fast.promise, slow.promise]);
+    seedEmptySlice('logged-in');
+    const first = useOperator.getState().refreshCohorts(BASE);
+    const second = useOperator.getState().refreshCohorts(BASE);
+    return { fast, slow, first, second };
+  }
+
+  it('discards a list answer that outlived the session that asked it (fast 401, slow ok)', async () => {
+    const { fast, slow, first, second } = stageExpiryRace();
+
+    fast.resolve(new Response('no', { status: 401 }));
+    await first;
+    expect(useOperator.getState().auth).toBe('logged-out');
+
+    // The slow read's answer lands LAST, which is the whole race.
+    slow.resolve(okList());
+    await second;
+
+    const s = useOperator.getState();
+    // Several fields, not one: a fix that guarded the list and left the health strip writable
+    // would repaint the broadcast-mode chip and still pass a single-field assertion.
+    expect(s.cohorts).toEqual([]);
+    expect(s.rows).toEqual([]);
+    expect(s.metrics).toBeUndefined();
+    expect(s.health).toBeUndefined();
+    expect(s.operatorActions).toEqual([]);
+    expect(s.defaults).toBeUndefined();
+    expect(s.auth).toBe('logged-out');
+    expect(s.error).toBe(SESSION_EXPIRED);
+  });
+
+  it('leaves the freshness pair exactly as the expiry left it, so no dead session earns a stamp', async () => {
+    const { fast, slow, first, second } = stageExpiryRace();
+
+    fast.resolve(new Response('no', { status: 401 }));
+    await first;
+    expect(useOperator.getState().listStale).toBe(false);
+    expect(useOperator.getState().lastUpdated).toBeUndefined();
+
+    slow.resolve(okList());
+    await second;
+
+    const s = useOperator.getState();
+    // Asserted explicitly rather than inferred from the cleared list: the freshness pair is what
+    // the health strip renders, and a stamp the current session never earned is its own lie.
+    expect(s.listStale).toBe(false);
+    expect(s.lastUpdated).toBeUndefined();
+  });
+
+  it('still writes everything a live-session read always wrote, so the guard did not disable the poll', async () => {
+    stubListQueue([Promise.resolve(okList())]);
+    seedEmptySlice('logged-in');
+    // Stale first, so clearing the banner is proven rather than inherited.
+    useOperator.setState({ listStale: true });
+
+    await useOperator.getState().refreshCohorts(BASE);
+
+    const s = useOperator.getState();
+    expect(s.cohorts).toEqual(POPULATED.cohorts);
+    expect(s.rows).toEqual(POPULATED.monitoring?.rows);
+    expect(s.metrics).toEqual(POPULATED.monitoring?.metrics);
+    expect(s.health).toEqual(POPULATED.monitoring?.health);
+    expect(s.operatorActions).toEqual(POPULATED.monitoring?.operatorActions);
+    expect(s.defaults).toEqual(POPULATED.defaults);
+    expect(s.listStale).toBe(false);
+    expect(typeof s.lastUpdated).toBe('number');
   });
 });
 
