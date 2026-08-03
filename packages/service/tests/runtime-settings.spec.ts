@@ -659,6 +659,13 @@ describe('service defaults are read ONCE at createDraft time and never re-read (
 const MINUTE_MS = 60_000;
 
 /**
+ * The two free-text ceilings, retyped here by the same convention {@link MINUTE_MS} uses rather
+ * than imported: the module keeps them private, and the spec states the numbers it asserts on.
+ */
+const MAX_SERVICE_NAME_CHARS = 200;
+const MAX_TERMS_CHARS = 20_000;
+
+/**
  * THE INVARIANT (`05-VERIFICATION.md` W3, review WR-2 and WR-3): no value this holder ACCEPTS at
  * boot may be a value its own {@link RuntimeSettings.applySettings} would REFUSE.
  *
@@ -915,6 +922,119 @@ describe('the DERIVED boot seeds reach the same defect, and the holder-level fix
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+/**
+ * THE FREE-TEXT half of the same invariant (`05-VERIFICATION.md` Gap 1 / SC3, review CR-01), which
+ * the numeric half above stated generically and enforced for numbers only.
+ *
+ * `applySettings` bounds the stored service name at {@link MAX_SERVICE_NAME_CHARS} and the stored
+ * terms at {@link MAX_TERMS_CHARS}, and it re-reads the STORED value for every key a patch OMITS.
+ * The two seeds carried no bound at all, so an over-long one did not fail its own field: it failed
+ * every later save AS A SET, behind a sentence naming a field the operator never touched, until the
+ * process restarted. `TERMS_TEXT` is the realistic trigger rather than a typo, because 20000
+ * characters is roughly 3500 words and SVC-05 exists precisely so an operator can set a real
+ * participation-terms document.
+ *
+ * The first row boots a REAL service, following the two blocks above: a bare holder call proves the
+ * bound works, while a boot proves the bound sits on the path `demo-server.ts` actually feeds, which
+ * is where the defect lived.
+ */
+describe('no free-text seed the holder ACCEPTS is a value it would REFUSE (SC3, review CR-01)', () => {
+  /**
+   * Boot a real service and read its holder back through the service handle's own `settings`.
+   * Nothing binds a port and nothing is mocked: the holder is built during `createService` itself.
+   */
+  async function withBootedService(
+    opts: { serviceName?: string; termsText?: string },
+    body: (settings: ReturnType<typeof createService>['settings']) => void,
+  ): Promise<void> {
+    const service = createService({
+      identity: createIdentity(resolveNetwork('signet')),
+      config: buildCohortConfig(2, 'CASBeacon', 'signet'),
+      ...opts,
+    });
+    try {
+      body(service.settings);
+    } finally {
+      await service.stop();
+    }
+  }
+
+  it('drops an over-long TERMS_TEXT at a real boot, warns, and leaves the settings surface usable', async () => {
+    // Three assertions in ONE row on purpose: each alone passes against a wrong fix. Storing
+    // nothing is satisfied by a holder that drops every terms value; warning is satisfied by a
+    // holder that warns and stores the over-long text anyway; and the rename-only save is the exact
+    // operator experience the defect ruins, which neither of the other two proves on its own.
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await withBootedService({ termsText: 'x'.repeat(100_000) }, (settings) => {
+        expect(settings.termsText.value).toBeUndefined();
+
+        const termsWarnings = spy.mock.calls.map((call) => String(call[0])).filter((line) => /TERMS_TEXT/.test(line));
+        expect(termsWarnings).toHaveLength(1);
+        expect(termsWarnings[0]).toMatch(/\[settings\]/);
+        expect(termsWarnings[0]).toMatch(/100000/);
+        expect(termsWarnings[0]).toMatch(String(MAX_TERMS_CHARS));
+        // The CONSEQUENCE in words. A warning that discloses a drop without saying what the drop
+        // costs is the silent acceptance this row exists to end: with no terms stored, the join
+        // flow has no terms step at all, and the operator would otherwise learn that from a
+        // participant rather than from their own boot output.
+        expect(termsWarnings[0]).toMatch(/no terms step/);
+
+        expect(settings.applySettings({ serviceName: 'renamed' })).toBeUndefined();
+        expect(settings.serviceName.value).toBe('renamed');
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('stores a terms document AT the ceiling exactly, unchanged and silently', () => {
+    // The anti-vacuity control for the whole block. Without it a helper that dropped EVERY terms
+    // value would satisfy the row above just as happily as one that bounds them.
+    const atCeiling = 'x'.repeat(MAX_TERMS_CHARS);
+    const { warnings, warn } = withWarnings();
+    const settings = createRuntimeSettings({ termsText: atCeiling, warn });
+    expect(warnings).toEqual([]);
+    expect(settings.termsText.value).toBe(atCeiling);
+    expect(settings.termsText.envDefault).toBe(atCeiling);
+    expect(settings.termsText.changed).toBe(false);
+  });
+
+  it('stores a service name AT the ceiling exactly, unchanged and silently', () => {
+    const atCeiling = 'x'.repeat(MAX_SERVICE_NAME_CHARS);
+    const { warnings, warn } = withWarnings();
+    const settings = createRuntimeSettings({ serviceName: atCeiling, warn });
+    expect(warnings).toEqual([]);
+    expect(settings.serviceName.value).toBe(atCeiling);
+  });
+
+  it('warns about BOTH over-long seeds separately, so an operator who set both is told about both', () => {
+    // One combined line would leave an operator who set both believing they had one problem.
+    const { warnings, warn } = withWarnings();
+    const settings = createRuntimeSettings({
+      serviceName: 'x'.repeat(5_000),
+      termsText: 'x'.repeat(100_000),
+      warn,
+    });
+    expect(warnings).toHaveLength(2);
+    expect(warnings.filter((line) => /SERVICE_NAME/.test(line))).toHaveLength(1);
+    expect(warnings.filter((line) => /TERMS_TEXT/.test(line))).toHaveLength(1);
+    expect(settings.serviceName.value).toBeUndefined();
+    expect(settings.termsText.value).toBeUndefined();
+  });
+
+  it('keeps the empty-collapses-to-undefined behavior the seeds already had', () => {
+    // The bound is ADDED to the existing trim, never a replacement for it: an empty or
+    // whitespace-only seed must still collapse to undefined so the DTOs that carry these two
+    // fields stay additive rather than gaining an empty key.
+    const { warnings, warn } = withWarnings();
+    const settings = createRuntimeSettings({ serviceName: '   ', termsText: '\n\t ', warn });
+    expect(warnings).toEqual([]);
+    expect(settings.serviceName.value).toBeUndefined();
+    expect(settings.termsText.value).toBeUndefined();
   });
 });
 

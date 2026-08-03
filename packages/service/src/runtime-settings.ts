@@ -74,14 +74,21 @@ import {
  * one implementation rather than a second copy: a guard that exists twice is a guard that can be
  * fixed once. `demo-server.ts` imports it from here for its own boot knobs.
  *
- * THE INVARIANT `requireInteger` EXISTS FOR (`05-VERIFICATION.md` W3, review WR-2). No seed this
- * holder ACCEPTS may be a value {@link RuntimeSettings.applySettings} would REFUSE. That is not a
- * tidiness rule, it is the difference between a usable settings surface and a wedged one:
- * `applySettings` re-reads the STORED value for every key a patch OMITS and validates it with
- * `Number.isInteger`, so an accepted-but-invalid seed does not fail its own field. It fails every
- * later save AS A SET, including a save of a field the operator did touch, behind a message naming
- * a field they never set, until the service is restarted. `createDraft` is wedged the same way,
- * because a draft's absent size is filled from the stored default and `validateDraft` refuses it.
+ * THE INVARIANT `requireInteger` EXISTS FOR (`05-VERIFICATION.md` W3 and Gap 1 / SC3, review WR-2
+ * and CR-01). The rule is the HOLDER'S and it covers every field the holder stores, not the numeric
+ * ones: no seed this holder ACCEPTS may be a value {@link RuntimeSettings.applySettings} would
+ * REFUSE. That is not a tidiness rule, it is the difference between a usable settings surface and a
+ * wedged one: `applySettings` re-reads the STORED value for every key a patch OMITS and revalidates
+ * it, so an accepted-but-invalid seed does not fail its own field. It fails every later save AS A
+ * SET, including a save of a field the operator did touch, behind a message naming a field they
+ * never set, until the service is restarted. `createDraft` is wedged the same way, because a
+ * draft's absent size is filled from the stored default and `validateDraft` refuses it.
+ *
+ * `requireInteger` is how the NUMERIC seeds keep that rule; {@link textKnob} is how the two
+ * FREE-TEXT seeds keep it. Stating the rule generically while enforcing it for numbers only is
+ * exactly how a 100000 character `TERMS_TEXT` seed passed a green gate: it is a realistic
+ * participation-terms document rather than a typo, and it wedged capacity, threshold, beacon type
+ * and the display name along with itself, silently, until restart.
  *
  * The check is OPT-IN and defaults OFF so every existing call site resolves byte-identically:
  * `PORT` in particular passes a minimum of 0 and must keep accepting an ephemeral-port request,
@@ -303,6 +310,63 @@ function trimToUndefined(value: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
+/**
+ * Parse a free-text boot knob into a stored value at or below `maximum` characters, warning loudly
+ * and falling back to `undefined` on anything longer. The string counterpart of
+ * {@link numericKnob}, and named to say so: the two are one rule applied to the two kinds of seed
+ * this holder takes.
+ *
+ * THE INVARIANT IT SERVES (`05-VERIFICATION.md` Gap 1 / SC3, review CR-01). No seed this holder
+ * ACCEPTS may be a value {@link RuntimeSettings.applySettings} would REFUSE. These two fields were
+ * the half of that rule nothing enforced: the seeds trimmed and stored whatever length they were
+ * handed, while `applySettings` bounds both. Because `applySettings` re-reads the STORED value for
+ * every key a patch OMITS, an over-long seed does not fail its own field. It fails every later save
+ * AS A SET, behind a sentence naming a field the operator never touched, until the service is
+ * restarted, which takes out capacity, threshold, beacon type and the display name along with it.
+ *
+ * WHY IT DROPS RATHER THAN TRUNCATES. A truncated participation-terms document is a document
+ * participants would DID-sign in mutilated form (SVC-05), which is a worse failure than serving
+ * none: the acceptance record binds the HASH of the exact text that was shown, so a silent
+ * truncation would produce signed acceptances of a document the operator never wrote. Dropping also
+ * leaves the console's own settings surface showing the field empty, which is an honest report of
+ * what this service actually holds.
+ *
+ * WHAT DROPPING COSTS, which is why the caller passes a `consequence` clause rather than letting
+ * one generic sentence cover both fields. The fallback is not neutral for the terms: with none
+ * stored, the join flow has no terms step AT ALL (SVC-05, D-19), so the warning says that in words
+ * instead of leaving the operator to discover it from a participant.
+ *
+ * WHY IT WARNS AND CARRIES ON rather than aborting the boot. That is the posture every other
+ * out-of-range seed in this file already takes (the malformed numerics above, the unknown beacon
+ * type, the k greater than n threshold, the over-ceiling clamp below): refusing would turn one long
+ * paste in a stranger's env file into a crash loop on the path this product's core value depends
+ * on.
+ *
+ * Trimming runs FIRST, through {@link trimToUndefined}, so the empty-collapses-to-undefined
+ * behavior these two fields already had is unchanged and stays defined in one place. The bound is
+ * added to that idiom, never a replacement for it.
+ */
+function textKnob(
+  name: string,
+  raw: string | undefined,
+  maximum: number,
+  warn: (message: string) => void,
+  consequence: string,
+): string | undefined {
+  const trimmed = trimToUndefined(raw);
+  if (trimmed !== undefined && trimmed.length > maximum) {
+    // The supplied length, the stored ceiling, and what the fallback costs. The env var is named
+    // rather than the internal field because that is the thing the operator can act on, which is
+    // the same rule the window warnings below follow.
+    warn(
+      `ignoring ${name}: ${trimmed.length} characters exceeds the ${maximum} character maximum ` +
+        `this service stores; ${consequence}`,
+    );
+    return undefined;
+  }
+  return trimmed;
+}
+
 /** The internal mutable record behind one {@link SettingField}. */
 interface FieldState<T> {
   value: T;
@@ -464,13 +528,34 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
   // could have quantized it in passing.
   const resolvedFundingWindowMs = floorToWholeMinute('defaultFundingWindowMs', seededFundingWindowMs);
 
-  const serviceName: FieldState<string | undefined> = field(trimToUndefined(seed.serviceName));
+  // The two free-text seeds run through {@link textKnob} for the same reason every numeric seed
+  // runs through {@link numericKnob}: a seed this holder accepts must never be a value its own
+  // `applySettings` would refuse. The env var is named because that is what an operator can act on;
+  // the holder is constructible programmatically too, but its programmatic caller is `createService`
+  // and `demo-server.ts` fills that call from exactly these variables.
+  const serviceName: FieldState<string | undefined> = field(
+    textKnob(
+      'SERVICE_NAME',
+      seed.serviceName,
+      MAX_SERVICE_NAME_CHARS,
+      warn,
+      'the display name is left unset until the value is shortened',
+    ),
+  );
   const defaultBeaconType: FieldState<BeaconType> = field(seededBeaconType);
   const defaultSize: FieldState<number> = field(seededSize);
   const defaultThreshold: FieldState<number> = field(seededThreshold);
   const defaultDiscoveryWindowMs: FieldState<number | undefined> = field(resolvedDiscoveryWindowMs);
   const defaultFundingWindowMs: FieldState<number | undefined> = field(resolvedFundingWindowMs);
-  const termsText: FieldState<string | undefined> = field(trimToUndefined(seed.termsText));
+  const termsText: FieldState<string | undefined> = field(
+    textKnob(
+      'TERMS_TEXT',
+      seed.termsText,
+      MAX_TERMS_CHARS,
+      warn,
+      'the terms are left unset, so the join flow has no terms step at all until the value is shortened',
+    ),
+  );
 
   /** A field whose current value and boot value start out identical. */
   function field<T>(value: T): FieldState<T> {
