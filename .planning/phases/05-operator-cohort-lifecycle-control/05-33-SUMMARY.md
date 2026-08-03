@@ -231,7 +231,7 @@ The plan's deliberate, pre-declared divergence from the review's suggested const
 
 ## Issues Encountered
 
-- The escape-forcing encoding class was first written with a pasted raw `U+0001` byte in the spec source rather than the `` escape. Caught by reading the file back through `cat -A`, rewritten as an explicit escape with a comment saying why it must be readable in source. No behavior difference; the test measures the same string either way.
+- The escape-forcing encoding class was first written with a pasted raw `U+0001` byte in the spec source rather than the `\u0001` escape. Caught by reading the file back through `cat -A`, rewritten as an explicit escape with a comment saying why it must be readable in source. No behavior difference; the test measures the same string either way.
 
 ## Known Stubs
 
