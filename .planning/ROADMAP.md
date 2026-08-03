@@ -196,7 +196,7 @@ Plans:
 
 **Slip order** (CONTEXT D-22, three tiers): CORE never slips - SVC-04 lifecycle control (plans 01 through 07 and 10). SECOND - the four absorbed parked items (plans 08 and 09). SLIP-FIRST - the three folded scoping one-pagers (plans 11, 12, and 13), which re-park cleanly to Phase 6 or the next milestone if the phase runs long.
 
-**Plans**: 30/30 plans executed
+**Plans**: 30/32 plans executed (2 gap-closure plans added 2026-08-03, round 4)
 Plans:
 **Wave 1**
 
@@ -319,6 +319,16 @@ Note on the `depends_on` chain: 05-22 through 05-26 each declare the previous pl
 **Gap round 3, wave 3** *(serialized behind 05-29)*
 
 - [x] 05-30-PLAN.md - A malformed or non-whole-minute settings seed can no longer wedge every save until restart (SVC-04, W3 / review WR-2 and WR-3, wave 3)
+
+**Fourth gap round** (planned 2026-08-03 from `05-VERIFICATION.md`, `status: gaps_found`, 6 of 7 Success Criteria verified, SC3 FAILED; run with `/gsd-execute-phase 5 --gaps-only`). Owner-approved scope is exactly three items: the SC3 string-seed wedge (the round's only blocking gap) plus warnings W5 and W6. Waves restart at 1 and are SINGLETONS for the same reason as round 3: each plan deliberately puts the tree into a RED state and each ends by running the whole suite, so the `depends_on` edge expresses serialization, not a code dependency. The two plans touch disjoint packages.
+
+**Gap round 4, wave 1**
+
+- [ ] 05-31-PLAN.md - An over-long SERVICE_NAME or TERMS_TEXT seed can no longer wedge every settings save, and every window boot warning is true of a variable the operator set (SVC-04, Gap 1 / SC 3 / review CR-01, plus W6 / review WR-02, wave 1)
+
+**Gap round 4, wave 2** *(serialized behind 05-31)*
+
+- [ ] 05-32-PLAN.md - A list read that outlives its session can no longer repopulate the console's gated slice (SVC-04, W5 / review WR-01, wave 2)
 
 **UI hint**: yes
 
