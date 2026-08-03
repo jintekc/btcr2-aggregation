@@ -891,11 +891,39 @@ export const useOperator = create<OperatorState>((set, get) => ({
     // The list read is discriminated like the drill-down poll (D-16/D-25): a 401 is a
     // session expiry (honest re-login), an unreachable read freezes the last-known list
     // and raises the banner, and an ok read updates the list + monitoring + freshness stamp.
+    //
+    // Capture the SESSION this question is asked in, the way `pollDetail` below captures the
+    // cohort its question is about. Nothing cancels a request already in flight, and the console
+    // polls this read every 4000 ms against an 8000 ms client timeout, so two reads are routinely
+    // outstanding at once (`05-VERIFICATION.md` W5, review WR-01).
+    const askedWhileLive = get().auth === 'logged-in';
     const result = await fetchOperatorCohorts(baseUrl);
     if (result.kind === 'unauthorized') {
       // Session expired mid-monitoring (D-16): drop to the login screen with the honest
       // re-login copy and clear the drill-down, through the one shared expiry path.
+      //
+      // Deliberately AHEAD of the round guard below, matching `pollDetail`. A guard may precede
+      // only a branch whose subject is narrower than its own; here both are session-scoped, so
+      // neither order changes what happens, and keeping the two read paths reading the same way
+      // is worth more than the swap.
       get().expireSession();
+      return;
+    }
+    // The round guard. Everything BELOW this point is a fact about ONE session, the freshness flag
+    // as much as the list, so an answer that outlived the session that asked is discarded whole. A
+    // list read is evidence about the service the ASKING session was watching; it is no evidence at
+    // all about the next one, which may sign in to a service restarted into another mode. That is
+    // exactly what `signOut` and `expireSession` promise above when they clear the gated slice, and
+    // what the SESSION_EXPIRED copy promises the operator ("Monitoring rebuilds from this service's
+    // state after you sign in"). Without this, the late write repaints the cohort list, the metrics
+    // and the broadcast-mode chip, which is a claim about whether this service can move money.
+    //
+    // The shipped precedent is `pollDetail`'s round guard, keyed on the COHORT because that is what
+    // a detail read is a fact about. One house rule, applied to each path's own subject.
+    //
+    // Both halves are wanted: the capture rejects an answer to a question no live session asked,
+    // and the re-check rejects an answer that outlived the session that did ask.
+    if (!askedWhileLive || get().auth !== 'logged-in') {
       return;
     }
     if (result.kind === 'unreachable') {
