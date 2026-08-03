@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Completed 05-37-PLAN.md
-last_updated: "2026-08-03T21:55:52.887Z"
+stopped_at: Completed 05-38-PLAN.md
+last_updated: "2026-08-03T22:09:58.895Z"
 last_activity: 2026-08-03
 last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 5
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 68
-  completed_plans: 67
+  completed_plans: 68
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 3 of 38
+Plan: 4 of 38
 Status: Ready to execute
 Last activity: 2026-08-03 — Phase 05 execution started
 
-Progress: [██████████] 99%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -128,6 +128,7 @@ Progress: [██████████] 99%
 | Phase 05 P35 | 13 min | 3 tasks | 8 files |
 | Phase 05 P36 | 15 min | 3 tasks | 3 files |
 | Phase 05 P37 | 12 min | 2 tasks | 3 files |
+| Phase 05 P38 | 18 min | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -251,6 +252,9 @@ Recent decisions affecting current work (Phase 2):
 - [Phase ?]: [Phase 05] 05-36 (SVC-04, session-identity sweep): a session round identifies a SESSION, so probe bumps only on a transition INTO a live session with the status captured BEFORE its own set({auth:'checking'}) (measured after that line the condition is dead code and bumps exactly as before). All four gated reads (refreshCohorts, pollDetail, loadSettings, saveSettings) now capture the asking session before their await and act only when that round is still live: a 401 is evidence about the ASKER, so a refusal from a session that already ended can no longer sign the session that replaced it out (WR-08), and a late ok can no longer paint a dead session's drill-down into a live one that reopened the same cohort id, nor land a dead session's settings snapshot which also defeated OperatorConsole's once-per-session read latch (WR-09). The 401 branches compare the ROUND and deliberately not the status (every end path bumps the round, and a status check would defer a genuine expiry landing inside a probe's checking window). OperatorConsole.tsx is unedited: the latch is asserted as a boolean in the store spec. Nine operator-initiated action verbs keep the unguarded shape by owner scope and are enumerated in 05-36-SUMMARY.md.
 - [Phase ?]: [Phase 05] 05-37: a refusal record carries variable + cost + REMEDY as three members, because a cost and a repair are true at different times and one sentence fused them; the remedy names the in-session repair FIRST (what the operator can do while reading) and the environment edit SECOND, and the no-restart property is pinned over each cost MEMBER rather than over the composed caption whose remedy half legitimately names a restart (review WR-10).
 - [Phase ?]: [Phase 05] 05-37: precedence is KEPT and the parenthetical repaired - a changed field still takes the changed caption, and that caption's environment-default slot names the refusal via refusedEnvDefaultText rather than reading as an absence, so the format's shape is untouched and there are still three formats; the precedence rationale's premise (the boot value is not rendered) was false and is corrected in place (review IN-05).
+- [Phase ?]: 05-38: the settings body budget is a pure FUNCTION of both character caps, applied once to the shipped pair, so the spec asserts the rule over cap pairs rather than re-deriving the number
+- [Phase ?]: 05-38: MAX_SERVICE_NAME_CHARS exported (superseding 05-33's module-local sentence) because the measurement that bounds it must read it rather than retype it; exactly one spec row retypes each cap
+- [Phase ?]: 05-38: budget falls 124096 -> 122224 bytes, clearing the largest legal console body (121369) by 855; the one chosen number left is a 1024 byte allowance sized against a measured 169 byte bare body
 
 ### Pending Todos
 
@@ -290,7 +294,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-03T21:55:52.856Z
-Stopped at: Completed 05-37-PLAN.md
+Last session: 2026-08-03T22:09:58.873Z
+Stopped at: Completed 05-38-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
