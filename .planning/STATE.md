@@ -5,14 +5,14 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Completed 05-32-PLAN.md
-last_updated: "2026-08-03T16:41:10.165Z"
+stopped_at: Planned gap-closure round 5 (05-33..05-35)
+last_updated: "2026-08-03T18:05:58.061Z"
 last_activity: 2026-08-03
-last_activity_desc: Phase 05 execution started
+last_activity_desc: Planned gap-closure round 5 (05-33..05-35)
 progress:
   total_phases: 5
   completed_phases: 5
-  total_plans: 62
+  total_plans: 65
   completed_plans: 62
 ---
 
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 32 of 32 (gap-closure round 4 complete)
-Status: All 32 plans executed; ready to re-verify phase 05
-Last activity: 2026-08-03 - completed 05-32 (operator list-read session round guard)
+Plan: 32 of 35 (gap-closure round 5 planned)
+Status: Round-5 gap plans 05-33..05-35 ready to execute (CR-02 blocker, WR-06, WR-07, IN-03/IN-04); checker passed iteration 1
+Last activity: 2026-08-03 - planned gap-closure round 5 from the round-4 re-verification and deep review
 
-Progress: [██████████] 100%
+Progress: [█████████░] 91%
 
 ## Performance Metrics
 
