@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Completed 05-35-PLAN.md
-last_updated: "2026-08-03T20:28:27.550Z"
+stopped_at: Completed 05-36-PLAN.md
+last_updated: "2026-08-03T21:46:45.504Z"
 last_activity: 2026-08-03
-last_activity_desc: Phase 05 round-5 re-verification recorded
+last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 5
-  completed_phases: 5
+  completed_phases: 4
   total_plans: 68
-  completed_plans: 65
+  completed_plans: 66
 ---
 
 # Project State
@@ -27,12 +27,12 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 
 ## Current Position
 
-Phase: 05 (operator-cohort-lifecycle-control) - AWAITING UAT
-Plan: 35 of 35 (round-5 gap closure 05-33..05-35 executed 2026-08-03)
-Status: Verification pass 5: 7/7 success criteria verified at code level, status human_needed. 16 human items pending in 05-UAT.md (run /gsd-verify-work 5). Round-5 deep review confirmed all five closures real (CR-02, WR-06, WR-07, IN-03, IN-04) and recorded three NEW non-gating warnings WR-08/09/10 in 05-REVIEW.md (dead-session 401 handling, guard coverage on pollDetail/loadSettings, stale restart caption). REQUIREMENTS.md marks SVC-04/SVC-05 Complete while UAT is pending (verifier warning: premature-completion pattern). No 05-SECURITY.md yet: run /gsd-secure-phase 5 before Phase 6.
-Last activity: 2026-08-03 - Phase 05 round-5 re-verification recorded
+Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
+Plan: 2 of 38
+Status: Ready to execute
+Last activity: 2026-08-03 — Phase 05 execution started
 
-Progress: [██████████] 100%
+Progress: [██████████] 97%
 
 ## Performance Metrics
 
@@ -126,6 +126,7 @@ Progress: [██████████] 100%
 | Phase 05 P33 | 27 min | 3 tasks | 7 files |
 | Phase 05 P34 | 7 min | 2 tasks | 2 files |
 | Phase 05 P35 | 13 min | 3 tasks | 8 files |
+| Phase 05 P36 | 15 min | 3 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -246,6 +247,7 @@ Recent decisions affecting current work (Phase 2):
 - [Phase 05]: 05-34: the operator list guard compares a session IDENTITY (a monotonic sessionRound bumped at every session start and every session end), never an auth STATUS: logged-in to logged-out to logged-in is the same string and a different session, so a status comparison let a dead session's answer repaint the whole gated slice of the session that replaced it (review WR-06). The status check is RETAINED alongside the round check because they refuse different things. Mutation runs proved the start and end bumps are REDUNDANT for the ABA sequence rather than each independently necessary (removing one alone reddens only its own coverage row); recorded as observed against the plan's prediction.
 - [Phase 05]: [Phase 05] 05-35 (WR-07): a boot seed this service REFUSED is served by NAME on the gated settings read (droppedSeeds on SettingsSnapshot, populated on textKnob's own drop-and-warn branch so the boot line and the record cannot disagree, copied fresh per read). NAMES only, pinned against the SERIALIZED snapshot rather than the field so a future carrier stashing the value elsewhere fails; nothing added to the anonymous GET /v1/config, pinned by an exact toEqual against a second real app. Numeric seeds deliberately do NOT join (a numeric fallback renders a value the operator can see and fix on the same screen; a dropped terms seed renders an ABSENCE that turns the SVC-05 gate off, and numericKnob also serves PORT and the runner knobs). A refusal is NOT filed in the session-scoped operator-actions ring, pinned by a row.
 - [Phase 05]: [Phase 05] 05-35: the console gained the THIRD source caption, a bad-tone line naming the refused variable and what the refusal COST that field (the terms cost states the join flow has no terms step and every acceptance is refused; the display name cost says only what it loses). Precedence pinned: a field the operator has CHANGED this session keeps the changed caption, because it holds a value they chose. THE PIN asserts the caption the COMPONENT produces, not the data behind it, because the data was already correct and it was the caption that lied. New SettingsFieldKey (derived structurally) keys SETTING_LABELS and the operator-actions loop, so seven members are settings and one is provenance.
+- [Phase ?]: [Phase 05] 05-36 (SVC-04, session-identity sweep): a session round identifies a SESSION, so probe bumps only on a transition INTO a live session with the status captured BEFORE its own set({auth:'checking'}) (measured after that line the condition is dead code and bumps exactly as before). All four gated reads (refreshCohorts, pollDetail, loadSettings, saveSettings) now capture the asking session before their await and act only when that round is still live: a 401 is evidence about the ASKER, so a refusal from a session that already ended can no longer sign the session that replaced it out (WR-08), and a late ok can no longer paint a dead session's drill-down into a live one that reopened the same cohort id, nor land a dead session's settings snapshot which also defeated OperatorConsole's once-per-session read latch (WR-09). The 401 branches compare the ROUND and deliberately not the status (every end path bumps the round, and a status check would defer a genuine expiry landing inside a probe's checking window). OperatorConsole.tsx is unedited: the latch is asserted as a boolean in the store spec. Nine operator-initiated action verbs keep the unguarded shape by owner scope and are enumerated in 05-36-SUMMARY.md.
 
 ### Pending Todos
 
@@ -285,7 +287,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-03T19:05:56.339Z
-Stopped at: Completed 05-35-PLAN.md
+Last session: 2026-08-03T21:46:34.900Z
+Stopped at: Completed 05-36-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
