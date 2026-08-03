@@ -55,10 +55,28 @@ const OTHER_DETAIL: CohortDetailDTO = {
   submissions: [{ did: 'did:example:bob', submitted: true }],
 };
 
+/**
+ * The session-identity fields a live console carries, as a SHAPE rather than as numbers (review
+ * WR-11). A seeded round and a round a real `signIn` took are different values, so what the seeded
+ * shape pins is the relationship: a signed-in console records the round it is live in, and a
+ * signed-out one records no live session at all.
+ */
+function sessionIdentityShape(state: OperatorState): Record<string, unknown> {
+  return {
+    auth: state.auth,
+    holdsALiveSession: typeof state.liveSessionRound === 'number',
+    liveSessionIsTheCurrentRound: state.liveSessionRound === state.sessionRound,
+  };
+}
+
 /** Reset the operator store to a signed-in, list-view baseline before each test. */
 function resetStore(): void {
   useOperator.setState({
     auth: 'logged-in',
+    // Seeded to what a real `signIn` produces for a live console (review WR-11): a session that is
+    // live records the round it is live in. A seeded live console carrying no live-session round is
+    // a console no real path could produce, and it would silently disarm every guard that reads it.
+    liveSessionRound: useOperator.getState().sessionRound,
     error: undefined,
     view: { kind: 'list' },
     detail: undefined,
@@ -667,6 +685,10 @@ describe('operator store refreshCohorts concurrency (W5: a list answer belongs t
   function seedEmptySlice(auth: 'logged-in' | 'logged-out'): void {
     useOperator.setState({
       auth,
+      // Consistent with the auth it seeds, which is what a real path produces (review WR-11): a
+      // signed-in console records the round it is live in, a signed-out one records no live
+      // session. Staging fidelity, not an accommodation of the guard.
+      liveSessionRound: auth === 'logged-in' ? useOperator.getState().sessionRound : undefined,
       error: undefined,
       cohorts: [],
       rows: [],
@@ -1165,6 +1187,165 @@ describe('operator store refreshCohorts concurrency (W5: a list answer belongs t
     expect(typeof s.lastUpdated).toBe('number');
   });
 
+  /**
+   * Answer the session probe PER CALL from a staged queue, so a row controls exactly when each of
+   * two OVERLAPPING probes lands. Everything else hangs in flight, including the list read each
+   * live probe fires: these rows are about the round two probes take between them, not about what
+   * they read afterwards.
+   */
+  function stubProbeQueue(answers: Array<Promise<Response>>): void {
+    let next = 0;
+    vi.stubGlobal('fetch', (input: unknown) => {
+      const url = String(input);
+      if (url.endsWith('/v1/operator/session')) {
+        const staged = answers[next];
+        next += 1;
+        return staged ?? Promise.reject(new Error(`no staged answer for probe #${next}`));
+      }
+      if (url.endsWith('/v1/operator/logout')) {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (url.endsWith('/v1/operator/login')) {
+        return Promise.resolve(new Response(null, { status: 200 }));
+      }
+      return new Promise<Response>(() => {});
+    });
+  }
+
+  /** A live answer from the session probe. */
+  function liveProbeAnswer(): Response {
+    return new Response(null, { status: 200 });
+  }
+
+  it('crosses ONE session boundary when two probes OVERLAP on a live session (review WR-11)', async () => {
+    // `main.tsx` enables React StrictMode, which double-invokes mount effects in development, so
+    // `OperatorConsole`'s mount probe fires twice on every console mount; in a production build a
+    // fast tab toggle does the same. The second probe enters while the first is in flight, reads
+    // `checking` (the first probe's own first assignment), and concludes no session was live.
+    const first = deferred<Response>();
+    const second = deferred<Response>();
+    stubProbeQueue([first.promise, second.promise]);
+    seedEmptySlice('logged-in');
+    const before = useOperator.getState().sessionRound;
+
+    const p1 = useOperator.getState().probe(BASE);
+    const p2 = useOperator.getState().probe(BASE);
+    first.resolve(liveProbeAnswer());
+    second.resolve(liveProbeAnswer());
+    await Promise.all([p1, p2]);
+
+    expect(useOperator.getState().auth).toBe('logged-in');
+    expect(useOperator.getState().sessionRound).toBe(before);
+  });
+
+  it('lets a list read started before TWO overlapping probes still write when it lands (review WR-11)', async () => {
+    // The observable consequence of the row above, and the assertion the shipped IN-07 row already
+    // claims: a read in flight across a tab switch must survive it. Under a double probe the round
+    // moved, so the read was discarded and the console skipped an update.
+    const slow = deferred<Response>();
+    const firstProbe = deferred<Response>();
+    const secondProbe = deferred<Response>();
+    let nextProbe = 0;
+    const probeAnswers = [firstProbe.promise, secondProbe.promise];
+    let listAnswered = false;
+    vi.stubGlobal('fetch', (input: unknown) => {
+      const url = String(input);
+      if (url.endsWith('/v1/operator/session')) {
+        const staged = probeAnswers[nextProbe];
+        nextProbe += 1;
+        return staged ?? Promise.reject(new Error(`no staged answer for probe #${nextProbe}`));
+      }
+      if (!listAnswered) {
+        listAnswered = true;
+        return slow.promise;
+      }
+      // Each live probe fires its own follow-up list read; leaving those in flight keeps the read
+      // under test unambiguously the one this row issued.
+      return new Promise<Response>(() => {});
+    });
+    seedEmptySlice('logged-in');
+
+    const read = useOperator.getState().refreshCohorts(BASE);
+    const p1 = useOperator.getState().probe(BASE);
+    const p2 = useOperator.getState().probe(BASE);
+    firstProbe.resolve(liveProbeAnswer());
+    secondProbe.resolve(liveProbeAnswer());
+    await Promise.all([p1, p2]);
+    expect(useOperator.getState().auth).toBe('logged-in');
+
+    slow.resolve(okList());
+    await read;
+
+    const s = useOperator.getState();
+    expect(s.cohorts).toEqual(POPULATED.cohorts);
+    expect(s.rows).toEqual(POPULATED.monitoring?.rows);
+    expect(s.metrics).toEqual(POPULATED.monitoring?.metrics);
+    expect(s.health).toEqual(POPULATED.monitoring?.health);
+    expect(s.operatorActions).toEqual(POPULATED.monitoring?.operatorActions);
+    expect(s.defaults).toEqual(POPULATED.defaults);
+    expect(typeof s.lastUpdated).toBe('number');
+  });
+
+  it('takes EXACTLY one round when two overlapping probes find a session on a console holding none', async () => {
+    // The other half of the property: one session started, so one round was taken. A returning
+    // operator must still get a fresh round (the shipped row above), and must not get two.
+    const first = deferred<Response>();
+    const second = deferred<Response>();
+    stubProbeQueue([first.promise, second.promise]);
+    seedEmptySlice('logged-out');
+    const before = useOperator.getState().sessionRound;
+
+    const p1 = useOperator.getState().probe(BASE);
+    const p2 = useOperator.getState().probe(BASE);
+    first.resolve(liveProbeAnswer());
+    second.resolve(liveProbeAnswer());
+    await Promise.all([p1, p2]);
+
+    expect(useOperator.getState().auth).toBe('logged-in');
+    expect(useOperator.getState().sessionRound).toBe(before + 1);
+  });
+
+  it('narrates a deliberate SIGN-OUT landing mid-probe as a sign-out, never as an expiry', async () => {
+    // This row is why the probe decides from a STORED fact rather than from a status snapshot taken
+    // before its own first assignment. A snapshot would say a session was live, `signOut` would end
+    // it, and the probe landing afterwards would tell the operator their session EXPIRED about a
+    // session they themselves just ended. The stored fact has already been cleared by `signOut`, so
+    // the probe correctly does nothing.
+    const answer = deferred<Response>();
+    stubProbeQueue([answer.promise]);
+    seedEmptySlice('logged-in');
+
+    const p = useOperator.getState().probe(BASE);
+    await useOperator.getState().signOut(BASE);
+    answer.resolve(new Response(null, { status: 401 }));
+    await p;
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-out');
+    expect(s.error).toBeUndefined();
+  });
+
+  it('seeds the same session-identity shape a real signIn produces, so a forgetful seed fails HERE', async () => {
+    // The footgun the stored fact buys: three `setState` helpers stage a signed-in console, and a
+    // seed that forgot the live-session field would silently disarm every guard that reads it. This
+    // row compares the shape rather than the numbers: a seeded round and a real one are different
+    // values, and the property is that a live console records the round it is live in.
+    stubAuthOnly({ login: 200 });
+    await useOperator.getState().signIn(BASE, PASSWORD);
+    const real = sessionIdentityShape(useOperator.getState());
+
+    seedEmptySlice('logged-in');
+    expect(sessionIdentityShape(useOperator.getState())).toEqual(real);
+
+    resetStore();
+    expect(sessionIdentityShape(useOperator.getState())).toEqual(real);
+
+    // Non-vacuity: the shape a signed-out console carries is the OTHER one, so the comparison above
+    // is not two copies of the same trivially-true pair.
+    seedEmptySlice('logged-out');
+    expect(sessionIdentityShape(useOperator.getState())).not.toEqual(real);
+  });
+
   it('retires the round of the session an EXPIRY ended', () => {
     seedEmptySlice('logged-in');
     const before = useOperator.getState().sessionRound;
@@ -1304,6 +1485,8 @@ describe('operator store session identity across every gated read (review WR-08/
   function seedLive(): void {
     useOperator.setState({
       auth: 'logged-in',
+      // What a real `signIn` produces for a live console (review WR-11): the round it is live in.
+      liveSessionRound: useOperator.getState().sessionRound,
       error: undefined,
       settings: undefined,
       settingsStatus: 'idle',

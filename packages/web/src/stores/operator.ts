@@ -371,11 +371,39 @@ export interface OperatorState {
    * guarantees, which every guard below leans on: two sessions never share a round, so an unchanged
    * round means no session boundary was crossed.
    *
+   * That transition is decided from {@link OperatorState.liveSessionRound}, a stored fact, and not
+   * from this field's neighbour `auth` (review WR-11). A status snapshot has to be taken before
+   * `probe`'s own first assignment to be meaningful at all, and a snapshot taken there is wrong the
+   * moment two probes overlap: the second reads `checking`, concludes no session was live, and
+   * bumps. React StrictMode makes that routine in development and a fast tab toggle reaches it in
+   * production.
+   *
    * Client-side only: nothing puts this on the wire. Which session asked is a fact the caller
    * already holds, and serving it would add a second source of truth for a question already
    * answered locally.
    */
   sessionRound: number;
+  /**
+   * The round of the session that is currently LIVE, and `undefined` when none is (review WR-11).
+   *
+   * What it buys over {@link OperatorState.auth}: a status is erased by the very next thing that
+   * happens, including `probe`'s own first assignment, so any condition decided from it has to be
+   * captured before that assignment and is then wrong as soon as two probes overlap. This is a
+   * stored fact that ONLY a session start or a session end moves, so two concurrent probes cannot
+   * disagree about it, and a deliberate `signOut` landing while a probe is in flight has already
+   * answered it: the probe reads the cleared value and correctly does nothing, rather than
+   * narrating an expiry about a session the operator themselves just ended.
+   *
+   * Set beside every round bump that STARTS a session (`signIn`'s 200 branch, and `probe`'s branch
+   * where a session becomes live), to the same value the round takes. Cleared by the shared
+   * `GATED_SLICE_RESET`, so both paths that END a session drop it with everything else and no third
+   * place has to remember.
+   *
+   * Client-side only, on the same reasoning as {@link OperatorState.sessionRound}: which session is
+   * live is a fact the client already holds, and serving it would add a second source of truth for
+   * a question already answered locally.
+   */
+  liveSessionRound?: number;
   error?: string;
   /** The operator's own cohorts (drafts, advertised, and expired records). */
   cohorts: OperatorCohortDTO[];
@@ -736,6 +764,10 @@ export interface OperatorState {
  *   mid-cancel, mid-finalize or mid-spawn.
  */
 const GATED_SLICE_RESET: Partial<OperatorState> = {
+  // No session is live once either path has run, so the stored fact says so (review WR-11). It
+  // lives here rather than beside each caller's own round bump precisely so neither path can end a
+  // session while leaving the console recording one.
+  liveSessionRound: undefined,
   cohorts: [],
   rows: [],
   metrics: undefined,
@@ -822,6 +854,8 @@ export const useOperator = create<OperatorState>((set, get) => ({
   auth: 'checking',
   // No session has started yet, so no read can hold a matching round.
   sessionRound: 0,
+  // ... and none is live, which is what the probe about to run decides from.
+  liveSessionRound: undefined,
   error: undefined,
   cohorts: [],
   rows: [],
@@ -860,27 +894,27 @@ export const useOperator = create<OperatorState>((set, get) => ({
   lastUpdated: undefined,
 
   async probe(baseUrl) {
-    // Captured BEFORE the `checking` assignment on the next line, and the order is the whole trap:
-    // this method's FIRST statement takes `auth` away from `logged-in`, so a transition condition
-    // measured against the status held when the ANSWER lands would read `checking` on every probe
-    // and bump exactly as the unguarded code did. Reading this at the top is what makes the
-    // condition below live code rather than a comment (review IN-07).
-    const wasLive = get().auth === 'logged-in';
     set({ auth: 'checking', error: undefined });
     try {
       const state = await sessionProbe(baseUrl);
       if (state === 'logged-in') {
-        if (wasLive) {
-          // The probe merely CONFIRMED the session already signed in. No session boundary was
-          // crossed, so the round stands: `OperatorConsole` is mounted conditionally on the
+        // Decided from the STORED live-session fact, read at LANDING time, never from the `auth`
+        // status (review WR-11). A status has to be captured before this method's own first
+        // statement to say anything at all, and a capture taken there is wrong the moment two
+        // probes overlap: the second reads `checking`, concludes no session was live, and bumps.
+        if (get().liveSessionRound === undefined) {
+          // A live session STARTS here (a returning operator whose cookie is still good), so it
+          // takes a fresh round before the read it fires below captures one, and records that round
+          // as the live one.
+          const started = get().sessionRound + 1;
+          set({ auth: state, sessionRound: started, liveSessionRound: started });
+        } else {
+          // The probe merely CONFIRMED the session already recorded as live. No session boundary
+          // was crossed, so the round stands: `OperatorConsole` is mounted conditionally on the
           // operator tab, and retiring the round on every switch away and back would discard a read
           // that was in flight across the switch and would make the round identify a probe event
           // rather than a session (review IN-07).
           set({ auth: state });
-        } else {
-          // A live session STARTS here (a returning operator whose cookie is still good), so it
-          // takes a fresh round before the read it fires below captures one.
-          set({ auth: state, sessionRound: get().sessionRound + 1 });
         }
         void get().refreshCohorts(baseUrl);
       } else {
@@ -900,19 +934,23 @@ export const useOperator = create<OperatorState>((set, get) => ({
     try {
       const status = await apiLogin(baseUrl, password);
       if (status === 200) {
-        // A live session STARTS here. Every other branch below leaves no session live, so none of
-        // them takes a round.
-        set({ auth: 'logged-in', error: undefined, sessionRound: get().sessionRound + 1 });
+        // A live session STARTS here, so it takes a fresh round and records it as the live one
+        // (review WR-11). Every other branch below leaves no session live, so none of them takes a
+        // round, and each says so in BOTH places rather than only in the status: they are reachable
+        // only from the login screen, where nothing is live, so clearing the stored fact there is
+        // agreement between the two rather than a session change.
+        const started = get().sessionRound + 1;
+        set({ auth: 'logged-in', error: undefined, sessionRound: started, liveSessionRound: started });
         void get().refreshCohorts(baseUrl);
       } else if (status === 429) {
-        set({ auth: 'logged-out', error: THROTTLED });
+        set({ auth: 'logged-out', error: THROTTLED, liveSessionRound: undefined });
       } else if (status === 404) {
-        set({ auth: 'disabled', error: undefined });
+        set({ auth: 'disabled', error: undefined, liveSessionRound: undefined });
       } else {
-        set({ auth: 'logged-out', error: INVALID_PASSWORD });
+        set({ auth: 'logged-out', error: INVALID_PASSWORD, liveSessionRound: undefined });
       }
     } catch {
-      set({ auth: 'logged-out', error: UNREACHABLE });
+      set({ auth: 'logged-out', error: UNREACHABLE, liveSessionRound: undefined });
     }
   },
 
