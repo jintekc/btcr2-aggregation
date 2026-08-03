@@ -349,7 +349,17 @@ describe('a rejected save leaves the rendered snapshot exactly as the service ho
   const realFetch = globalThis.fetch;
 
   beforeEach(() => {
-    useOperator.setState({ settings: UNTOUCHED, settingsStatus: 'idle', settingsError: undefined });
+    // Seeds a LIVE session alongside the snapshot (review WR-08/WR-09). These rows drive a gated
+    // action from a console the store otherwise holds at `checking`, which no real console can do:
+    // the save button exists only on a signed-in console. Now that the store compares the asking
+    // session before it writes or expires, staging the fiction would make the rows describe a state
+    // the product never reaches. Every assertion inside the three rows is unchanged.
+    useOperator.setState({
+      auth: 'logged-in',
+      settings: UNTOUCHED,
+      settingsStatus: 'idle',
+      settingsError: undefined,
+    });
   });
 
   afterEach(() => {

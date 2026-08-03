@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fetchCohortDetail, type CohortDetailDTO, type OperatorCohortsDTO } from '../src/lib/operator';
+import {
+  fetchCohortDetail,
+  type CohortDetailDTO,
+  type OperatorCohortsDTO,
+  type SettingsSnapshotDTO,
+} from '../src/lib/operator';
 import {
   useOperator,
   actionFailedWith,
@@ -816,6 +821,85 @@ describe('operator store refreshCohorts concurrency (W5: a list answer belongs t
   });
 
   /**
+   * The 401 half of the same ABA sequence (review WR-08).
+   *
+   * Round 5 made this read discard a dead session's ANSWER and left it acting on a dead session's
+   * REFUSAL. The premise is the store's own: the console polls every 4000 ms against an 8000 ms
+   * client timeout, so two reads are routinely outstanding. When the session expires server-side
+   * BOTH answer 401. The first is correct and ends the session; the operator signs straight back
+   * in; the second, issued by a session that is already dead, ends the new one, with a message that
+   * is false about a cookie this service would still accept.
+   */
+  it('discards a 401 issued by a session that ENDED rather than signing the NEW session out (review WR-08)', async () => {
+    const { slow, slowRead } = await stageSignBackIn('expiry');
+    const round = useOperator.getState().sessionRound;
+    // Session B's own gated slice, as its first read would leave it. Asserted field by field after
+    // the stale 401 lands, because `expireSession` clears the WHOLE slice on its way out: a row
+    // that only checked `auth` would pass against a guard that logged the operator back in while
+    // throwing away the drill-down, the log and the served mode.
+    useOperator.setState({
+      cohorts: POPULATED.cohorts,
+      rows: POPULATED.monitoring?.rows ?? [],
+      metrics: POPULATED.monitoring?.metrics,
+      health: POPULATED.monitoring?.health,
+      operatorActions: POPULATED.monitoring?.operatorActions ?? [],
+      defaults: POPULATED.defaults,
+    });
+
+    // Session A's UNAUTHORIZED answer lands into session B, which is the whole race.
+    slow.resolve(new Response('no', { status: 401 }));
+    await slowRead;
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-in');
+    expect(s.error).toBeUndefined();
+    expect(s.sessionRound).toBe(round);
+    expect(s.cohorts).toEqual(POPULATED.cohorts);
+    expect(s.rows).toEqual(POPULATED.monitoring?.rows);
+    expect(s.metrics).toEqual(POPULATED.monitoring?.metrics);
+    expect(s.health).toEqual(POPULATED.monitoring?.health);
+    expect(s.operatorActions).toEqual(POPULATED.monitoring?.operatorActions);
+    expect(s.defaults).toEqual(POPULATED.defaults);
+  });
+
+  it('STILL expires the session when the 401 answers the session that is live right now', async () => {
+    // The anti-vacuity control on the row above: without it, a guard that simply stopped expiring
+    // would satisfy every ABA assertion in this file while leaving a dead session's console
+    // rendering as though it were live.
+    const answer = deferred<Response>();
+    stubListQueue([answer.promise]);
+    seedEmptySlice('logged-in');
+
+    const read = useOperator.getState().refreshCohorts(BASE);
+    answer.resolve(new Response('no', { status: 401 }));
+    await read;
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-out');
+    expect(s.error).toBe(SESSION_EXPIRED);
+  });
+
+  it('expires nothing for a 401 landing into a console with no live session at all', async () => {
+    // The absent-capture half: a read issued while nobody was signed in has no session to speak
+    // about, so its refusal must not match a value a LATER session holds. This is what pins the
+    // capture as an identity rather than a defaulted number.
+    const answer = deferred<Response>();
+    stubListQueue([answer.promise]);
+    seedEmptySlice('logged-out');
+
+    const read = useOperator.getState().refreshCohorts(BASE);
+    // A new session signs in while that answer is still in flight, exactly as the pre-await row
+    // above stages it.
+    useOperator.setState({ auth: 'logged-in' });
+    answer.resolve(new Response('no', { status: 401 }));
+    await read;
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-in');
+    expect(s.error).toBeUndefined();
+  });
+
+  /**
    * Answer only the AUTH routes, leaving any list read hanging in flight. The coverage rows below
    * are about the round a session start or end takes, not about what that session reads afterwards,
    * and a settled list read would write state those rows have no reason to speak about.
@@ -971,6 +1055,213 @@ describe('operator store refreshCohorts concurrency (W5: a list answer belongs t
 
     expect(useOperator.getState().listStale).toBe(true);
     expect(useOperator.getState().auth).toBe('logged-in');
+  });
+});
+
+/**
+ * The session-identity rule applied to the OTHER gated reads (review WR-08 and WR-09).
+ *
+ * `sessionRound`'s docstring states the rule as general law, and round 5 applied it to
+ * `refreshCohorts` alone. `pollDetail` compared the cohort and nothing else, so a dead session's
+ * drill-down document repainted into a live session that reopened the same cohort id, carrying
+ * member DIDs and pubkeys, raw signed updates, the funding view and a freshness stamp the new
+ * session never earned. `loadSettings` and `saveSettings` compared nothing at all, and the settings
+ * write is not transient: `OperatorConsole` re-reads settings only while the snapshot is undefined,
+ * so a dead session's answer landing in that gap makes the new session skip its own read and open
+ * the create form on a previous session's defaults.
+ *
+ * These rows live here, beside the other session rows, rather than in `settings.spec.ts`, which
+ * owns the settings SURFACE and its copy. The store's session discipline belongs with the store.
+ */
+describe('operator store session identity across every gated read (review WR-08/WR-09)', () => {
+  beforeEach(resetStore);
+
+  const PASSWORD = 'operator-password';
+
+  /**
+   * Session A's settings snapshot, visibly distinct in every field a caption reads, so a row cannot
+   * pass because two fixtures happened to agree. `droppedSeeds` is included deliberately: it is
+   * boot provenance about the operator's own environment, and round 5 widened this slice to carry
+   * it across the same boundary.
+   */
+  const SESSION_A_SETTINGS: SettingsSnapshotDTO = {
+    serviceName: { value: 'Session A Aggregation', envDefault: 'Session A Aggregation', changed: false },
+    defaultBeaconType: { value: 'SMTBeacon', envDefault: 'SMTBeacon', changed: false },
+    defaultSize: { value: 9, envDefault: 9, changed: false },
+    defaultThreshold: { value: 9, envDefault: 9, changed: false },
+    defaultDiscoveryWindowMs: { value: 600_000, envDefault: 600_000, changed: false },
+    defaultFundingWindowMs: { value: 900_000, envDefault: 900_000, changed: false },
+    termsText: { value: 'Session A terms', envDefault: 'Session A terms', changed: false },
+    droppedSeeds: ['TERMS_TEXT'],
+  };
+
+  /** A promise plus its settle handles, so a row controls exactly WHEN an answer lands. */
+  function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
+    let resolve!: (v: T) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  /**
+   * Route by URL rather than by call order, because these rows drive TWO different gated reads plus
+   * the auth routes in one sequence. Anything unstaged hangs in flight: the LIST read in particular
+   * (the console's poll, and the one `signIn` fires for the new session) would otherwise write the
+   * very fields some of these rows assert on.
+   */
+  function stubGated(options: { detail?: Record<string, Promise<Response>>; settings?: Array<Promise<Response>> }): void {
+    let nextSettings = 0;
+    vi.stubGlobal('fetch', (input: unknown) => {
+      const url = String(input);
+      if (url.endsWith('/v1/operator/login')) {
+        return Promise.resolve(new Response(null, { status: 200 }));
+      }
+      if (url.endsWith('/v1/operator/logout')) {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (url.endsWith('/v1/operator/settings')) {
+        const staged = options.settings?.[nextSettings];
+        nextSettings += 1;
+        return staged ?? new Promise<Response>(() => {});
+      }
+      if (url.includes('/v1/operator/cohorts/')) {
+        const id = decodeURIComponent(url.slice(url.lastIndexOf('/') + 1));
+        return options.detail?.[id] ?? Promise.reject(new Error(`no staged answer for cohort ${id}`));
+      }
+      return new Promise<Response>(() => {});
+    });
+  }
+
+  /** A live session holding no settings snapshot, which is where the console's shell latch starts. */
+  function seedLive(): void {
+    useOperator.setState({
+      auth: 'logged-in',
+      error: undefined,
+      settings: undefined,
+      settingsStatus: 'idle',
+      settingsError: undefined,
+      settingsMessage: undefined,
+    });
+  }
+
+  /** An ok response carrying one cohort's served document. */
+  function okDetail(value: CohortDetailDTO): Response {
+    return new Response(JSON.stringify(value), { status: 200 });
+  }
+
+  /** End session A and sign session B in, which is the ABA sequence every row below stages. */
+  async function signBackIn(): Promise<void> {
+    useOperator.getState().expireSession();
+    await useOperator.getState().signIn(BASE, PASSWORD);
+    expect(useOperator.getState().auth).toBe('logged-in');
+  }
+
+  it('pollDetail discards a 401 issued by an ENDED session rather than signing the NEW session out', async () => {
+    const a = deferred<Response>();
+    stubGated({ detail: { 'cohort-x': a.promise } });
+    seedLive();
+    useOperator.getState().openCohort('cohort-x');
+    const poll = useOperator.getState().pollDetail(BASE);
+
+    await signBackIn();
+    useOperator.getState().openCohort('cohort-x');
+    const round = useOperator.getState().sessionRound;
+
+    a.resolve(new Response('no', { status: 401 }));
+    await poll;
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-in');
+    expect(s.error).toBeUndefined();
+    expect(s.sessionRound).toBe(round);
+    // The expiry path sends the console back to the list, so the drill-down the new session opened
+    // is part of what a stale refusal would have taken with it.
+    expect(s.view).toEqual({ kind: 'detail', cohortId: 'cohort-x' });
+  });
+
+  it('pollDetail STILL expires the session when the 401 answers the session that is live right now', async () => {
+    // The anti-vacuity control: a guard that stopped expiring altogether would satisfy the row
+    // above and leave a dead session's drill-down on screen.
+    const a = deferred<Response>();
+    stubGated({ detail: { 'cohort-x': a.promise } });
+    seedLive();
+    useOperator.getState().openCohort('cohort-x');
+    const poll = useOperator.getState().pollDetail(BASE);
+
+    a.resolve(new Response('no', { status: 401 }));
+    await poll;
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-out');
+    expect(s.error).toBe(SESSION_EXPIRED);
+    expect(s.view).toEqual({ kind: 'list' });
+  });
+
+  it('loadSettings discards a 401 issued by an ENDED session', async () => {
+    const a = deferred<Response>();
+    stubGated({ settings: [a.promise] });
+    seedLive();
+    const read = useOperator.getState().loadSettings(BASE);
+
+    await signBackIn();
+    const round = useOperator.getState().sessionRound;
+
+    a.resolve(new Response('no', { status: 401 }));
+    await read;
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-in');
+    expect(s.error).toBeUndefined();
+    expect(s.sessionRound).toBe(round);
+  });
+
+  it('loadSettings STILL expires the session when the 401 answers the live session', async () => {
+    const a = deferred<Response>();
+    stubGated({ settings: [a.promise] });
+    seedLive();
+    const read = useOperator.getState().loadSettings(BASE);
+
+    a.resolve(new Response('no', { status: 401 }));
+    await read;
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-out');
+    expect(s.error).toBe(SESSION_EXPIRED);
+  });
+
+  it('saveSettings discards a 401 issued by an ENDED session', async () => {
+    const a = deferred<Response>();
+    stubGated({ settings: [a.promise] });
+    seedLive();
+    const save = useOperator.getState().saveSettings(BASE, { serviceName: 'Renamed by session A' });
+
+    await signBackIn();
+    const round = useOperator.getState().sessionRound;
+
+    a.resolve(new Response('', { status: 401 }));
+    await save;
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-in');
+    expect(s.error).toBeUndefined();
+    expect(s.sessionRound).toBe(round);
+  });
+
+  it('saveSettings STILL expires the session when the 401 answers the live session', async () => {
+    const a = deferred<Response>();
+    stubGated({ settings: [a.promise] });
+    seedLive();
+    const save = useOperator.getState().saveSettings(BASE, { serviceName: 'Renamed' });
+
+    a.resolve(new Response('', { status: 401 }));
+    await save;
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-out');
+    expect(s.error).toBe(SESSION_EXPIRED);
   });
 });
 

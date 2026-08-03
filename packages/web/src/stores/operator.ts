@@ -966,11 +966,23 @@ export const useOperator = create<OperatorState>((set, get) => ({
       // Session expired mid-monitoring (D-16): drop to the login screen with the honest
       // re-login copy and clear the drill-down, through the one shared expiry path.
       //
-      // Deliberately AHEAD of the round guard below, matching `pollDetail`. A guard may precede
-      // only a branch whose subject is narrower than its own; here both are session-scoped, so
-      // neither order changes what happens, and keeping the two read paths reading the same way
-      // is worth more than the swap.
-      get().expireSession();
+      // The branch keeps its position AHEAD of the round guard below, matching `pollDetail`, and it
+      // can keep it because it now carries its OWN comparison. A 401 is evidence about the session
+      // that ASKED, never about whichever session happens to be live when the answer lands: a
+      // status is not an identity, and `logged-in` to `logged-out` to `logged-in` is the same
+      // string and a different session. Without the comparison, an unauthorized answer issued by a
+      // session that already ended signs the session that REPLACED it out, telling the operator
+      // their session expired about a cookie this service would still accept, and taking the whole
+      // gated slice with it (review WR-08).
+      //
+      // No status comparison here, deliberately: every path that ends a session bumps the round, so
+      // an unchanged round already proves this session never ended, while a status check would
+      // additionally refuse a genuine expiry landing inside a probe's `checking` window and defer
+      // it to the next tick for no benefit. An undefined capture means no live session asked, so
+      // there is nothing to end.
+      if (askedInRound !== undefined && get().sessionRound === askedInRound) {
+        get().expireSession();
+      }
       return;
     }
     // The round guard. Everything BELOW this point is a fact about ONE session, the freshness flag
@@ -1296,10 +1308,16 @@ export const useOperator = create<OperatorState>((set, get) => ({
   },
 
   async loadSettings(baseUrl) {
+    // The asking session, captured before the await like every other gated read (review WR-08/WR-09).
+    const askedInRound = get().auth === 'logged-in' ? get().sessionRound : undefined;
     const result = await apiFetchSettings(baseUrl);
     if (result.kind === 'unauthorized') {
-      // The ONE shared session-expiry path (D-16); it clears the settings slice itself.
-      get().expireSession();
+      // The ONE shared session-expiry path (D-16); it clears the settings slice itself. Scoped to
+      // the session that ASKED: a refusal aimed at a session that has already ended must not end
+      // the one that replaced it (review WR-08).
+      if (askedInRound !== undefined && get().sessionRound === askedInRound) {
+        get().expireSession();
+      }
       return;
     }
     if (result.kind === 'unreachable') {
@@ -1313,6 +1331,10 @@ export const useOperator = create<OperatorState>((set, get) => ({
 
   async saveSettings(baseUrl, patch) {
     set({ settingsStatus: 'saving', settingsError: undefined, settingsMessage: undefined });
+    // The asking session, captured before the await (review WR-08/WR-09). A save is
+    // operator-initiated and therefore a narrower race than a poll, and it is guarded anyway
+    // because the write it lands is the settings snapshot the create form reads.
+    const askedInRound = get().auth === 'logged-in' ? get().sessionRound : undefined;
     try {
       const result = await apiSaveSettings(baseUrl, patch);
       if (result.ok) {
@@ -1331,7 +1353,10 @@ export const useOperator = create<OperatorState>((set, get) => ({
         return;
       }
       if ('unauthorized' in result) {
-        get().expireSession();
+        // Scoped to the session that ASKED, as in the three reads above (review WR-08).
+        if (askedInRound !== undefined && get().sessionRound === askedInRound) {
+          get().expireSession();
+        }
         return;
       }
       // A rejection applies NOTHING (the service validates the set and refuses it whole), and this
@@ -1378,15 +1403,25 @@ export const useOperator = create<OperatorState>((set, get) => ({
     // answer arrives the operator may have opened a different cohort (`05-VERIFICATION.md`
     // Gap 1, review CR-1).
     const askedFor = view.cohortId;
+    // And capture the SESSION this question is asked in, exactly as `refreshCohorts` does. The two
+    // captures answer different questions and both are needed: a detail answer is a fact about one
+    // cohort AND about one session (review WR-08/WR-09).
+    const askedInRound = get().auth === 'logged-in' ? get().sessionRound : undefined;
     const result = await fetchCohortDetail(baseUrl, askedFor);
     if (result.kind === 'unauthorized') {
-      // Handled FIRST, ahead of the round guard below, and deliberately so: a session expiry is
+      // Handled FIRST, ahead of the cohort guard below, and deliberately so: a session expiry is
       // SESSION-scoped, not cohort-scoped. It is true no matter which cohort asked, and deferring
       // it to the next poll tick would leave the operator working a dead session for no reason.
       // Session expired mid-monitoring (D-16): honest re-login. Drop to the login screen
       // and back to the list view so the next sign-in starts clean; distinct from an
       // unreachable fault, which freezes the view below.
-      get().expireSession();
+      //
+      // Scoped to the session that ASKED, on the same reasoning as `refreshCohorts` above: a 401 is
+      // evidence about the asker, so a refusal aimed at a session that has already ended must not
+      // end the one that replaced it (review WR-08).
+      if (askedInRound !== undefined && get().sessionRound === askedInRound) {
+        get().expireSession();
+      }
       return;
     }
     // The round guard. Everything BELOW this point is a fact about ONE cohort, the freshness flag
