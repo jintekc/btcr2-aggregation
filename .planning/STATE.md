@@ -27,10 +27,10 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 
 ## Current Position
 
-Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 4 of 38
-Status: Ready to execute
-Last activity: 2026-08-03 — Phase 05 execution started
+Phase: 05 (operator-cohort-lifecycle-control) - AWAITING UAT
+Plan: 38 of 38 (round-6 gap closure 05-36..05-38 executed 2026-08-03)
+Status: Verification pass 7: 7/7 success criteria verified at code level, status human_needed. 16 human items pending in 05-UAT.md (run /gsd-verify-work 5). Round-6 deep review confirmed all seven round-5 closures real (WR-08..10, IN-05..08) and recorded ONE NEW CRITICAL CR-03 in 05-REVIEW.md (probe's session-ended branches neither retire the sessionRound nor clear the gated operator slice, so the next sign-in inherits the dead session's cohort list, drill-down and settings latch; fails closed against the service, display-layer only) plus WR-11 (pre-await status snapshot lets overlapping probes bump the round; fires under dev StrictMode), WR-12 (advertise/readvertise generic 401 copy, stale formError crosses sessions) and IN-09..14. Verifier recommends a 7th gap round for CR-03 before /gsd-secure-phase 5 or milestone completion. REQUIREMENTS.md SVC-04/SVC-05 correctly read Gaps Found (05-38 revert). No 05-SECURITY.md yet.
+Last activity: 2026-08-03 - Phase 05 round-6 re-verification recorded
 
 Progress: [██████████] 100%
 
