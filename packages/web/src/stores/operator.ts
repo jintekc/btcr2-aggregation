@@ -1320,6 +1320,15 @@ export const useOperator = create<OperatorState>((set, get) => ({
       }
       return;
     }
+    // The round guard, ahead of BOTH branches that write: a late answer must move neither the
+    // snapshot nor the error posture of a console it does not belong to (review WR-09). The write
+    // here is not transient either, which is why it earns a guard rather than a comment: the
+    // console shell re-reads settings only while the snapshot is undefined, so a dead session's
+    // answer landing in that gap makes the new session skip its own read and open the create form
+    // on a previous session's defaults.
+    if (askedInRound === undefined || get().sessionRound !== askedInRound) {
+      return;
+    }
     if (result.kind === 'unreachable') {
       // Keep whatever snapshot is already on screen (D-25): a transient fault must not blank a
       // form the operator may be mid-way through reading.
@@ -1337,7 +1346,13 @@ export const useOperator = create<OperatorState>((set, get) => ({
     const askedInRound = get().auth === 'logged-in' ? get().sessionRound : undefined;
     try {
       const result = await apiSaveSettings(baseUrl, patch);
+      // One comparison, read by every branch below, because all four of them act: two write into
+      // the settings slice, one writes the error posture, and one ends a session (review WR-09).
+      const stillAsking = askedInRound !== undefined && get().sessionRound === askedInRound;
       if (result.ok) {
+        if (!stillAsking) {
+          return;
+        }
         // The SERVED snapshot replaces the previous one. Never the patch that was sent: a value
         // the service normalized (a trimmed name, cleared terms) must display as the service holds
         // it, not as it was typed.
@@ -1354,16 +1369,25 @@ export const useOperator = create<OperatorState>((set, get) => ({
       }
       if ('unauthorized' in result) {
         // Scoped to the session that ASKED, as in the three reads above (review WR-08).
-        if (askedInRound !== undefined && get().sessionRound === askedInRound) {
+        if (stillAsking) {
           get().expireSession();
         }
+        return;
+      }
+      if (!stillAsking) {
+        // A refusal about a value the PREVIOUS operator typed is a message the current one cannot
+        // act on, so it is discarded with the rest of a dead session's answers.
         return;
       }
       // A rejection applies NOTHING (the service validates the set and refuses it whole), and this
       // store writes no field either, so every rendered value still shows what the service holds.
       set({ settingsStatus: 'error', settingsError: result.error });
     } catch {
-      set({ settingsStatus: 'error', settingsError: UNREACHABLE });
+      // The transport fault is scoped the same way: it is a fact about the request the asking
+      // session made, and the console that replaced it made no save to report on.
+      if (askedInRound !== undefined && get().sessionRound === askedInRound) {
+        set({ settingsStatus: 'error', settingsError: UNREACHABLE });
+      }
     }
   },
 
@@ -1430,7 +1454,17 @@ export const useOperator = create<OperatorState>((set, get) => ({
     // success must not paint it. The shipped precedent is `fetchCohortFate` in
     // `stores/participant.ts`: ask about one id, and apply the answer only if that is still what
     // the store holds.
+    //
+    // The session comparison JOINS the cohort comparison rather than replacing it, and each refuses
+    // something the other cannot see (review WR-09). The cohort comparison cannot see a session
+    // boundary the operator crossed while reopening the SAME cohort id, and the session comparison
+    // cannot see a navigation inside one session. What this slot holds makes the difference matter:
+    // member DIDs and pubkeys, raw signed updates, co-sign progress and the funding view, so a
+    // dead session's copy landing in a live one is operator data crossing a session boundary.
     const current = get().view;
+    if (askedInRound === undefined || get().sessionRound !== askedInRound) {
+      return;
+    }
     if (current.kind !== 'detail' || current.cohortId !== askedFor) {
       return;
     }

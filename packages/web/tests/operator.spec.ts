@@ -11,6 +11,7 @@ import {
   ACTION_FAILED,
   EXPORT_FAILED,
   SESSION_EXPIRED,
+  SETTINGS_SAVED_OK,
 } from '../src/stores/operator';
 
 /**
@@ -1262,6 +1263,176 @@ describe('operator store session identity across every gated read (review WR-08/
     const s = useOperator.getState();
     expect(s.auth).toBe('logged-out');
     expect(s.error).toBe(SESSION_EXPIRED);
+  });
+
+  it('pollDetail refuses a document from an ENDED session even when the new session REOPENS the same cohort', async () => {
+    // The cohort guard alone cannot see this: the operator reopens the cohort they were already
+    // watching, so the id matches and the answer paints. What lands is member DIDs and pubkeys, raw
+    // signed updates, co-sign progress and the funding view, from a session that has ended.
+    const a = deferred<Response>();
+    stubGated({ detail: { 'cohort-x': a.promise } });
+    seedLive();
+    useOperator.getState().openCohort('cohort-x');
+    const poll = useOperator.getState().pollDetail(BASE);
+
+    await signBackIn();
+    useOperator.getState().openCohort('cohort-x');
+
+    a.resolve(okDetail(OTHER_DETAIL));
+    await poll;
+
+    const s = useOperator.getState();
+    expect(s.detail).toBeUndefined();
+    expect(s.detailCohortId).toBeUndefined();
+    // The freshness stamp is refused with the body: it is the drill-down's own clock, and a stamp
+    // the new session never earned captions another session's data as fresh.
+    expect(s.lastUpdated).toBeUndefined();
+    expect(s.detailStale).toBe(false);
+  });
+
+  it('pollDetail STILL paints a same-session answer about the open cohort', async () => {
+    // The anti-vacuity control beside the row above, paired with it rather than grouped at the end.
+    const a = deferred<Response>();
+    stubGated({ detail: { 'cohort-x': a.promise } });
+    seedLive();
+    useOperator.getState().openCohort('cohort-x');
+    useOperator.setState({ detailStale: true });
+    const poll = useOperator.getState().pollDetail(BASE);
+
+    a.resolve(okDetail(OTHER_DETAIL));
+    await poll;
+
+    const s = useOperator.getState();
+    expect(s.detail).toEqual(OTHER_DETAIL);
+    expect(s.detailCohortId).toBe('cohort-x');
+    expect(s.detailStale).toBe(false);
+    expect(typeof s.lastUpdated).toBe('number');
+  });
+
+  it('pollDetail STILL freezes and flags a same-session unreachable read', async () => {
+    // The second half of the control: a guard that over-refused would silently disable the D-25
+    // freeze-and-banner path for the drill-down, and every refusal row above would still pass.
+    const first = deferred<Response>();
+    const second = deferred<Response>();
+    stubGated({ detail: { 'cohort-x': first.promise } });
+    seedLive();
+    useOperator.getState().openCohort('cohort-x');
+    const ok = useOperator.getState().pollDetail(BASE);
+    first.resolve(okDetail(OTHER_DETAIL));
+    await ok;
+
+    stubGated({ detail: { 'cohort-x': second.promise } });
+    const failing = useOperator.getState().pollDetail(BASE);
+    second.reject(new Error('network down'));
+    await failing;
+
+    const s = useOperator.getState();
+    expect(s.detailStale).toBe(true);
+    expect(s.detail).toEqual(OTHER_DETAIL);
+    expect(s.auth).toBe('logged-in');
+  });
+
+  it('loadSettings refuses a snapshot from an ENDED session, leaving the shell free to re-read', async () => {
+    const a = deferred<Response>();
+    stubGated({ settings: [a.promise] });
+    seedLive();
+    const read = useOperator.getState().loadSettings(BASE);
+
+    await signBackIn();
+
+    a.resolve(new Response(JSON.stringify(SESSION_A_SETTINGS), { status: 200 }));
+    await read;
+
+    const s = useOperator.getState();
+    expect(s.settings).toBeUndefined();
+    // The shell's own once-per-session condition (`OperatorConsole.tsx:65-69`), computed here rather
+    // than described. That effect re-reads settings only while the snapshot is undefined, so a dead
+    // session's answer landing in the gap made the new session skip its own read entirely and open
+    // the create form on a previous session's defaults. Asserting the boolean pins the latch
+    // without a DOM, and without editing the component, which is correct as written.
+    expect(s.auth === 'logged-in' && s.settings === undefined).toBe(true);
+  });
+
+  it('loadSettings STILL populates the snapshot for the session that asked', async () => {
+    const a = deferred<Response>();
+    stubGated({ settings: [a.promise] });
+    seedLive();
+    const read = useOperator.getState().loadSettings(BASE);
+
+    a.resolve(new Response(JSON.stringify(SESSION_A_SETTINGS), { status: 200 }));
+    await read;
+
+    const s = useOperator.getState();
+    expect(s.settings).toEqual(SESSION_A_SETTINGS);
+    expect(s.settingsStatus).toBe('idle');
+    expect(s.settingsError).toBeUndefined();
+  });
+
+  it('loadSettings STILL shows the unreachable posture for the session that asked', async () => {
+    const a = deferred<Response>();
+    stubGated({ settings: [a.promise] });
+    seedLive();
+    const read = useOperator.getState().loadSettings(BASE);
+
+    a.reject(new Error('network down'));
+    await read;
+
+    const s = useOperator.getState();
+    expect(s.settingsStatus).toBe('error');
+    // The shipped unreachable copy, matched on its own words rather than through a new export: this
+    // plan adds no exported symbol.
+    expect(s.settingsError).toContain('Could not reach the service');
+    expect(s.auth).toBe('logged-in');
+  });
+
+  it('saveSettings refuses a served snapshot from an ENDED session', async () => {
+    const a = deferred<Response>();
+    stubGated({ settings: [a.promise] });
+    seedLive();
+    const save = useOperator.getState().saveSettings(BASE, { serviceName: 'Session A rename' });
+
+    await signBackIn();
+
+    a.resolve(new Response(JSON.stringify(SESSION_A_SETTINGS), { status: 200 }));
+    await save;
+
+    const s = useOperator.getState();
+    expect(s.settings).toBeUndefined();
+    expect(s.settingsMessage).toBeUndefined();
+    expect(s.settingsError).toBeUndefined();
+  });
+
+  it('saveSettings refuses a REJECTION aimed at an ended session, so no error lands in a console that never saved', async () => {
+    // The rejection branch writes too, and a service's 400 about a value the previous operator
+    // typed is a message the new one cannot act on.
+    const a = deferred<Response>();
+    stubGated({ settings: [a.promise] });
+    seedLive();
+    const save = useOperator.getState().saveSettings(BASE, { serviceName: '' });
+
+    await signBackIn();
+
+    a.resolve(new Response(JSON.stringify({ error: 'Cohort size must be at least 1 signer.' }), { status: 400 }));
+    await save;
+
+    const s = useOperator.getState();
+    expect(s.settingsError).toBeUndefined();
+    expect(s.settingsStatus).toBe('idle');
+  });
+
+  it('saveSettings STILL writes the served snapshot and the saved message for the session that saved', async () => {
+    const a = deferred<Response>();
+    stubGated({ settings: [a.promise] });
+    seedLive();
+    const save = useOperator.getState().saveSettings(BASE, { serviceName: 'Session A rename' });
+
+    a.resolve(new Response(JSON.stringify(SESSION_A_SETTINGS), { status: 200 }));
+    await save;
+
+    const s = useOperator.getState();
+    expect(s.settings).toEqual(SESSION_A_SETTINGS);
+    expect(s.settingsMessage).toBe(SETTINGS_SAVED_OK);
+    expect(s.settingsStatus).toBe('idle');
   });
 });
 
