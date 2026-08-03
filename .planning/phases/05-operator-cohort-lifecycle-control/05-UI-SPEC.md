@@ -393,7 +393,7 @@ Applicable state considerations resolved: **59 covered, 6 backstop, 23 dismissed
 | error | E17 PSBT | covered | Each of the five documented validation outcomes renders its own string; broadcast stays disabled unless validation passed. |
 | populated | E4 service controls | covered | A running service renders the running state line plus `Pause advertising`; a live-broadcast service also renders `Disable broadcast`. |
 | populated | E5 paused notice | covered | With open rows the notice sits above the list and the rows keep rendering; the list is never suppressed by the notice. |
-| populated | E8 settings | covered | Every field renders its current value plus one of THREE source captions: `env default`, `changed this session (environment default: {value})`, or, on a free-text field whose boot seed this service refused as too long, a bad-tone line naming the environment variable and what the refusal cost that field. |
+| populated | E8 settings | covered | Every field renders its current value plus one of THREE source captions: `env default`, `changed this session (environment default: {value})`, or, on a free-text field whose boot seed this service refused as too long, a bad-tone line naming the environment variable, what the refusal costs while it stands, and what repairs it (both the repair available in this session and the environment edit a restart needs). Where this service refused the seed of a field the operator has since changed, the second format's environment-default slot DISCLOSES the refusal rather than reporting an absent boot value; the format itself is unchanged, so there are still three. |
 | populated | E11 members | covered | Test-peer members render the `Test peer` badge and line alongside ordinary members in the same list, never in a separate section. |
 | populated | E12 ended rows | covered | A canceled cohort renders the neutral `Canceled` chip in the `Ended` group with `Canceled by the operator at {time}.` |
 | populated | E13 operator log | covered | Entries render server wall-clock time plus text, tone by level, using the shipped `LogPanel`. |
@@ -430,7 +430,7 @@ Applicable state considerations resolved: **59 covered, 6 backstop, 23 dismissed
 | overflow | E15 terms body | Same container under a very long document. Backstop: the join controls stay reachable below the scrolled terms container at narrow viewport heights. |
 | long-text | E17 PSBT paste | A pasted PSBT is a long base64 blob. Backstop: pasting a large PSBT keeps the field scrolling internally and does not reflow the surrounding step. |
 | overflow | E1 lifecycle block | Cancel availability, finalize availability, and the seat-reclaim workaround note can co-occur with the funding disclosures already stacked in the drill-down. Backstop: the worst-case stack stays readable without overflow. |
-| long-text | E8 settings, refused-seed caption | The refused-seed caption is a full sentence in bad tone under a field that already carries two help lines. Backstop: at a real viewport it reads as a warning rather than as another grey caption, fits on the field it belongs to, and does not push the save control off screen. |
+| long-text | E8 settings, refused-seed caption | The refused-seed caption is TWO full sentences in bad tone (the cost, then the repair) under a field that already carries two help lines. Backstop: at a real viewport it reads as a warning rather than as another grey caption, both sentences fit under the field they belong to, and the pair does not push the save control off screen. |
 
 ### Dismissed (with reasons)
 

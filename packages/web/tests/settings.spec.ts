@@ -5,6 +5,7 @@ import {
   droppedSeedFor,
   envDefaultText,
   formFromSnapshot,
+  refusedEnvDefaultText,
   settingsPatch,
   sourceCaption,
   windowEnvDefaultText,
@@ -195,9 +196,18 @@ describe('the per-setting source caption has exactly three formats (D-12, UI-SPE
     expect(markup).not.toContain('TERMS_TEXT');
   });
 
-  it('gives a field the operator has CHANGED this session its changed caption, refusal or not', () => {
-    // The precedence decision, pinned because the opposite is defensible: a changed field holds a
-    // value the operator chose, so the refusal is history about a boot value nothing now renders.
+  it('gives a CHANGED field the changed caption whose parenthetical NAMES the refusal (review IN-05)', () => {
+    // The precedence decision stands: a changed field holds a value the operator chose, so it keeps
+    // the ordinary caption rather than the bad-tone sentence, which would go on shouting about a
+    // boot value the field no longer carries.
+    //
+    // WHY THE VARIABLE ASSERTION IS FLIPPED RATHER THAN DELETED. This row previously asserted that
+    // the refused variable was ABSENT from this caption, which is exactly the false state: with the
+    // boot value refused, the changed caption read `changed this session (environment default: not
+    // set)`, the same affirmative claim that the environment set nothing that WR-07 was filed
+    // about, in a second sentence. The negative assertion pinned the defect and read as evidence
+    // against it, which is what made this findable at all, so it is kept as a positive rather than
+    // dropped.
     const markup = renderStatic(
       createElement(SourceCaption, {
         field: { changed: true },
@@ -205,8 +215,30 @@ describe('the per-setting source caption has exactly three formats (D-12, UI-SPE
         dropped: REFUSED_SEEDS.termsText,
       }),
     );
-    expect(markup).toContain('changed this session');
-    expect(markup).not.toContain('TERMS_TEXT');
+    // The format's SHAPE is untouched: this is still the second of the three captions.
+    expect(markup).toContain('changed this session (environment default:');
+    expect(markup).toContain('TERMS_TEXT');
+    // And it no longer reads as an absence.
+    expect(markup).not.toContain(SOURCE_UNSET);
+    // The ordinary caption styling, not the bad tone: the operator has already acted on this field.
+    expect(markup).not.toContain('text-bad');
+    // The text itself, so the slot's content is pinned without a render.
+    expect(refusedEnvDefaultText(REFUSED_SEEDS.termsText)).toContain('TERMS_TEXT');
+    expect(refusedEnvDefaultText(REFUSED_SEEDS.termsText)).not.toContain(SOURCE_UNSET);
+  });
+
+  it('leaves a CHANGED field with no refusal captioned exactly as it is today, unset boot value included', () => {
+    // The anti-vacuity control for the row above: a helper that supplied the refusal text
+    // unconditionally would satisfy that pin and fail here. The second case is the one that matters
+    // most, a boot value that genuinely IS unset, which must keep reading as unset.
+    expect(
+      renderStatic(createElement(SourceCaption, { field: { changed: true }, text: 'Acme Aggregation' })),
+    ).toContain('changed this session (environment default: Acme Aggregation)');
+    const unset = renderStatic(
+      createElement(SourceCaption, { field: { changed: true }, text: envDefaultText(undefined) }),
+    );
+    expect(unset).toContain('changed this session (environment default: not set)');
+    expect(unset).not.toContain('refused');
   });
 
   it('reads a service that serves NO refused list as none refused, never as unknown', () => {

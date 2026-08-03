@@ -37,6 +37,10 @@ export const SOURCE_UNSET = 'not set';
  * {@link droppedSeedCaption}, covers a case neither of these describes, a boot seed this service
  * REFUSED, and both formats below keep their exact wording and their exact conditions.
  *
+ * The second format's slot can also carry a REFUSAL rather than a boot value, on a changed field
+ * whose seed this service refused (see {@link refusedEnvDefaultText}). That is a widening of what
+ * one slot holds, not a fourth format: the shape is unchanged, which is why there are still three.
+ *
  * The caption CARRIES the fact rather than reinforcing a colored badge, which is the point: an
  * operator reading this console needs to know which values will survive a restart, and a color
  * cannot say that. It is also why the third format is a sentence and not a chip.
@@ -123,9 +127,17 @@ export const REFUSED_SEEDS: Record<'serviceName' | 'termsText', RefusedSeed> = {
  * for why they are separate members).
  *
  * PRECEDENCE, decided here because the opposite is defensible and a later reader will wonder which
- * was meant: a field the operator has already CHANGED this session holds a value they chose, so the
- * refusal is history about a boot value nothing on screen renders any more, and the existing changed
- * caption is the honest one. See {@link SourceCaption}.
+ * was meant: a field the operator has already CHANGED this session takes the changed caption rather
+ * than this one, because it holds a value they chose and this bad-tone sentence would go on shouting
+ * about a value the field no longer carries.
+ *
+ * That is only honest because the changed caption's environment-default slot NAMES the refusal (see
+ * {@link refusedEnvDefaultText}). The rationale written here first claimed the refusal was history
+ * about a boot value nothing on screen rendered, and that premise was false: the changed caption
+ * renders exactly that boot value, so a refused field read `changed this session (environment
+ * default: not set)`, which is the same affirmative claim that the environment set nothing that
+ * WR-07 was filed about, in a second sentence (review IN-05). It shares its cause with WR-07: a
+ * caption is a fact the service reported, and an absence is not a fact. See {@link SourceCaption}.
  */
 export function droppedSeedCaption(seed: RefusedSeed): string {
   return (
@@ -156,6 +168,23 @@ export function envDefaultText(value: string | number | undefined): string {
 /** A window's caption text in the minutes the operator actually edits, or {@link SOURCE_UNSET}. */
 export function windowEnvDefaultText(ms: number | undefined): string {
   return ms === undefined ? SOURCE_UNSET : `${msToMinutesText(ms)} min`;
+}
+
+/**
+ * The environment-default text a field whose boot seed this service REFUSED supplies to the CHANGED
+ * caption (review IN-05).
+ *
+ * A refused seed leaves the field's boot value undefined, so {@link envDefaultText} reads it as
+ * {@link SOURCE_UNSET} and the changed caption stated that the environment set nothing, about a
+ * field whose environment value this service read, measured and refused. This names what actually
+ * happened to that value instead, and names the variable so the operator still knows where to look.
+ *
+ * A plain text helper like its two neighbours above, so the caption FORMAT is untouched: only what
+ * one slot can carry changes, which keeps the second format's shape intact and keeps the string
+ * assertable without a render.
+ */
+export function refusedEnvDefaultText(seed: RefusedSeed): string {
+  return `refused, see ${seed.variable}`;
 }
 
 /** The settings form's editable values, all held as the text the operator typed. */
@@ -511,5 +540,11 @@ export function SourceCaption({
   if (dropped && !field.changed) {
     return <p className="mt-1 text-xs text-bad">{droppedSeedCaption(dropped)}</p>;
   }
-  return <p className="mt-1 text-xs uppercase tracking-[0.14em] text-faint">{sourceCaption(field.changed, text)}</p>;
+  // Reaching here with a refusal means the field is CHANGED, so this is the second format, and its
+  // environment-default slot takes the refusal text rather than the caller's (review IN-05).
+  return (
+    <p className="mt-1 text-xs uppercase tracking-[0.14em] text-faint">
+      {sourceCaption(field.changed, dropped ? refusedEnvDefaultText(dropped) : text)}
+    </p>
+  );
 }
