@@ -48,34 +48,60 @@ export function sourceCaption(changed: boolean, envDefaultText: string): string 
   return changed ? `changed this session (environment default: ${envDefaultText})` : SOURCE_ENV_DEFAULT;
 }
 
-/** One free-text setting's boot variable and what this service refusing its seed COST that field. */
+/**
+ * One free-text setting's boot variable, what this service refusing its seed COST that field, and
+ * what REPAIRS it. Three members rather than two, because the cost and the repair are true at
+ * different times and a single sentence fused them (see {@link REFUSED_SEEDS}).
+ */
 export interface RefusedSeed {
   readonly variable: string;
   readonly cost: string;
+  readonly remedy: string;
 }
 
 /**
- * The two settings whose boot seed this service can refuse, and what each refusal costs
- * (`05-REVIEW.md` WR-07). Named here beside the call sites rather than derived from a general
- * lookup: there are exactly two, and naming both is clearer than deriving either.
+ * The two settings whose boot seed this service can refuse, what each refusal costs, and what
+ * repairs it (`05-REVIEW.md` WR-07, corrected by WR-10). Named here beside the call sites rather
+ * than derived from a general lookup: there are exactly two, and naming both is clearer than
+ * deriving either.
  *
  * The two costs are deliberately DIFFERENT sentences. Dropping the display name loses a label.
  * Dropping the participation terms turns the SVC-05 acceptance gate off: the acceptance route
  * refuses every acceptance, `GET /v1/config` omits the key, and the join flow has no terms step at
  * all, which is the sentence `textKnob`'s own boot warning already states. Borrowing the terms
  * wording for the name would overstate one loss; borrowing the name's wording for the terms would
- * hide the one that matters.
+ * hide the one that matters. The two remedies stay different for the same reason: restoring the
+ * terms turns an enforcement control back on, restoring the name restores a label.
+ *
+ * WHY THE COST AND THE REMEDY ARE SEPARATE MEMBERS (review WR-10). Both costs originally ended
+ * `until the value is shortened and this service restarts`, which named the slower of the two
+ * available repairs and implied the faster one did not exist. It does: `applySettings` accepts a
+ * value up to the holder's own character ceiling and the settings route carries it, so the operator
+ * can type into the field this caption sits under, save, and have the setting back in THIS session.
+ * A disclosure exists to make someone act, and a sentence that fuses a cost with a remedy drops
+ * whichever of the two the reader cannot do yet.
+ *
+ * The contradiction that made this findable is worth keeping written down: `SETTINGS_MODEL_LINE`,
+ * two cards above this caption on the same screen, tells the operator that a restart returns every
+ * value to its environment default. A caption claiming a restart is the remedy therefore told them
+ * two opposite things at once. So each cost states only what is true right now, and each remedy
+ * names the in-session repair FIRST (what they can do while reading) and the environment edit
+ * SECOND (what stops them doing it again next boot).
  */
 export const REFUSED_SEEDS: Record<'serviceName' | 'termsText', RefusedSeed> = {
   serviceName: {
     variable: 'SERVICE_NAME',
-    cost: 'the display name stays unset until the value is shortened and this service restarts',
+    cost: 'the display name stays unset',
+    remedy:
+      'Set the service name below to restore it for this session, ' +
+      'and shorten SERVICE_NAME so a restart keeps it',
   },
   termsText: {
     variable: 'TERMS_TEXT',
-    cost:
-      'the join flow has no terms step at all, and this service refuses every acceptance, ' +
-      'until the value is shortened and this service restarts',
+    cost: 'the join flow has no terms step at all, and this service refuses every acceptance',
+    remedy:
+      'Set the participation terms below to restore the acceptance step for this session, ' +
+      'and shorten TERMS_TEXT so a restart keeps it',
   },
 };
 
@@ -88,9 +114,13 @@ export const REFUSED_SEEDS: Record<'serviceName' | 'termsText', RefusedSeed> = {
  * nothing, about a field whose environment value this service read, measured and refused. That
  * removes the operator's reason to look, which is worse than getting a value wrong.
  *
- * It carries the VARIABLE and the COST, and never the refused value: the variable is what the
- * operator can act on, and a disclosure added for honesty must not become a disclosure of something
- * they did not mean to serve.
+ * It carries the VARIABLE, the COST and the REMEDY, and never the refused value: the variable is
+ * what the operator can act on, and a disclosure added for honesty must not become a disclosure of
+ * something they did not mean to serve.
+ *
+ * The cost and the remedy end as SEPARATE sentences rather than joining into one clause, because
+ * one clause is how the two fused in the first place (review WR-10, and see {@link REFUSED_SEEDS}
+ * for why they are separate members).
  *
  * PRECEDENCE, decided here because the opposite is defensible and a later reader will wonder which
  * was meant: a field the operator has already CHANGED this session holds a value they chose, so the
@@ -98,7 +128,10 @@ export const REFUSED_SEEDS: Record<'serviceName' | 'termsText', RefusedSeed> = {
  * caption is the honest one. See {@link SourceCaption}.
  */
 export function droppedSeedCaption(seed: RefusedSeed): string {
-  return `${seed.variable} was set at boot, but this service refused it as too long, so ${seed.cost}.`;
+  return (
+    `${seed.variable} was set at boot, but this service refused it as too long, ` +
+    `so ${seed.cost}. ${seed.remedy}.`
+  );
 }
 
 /**

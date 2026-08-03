@@ -119,13 +119,53 @@ describe('the per-setting source caption has exactly three formats (D-12, UI-SPE
   it('names the refused VARIABLE and what the refusal COST, for each of the two free-text fields', () => {
     // Both halves. The variable alone leaves an operator knowing something was refused and not what
     // it disabled, which is the whole difference between the terms field and the display name.
+    // The cost is asserted as the WHOLE member rather than as a fragment of it, so a rewrite that
+    // drops half a cost clause out of the composed line goes red here (review WR-10 split the cost
+    // from the remedy, and this row is what holds the cost half in the rendered sentence).
     expect(droppedSeedCaption(REFUSED_SEEDS.termsText)).toContain('TERMS_TEXT');
     expect(droppedSeedCaption(REFUSED_SEEDS.termsText)).toContain('no terms step');
+    expect(droppedSeedCaption(REFUSED_SEEDS.termsText)).toContain(REFUSED_SEEDS.termsText.cost);
     expect(droppedSeedCaption(REFUSED_SEEDS.serviceName)).toContain('SERVICE_NAME');
     expect(droppedSeedCaption(REFUSED_SEEDS.serviceName)).toContain('display name');
+    expect(droppedSeedCaption(REFUSED_SEEDS.serviceName)).toContain(REFUSED_SEEDS.serviceName.cost);
     // The cost copy is per field rather than one generic sentence, so the smaller loss is not
     // dressed in the larger one's words.
     expect(REFUSED_SEEDS.termsText.cost).not.toBe(REFUSED_SEEDS.serviceName.cost);
+  });
+
+  it('THE PIN: neither cost sentence claims a restart is required (review WR-10)', () => {
+    // Asserted over each COST member, deliberately NOT over the composed caption. The caption
+    // legitimately names a restart in its remedy half (shorten the seed so a restart keeps the
+    // repair), so a pin over the whole sentence could only pass vacuously or forbid the true half.
+    // The narrow assertion is the one that carries the property: what a refusal costs RIGHT NOW
+    // cannot be stated in terms of restarting, because a restart is not what repairs it. Every
+    // value on this surface is repairable in the running session, which is what the model line two
+    // cards above the caption already tells the operator.
+    for (const seed of [REFUSED_SEEDS.serviceName, REFUSED_SEEDS.termsText]) {
+      expect(seed.cost).not.toMatch(/restart/i);
+    }
+  });
+
+  it('names BOTH repair paths: the one available in this session and the one a restart needs', () => {
+    // A remedy naming only the in-session repair would leave the operator running a service that
+    // reverts to the refusal on its next boot. A remedy naming only the environment edit is exactly
+    // the claim WR-10 was filed about. Both halves, per field, in that order.
+    for (const seed of [REFUSED_SEEDS.serviceName, REFUSED_SEEDS.termsText]) {
+      expect(seed.remedy).toContain('this session');
+      expect(seed.remedy).toContain(seed.variable);
+      expect(seed.remedy).toMatch(/restart/i);
+      // The remedy reaches the rendered line, not just the record.
+      expect(droppedSeedCaption(seed)).toContain(seed.remedy);
+    }
+  });
+
+  it('keeps the terms remedy about the acceptance gate and the name remedy about the label', () => {
+    // The two costs were already deliberately different sentences; the two remedies stay different
+    // for the same reason. Restoring the terms turns an enforcement control back on. Restoring the
+    // display name restores a label.
+    expect(REFUSED_SEEDS.termsText.remedy).toContain('acceptance');
+    expect(REFUSED_SEEDS.serviceName.remedy).not.toContain('acceptance');
+    expect(REFUSED_SEEDS.termsText.remedy).not.toBe(REFUSED_SEEDS.serviceName.remedy);
   });
 
   it('THE PIN: a field whose seed was refused can never render the environment-default caption', () => {
