@@ -179,7 +179,51 @@ export interface SettingsSnapshot {
   defaultDiscoveryWindowMs: SettingField<number | undefined>;
   defaultFundingWindowMs: SettingField<number | undefined>;
   termsText: SettingField<string | undefined>;
+  /**
+   * The environment variables whose boot seeds this service REFUSED (`05-REVIEW.md` WR-07). Not a
+   * setting, which is what a reader of the six members above will expect: it is boot PROVENANCE
+   * about a setting, and it exists so the console can caption a refused field honestly instead of
+   * captioning the resulting emptiness as the environment's own choice.
+   *
+   * Why it is needed at all. {@link textKnob} drops an over-long free-text seed rather than
+   * truncating it, and that is right (see its docstring). But the drop leaves `value` and
+   * `envDefault` both undefined, so {@link project} computes `changed: false` and the console
+   * renders `env default`: the settings surface tells the operator that this service's ENVIRONMENT
+   * DEFAULT for the participation terms is unset, when the environment set a hundred thousand
+   * characters of terms. For the terms in particular the drop also turns the SVC-05 acceptance gate
+   * OFF (the acceptance route refuses every acceptance and `GET /v1/config` omits the key), so an
+   * operator who deliberately configured a DID-signed acceptance requirement is running a service
+   * that does not require one, and the only record of that was a single boot line.
+   *
+   * NAMES ONLY, as a rule and not as an implementation note. The refused VALUE is never carried
+   * anywhere: a disclosure added for honesty must not become a disclosure of something the operator
+   * did not mean to serve, and the variable name is the whole of what they need in order to act.
+   * This is the same reasoning `recordSettingsChanges` in `hono-adapter.ts` already gives for
+   * logging field names rather than values, so the two read as one house rule.
+   *
+   * Served ONLY on the gated `GET /v1/operator/settings`, which is mounted after the same-origin
+   * and operator guards: which boot values this service refused is operator provenance about their
+   * own environment, not something the anonymous `GET /v1/config` has any business carrying.
+   *
+   * A FRESH copy on every read, like every other member of this snapshot.
+   */
+  droppedSeeds: readonly string[];
 }
+
+/**
+ * The snapshot members that are SETTINGS, as distinct from the member that is provenance about how
+ * a setting got its value. Derived structurally rather than listed, so a future {@link SettingField}
+ * member joins it automatically and a future non-field member does not.
+ *
+ * It exists because {@link SettingsSnapshot} stopped being uniform. `SETTING_LABELS` in
+ * `hono-adapter.ts` is keyed on this type and its `recordSettingsChanges` loop reads `.value` off
+ * each key it iterates, so keying either on every snapshot key would either fail to compile or, if
+ * cast past, walk a member that has no `.value` at all. Keying both on this type is what keeps the
+ * operator-actions log reporting exactly the seven things an operator can change.
+ */
+export type SettingsFieldKey = {
+  [K in keyof SettingsSnapshot]: SettingsSnapshot[K] extends SettingField<unknown> ? K : never;
+}[keyof SettingsSnapshot];
 
 /**
  * A settings save. Every field is optional: an ABSENT field is left exactly as it was, and a
@@ -435,6 +479,14 @@ function trimToUndefined(value: string | undefined): string | undefined {
  * Trimming runs FIRST, through {@link trimToUndefined}, so the empty-collapses-to-undefined
  * behavior these two fields already had is unchanged and stays defined in one place. The bound is
  * added to that idiom, never a replacement for it.
+ *
+ * `dropped` is the collector behind {@link SettingsSnapshot.droppedSeeds} (`05-REVIEW.md` WR-07).
+ * The refusal is recorded HERE, on the same branch that warns, so the boot line and the served
+ * record can never disagree about what happened. {@link numericKnob} deliberately does not feed it:
+ * a malformed numeric seed falls back to a value the operator can SEE rendered on the settings
+ * surface and correct in the same form, where a refused free-text seed falls back to an ABSENCE
+ * indistinguishable from never having set one, and `numericKnob` is also called for `PORT` and the
+ * runner knobs, which are not settings and have no place in a settings DTO.
  */
 function textKnob(
   name: string,
@@ -442,6 +494,7 @@ function textKnob(
   maximum: number,
   warn: (message: string) => void,
   consequence: string,
+  dropped: string[],
 ): string | undefined {
   const trimmed = trimToUndefined(raw);
   if (trimmed !== undefined && trimmed.length > maximum) {
@@ -452,6 +505,8 @@ function textKnob(
       `ignoring ${name}: ${trimmed.length} characters exceeds the ${maximum} character maximum ` +
         `this service stores; ${consequence}`,
     );
+    // The NAME, never the value (see {@link SettingsSnapshot.droppedSeeds}).
+    dropped.push(name);
     return undefined;
   }
   return trimmed;
@@ -674,6 +729,11 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
   // `applySettings` would refuse. The env var is named because that is what an operator can act on;
   // the holder is constructible programmatically too, but its programmatic caller is `createService`
   // and `demo-server.ts` fills that call from exactly these variables.
+  //
+  // Both seed sites feed ONE collector, which is what {@link SettingsSnapshot.droppedSeeds} serves
+  // to the console. It is written during construction and never afterwards: a refusal is a fact
+  // about this boot, so nothing a running service does can add to it or clear it.
+  const droppedSeeds: string[] = [];
   const serviceName: FieldState<string | undefined> = field(
     textKnob(
       'SERVICE_NAME',
@@ -681,6 +741,7 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
       MAX_SERVICE_NAME_CHARS,
       warn,
       'the display name is left unset until the value is shortened',
+      droppedSeeds,
     ),
   );
   const defaultBeaconType: FieldState<BeaconType> = field(seededBeaconType);
@@ -695,6 +756,7 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
       MAX_TERMS_CHARS,
       warn,
       'the terms are left unset, so the join flow has no terms step at all until the value is shortened',
+      droppedSeeds,
     ),
   );
 
@@ -875,6 +937,10 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
         defaultDiscoveryWindowMs: project(defaultDiscoveryWindowMs),
         defaultFundingWindowMs: project(defaultFundingWindowMs),
         termsText: project(termsText),
+        // A FRESH array per read, for exactly the reason `project` returns a fresh object: a caller
+        // must not be able to reshape this service's settings by writing through a DTO it was
+        // handed, and an array shared by reference is the one member where that would be easy.
+        droppedSeeds: [...droppedSeeds],
       };
     },
   };

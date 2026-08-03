@@ -324,11 +324,17 @@ describe('snapshot(): the whole field set with its source, for the console capti
         'defaultFundingWindowMs',
         'defaultSize',
         'defaultThreshold',
+        // RESHAPED, not loosened (`05-REVIEW.md` WR-07): boot PROVENANCE about a refused seed, not
+        // a setting, which is why the field walk below now names the settings rather than walking
+        // every member. The exact-equality discipline is this row's whole value and it stays.
+        'droppedSeeds',
         'serviceName',
         'termsText',
       ].sort(),
     );
-    for (const field of Object.values(snap)) {
+    const { droppedSeeds, ...fields } = snap;
+    expect(droppedSeeds).toEqual([]);
+    for (const field of Object.values(fields)) {
       expect(field).toHaveProperty('envDefault');
       expect(field.changed).toBe(false);
     }
@@ -1142,6 +1148,79 @@ describe('no free-text seed the holder ACCEPTS is a value it would REFUSE (SC3, 
     expect(warnings).toEqual([]);
     expect(settings.serviceName.value).toBeUndefined();
     expect(settings.termsText.value).toBeUndefined();
+  });
+
+  /**
+   * WHAT THE DROP IS NOW ACCOUNTED FOR (`05-REVIEW.md` WR-07). Dropping is the right choice and the
+   * rows above are unchanged, but until now the ONLY record of a refusal was one boot line. The
+   * gated settings read serves the refused variable NAMES, so the console can caption the resulting
+   * emptiness as this service's refusal instead of as the environment's own choice.
+   *
+   * The first row boots a REAL service for the same reason the block's first row does: a bare holder
+   * call proves the collector works, while a boot proves it sits on the path `demo-server.ts` feeds.
+   */
+  it('carries the refused TERMS_TEXT by NAME on the snapshot of a real boot, with the field still unset', async () => {
+    // BOTH halves. The name alone would pass against a collector that also stored the refused text,
+    // and the undefined alone is exactly what already shipped, silently.
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await withBootedService({ termsText: 'x'.repeat(100_000) }, (settings) => {
+        expect(settings.termsText.value).toBeUndefined();
+        expect(settings.snapshot().droppedSeeds).toEqual(['TERMS_TEXT']);
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('records BOTH refused seeds, so the record is a list of what happened and not a last-one-wins flag', () => {
+    const { warn } = withWarnings();
+    const settings = createRuntimeSettings({
+      serviceName: 'x'.repeat(5_000),
+      termsText: 'x'.repeat(100_000),
+      warn,
+    });
+    expect([...settings.snapshot().droppedSeeds].sort()).toEqual(['SERVICE_NAME', 'TERMS_TEXT']);
+  });
+
+  it('records nothing for a clean boot, and nothing for seeds sitting exactly AT their ceilings', () => {
+    // The anti-vacuity control for the whole record. Without it a collector that listed every seed
+    // it saw would satisfy the two rows above just as happily as one that lists only refusals.
+    const { warn } = withWarnings();
+    expect(createRuntimeSettings({ warn }).snapshot().droppedSeeds).toEqual([]);
+    expect(
+      createRuntimeSettings({
+        serviceName: 'x'.repeat(MAX_SERVICE_NAME_CHARS),
+        termsText: 'x'.repeat(MAX_TERMS_CHARS),
+        warn,
+      })
+        .snapshot().droppedSeeds,
+    ).toEqual([]);
+  });
+
+  it('carries NAMES only: no part of a refused seed appears anywhere in the served snapshot', () => {
+    // Asserted against the SERIALIZED snapshot rather than against the field, which looks stronger
+    // than necessary until the reason is stated: a future carrier that stashed the refused text
+    // under some other key would pass a field-level check and fail here. A disclosure added for
+    // honesty must never become a disclosure of something the operator did not mean to serve.
+    const { warn } = withWarnings();
+    const refused = `NEVER-SERVE-THIS-${'y'.repeat(100_000)}`;
+    const settings = createRuntimeSettings({ termsText: refused, warn });
+    const serialized = JSON.stringify(settings.snapshot());
+    expect(serialized).toContain('TERMS_TEXT');
+    expect(serialized).not.toContain('NEVER-SERVE-THIS');
+    expect(serialized).not.toContain('yyyy');
+  });
+
+  it('serves a FRESH copy of the record on every read, like every other member of this snapshot', () => {
+    // The same rule `project` states for every field: a caller must not be able to reshape this
+    // service's settings by writing through a DTO it was handed.
+    const { warn } = withWarnings();
+    const settings = createRuntimeSettings({ termsText: 'x'.repeat(100_000), warn });
+    const handed = settings.snapshot().droppedSeeds as string[];
+    handed.push('MADE_UP_VARIABLE');
+    handed[0] = 'REWRITTEN';
+    expect(settings.snapshot().droppedSeeds).toEqual(['TERMS_TEXT']);
   });
 });
 

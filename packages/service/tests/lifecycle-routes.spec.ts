@@ -1,7 +1,7 @@
 import { AggregationServiceRunner, HttpServerTransport } from '@did-btcr2/aggregation/service';
 import { resolveBtcr2SenderPk } from '@did-btcr2/method';
 import { createIdentity, FINALIZABLE_PHASES, resolveNetwork } from '@btcr2-aggregation/shared';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Participant } from '@btcr2-aggregation/participant';
 import { createCohortIntents } from '../src/cohort-intent.js';
 import {
@@ -29,7 +29,12 @@ import {
   NOT_SIGNING_REASON,
   type OperatorCohortDTO,
 } from '../src/operator-cohorts.js';
-import { createRuntimeSettings, MAX_TERMS_CHARS, SETTINGS_BODY_LIMIT_BYTES } from '../src/runtime-settings.js';
+import {
+  createRuntimeSettings,
+  MAX_TERMS_CHARS,
+  SETTINGS_BODY_LIMIT_BYTES,
+  type RuntimeSettingsSeed,
+} from '../src/runtime-settings.js';
 
 /**
  * The single home for the ROUTE-SEMANTICS matrix of every gated cohort-lifecycle route this
@@ -71,7 +76,7 @@ const FINALIZE_ACTIVITY_TEXT = 'Operator triggered the k-of-n fallback.';
  * `setPhase` installs an observed phase for a cohort id; every other id keeps the real state
  * machine's answer. `fallbackCalls` records the ids `finalizeCohort` handed to the library.
  */
-function lifecycleApp() {
+function lifecycleApp(settingsSeed: Partial<RuntimeSettingsSeed> = {}) {
   const identity = createIdentity(resolveNetwork(ACTIVE_NETWORK));
   const transport = new HttpServerTransport({ resolveSenderPk: resolveBtcr2SenderPk, heartbeatIntervalMs: 0 });
   transport.registerActor(identity.did, identity.keys);
@@ -131,8 +136,15 @@ function lifecycleApp() {
   });
   const monitor = createCohortMonitor(runner, undefined, undefined, undefined, undefined, testPeerRegistry.dids);
   // The runtime holder is wired exactly as `index.ts` wires it, so the settings routes below are
-  // asserted against the real gated block rather than a bespoke app.
-  const settings = createRuntimeSettings({ serviceName: 'Acme Aggregation', defaultSize: 2, defaultThreshold: 2 });
+  // asserted against the real gated block rather than a bespoke app. `settingsSeed` overrides the
+  // shipped seed for the rows that need a boot this holder REFUSED something at; every existing
+  // caller passes nothing and gets exactly the holder it always got.
+  const settings = createRuntimeSettings({
+    serviceName: 'Acme Aggregation',
+    defaultSize: 2,
+    defaultThreshold: 2,
+    ...settingsSeed,
+  });
   const operatorCohorts = createOperatorCohorts({
     activeNetwork: ACTIVE_NETWORK,
     runner,
@@ -564,6 +576,10 @@ describe('GET and PUT /v1/operator/settings route semantics (05-07, ADR 0015)', 
         'defaultFundingWindowMs',
         'defaultSize',
         'defaultThreshold',
+        // RESHAPED, not loosened (`05-REVIEW.md` WR-07): the served snapshot now also carries the
+        // boot seeds this service REFUSED, by name. The exact sorted-equality discipline is the
+        // whole value of this row and it stays; only the expected set moved.
+        'droppedSeeds',
         'serviceName',
         'termsText',
       ].sort(),
@@ -572,6 +588,80 @@ describe('GET and PUT /v1/operator/settings route semantics (05-07, ADR 0015)', 
     expect(body.serviceName.changed).toBe(false);
 
     runner.stop();
+  });
+
+  /**
+   * WHAT A REFUSED BOOT SEED IS NOW ACCOUNTED FOR, over the real gated route (`05-REVIEW.md` WR-07).
+   *
+   * `textKnob` drops an over-long free-text seed rather than truncating it, which is right, and then
+   * left the console captioning the resulting emptiness as `env default`: the environment set a
+   * hundred thousand characters of participation terms and the settings surface said the
+   * environment set nothing. For the terms the drop also turns the SVC-05 acceptance gate off, so
+   * the disclosure has to reach the operator on a surface they actually read.
+   */
+  describe('a refused boot seed is disclosed BEHIND the gate and nowhere else', () => {
+    /** Boot a service whose `TERMS_TEXT` seed this holder refused, silencing the boot warning. */
+    function droppedTermsApp(): ReturnType<typeof lifecycleApp> {
+      const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        return lifecycleApp({ termsText: 'x'.repeat(100_000) });
+      } finally {
+        spy.mockRestore();
+      }
+    }
+
+    it('carries the refused variable NAME on an authenticated operator read', async () => {
+      const { app, runner } = droppedTermsApp();
+      const cookie = await login(app);
+
+      const res = await app.request('/v1/operator/settings', { headers: { cookie } });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { droppedSeeds: string[]; termsText: { value?: string } };
+      expect(body.droppedSeeds).toEqual(['TERMS_TEXT']);
+      // The field itself is still honestly empty; the record says WHY.
+      expect(body.termsText.value).toBeUndefined();
+      // NAMES only, asserted against the serialized body so a carrier that stashed the refused text
+      // anywhere else in the object fails here rather than passing a field-level check.
+      expect(JSON.stringify(body)).not.toContain('xxxx');
+
+      runner.stop();
+    });
+
+    it('adds NOTHING to the anonymous GET /v1/config, key for key or byte for byte', async () => {
+      // Which boot values this service refused is operator provenance about the operator's own
+      // environment. The public body a stranger reads must be indistinguishable from the body of a
+      // service that refused nothing, which an exact `toEqual` states and a key-set check does not.
+      const dropped = droppedTermsApp();
+      const clean = lifecycleApp();
+
+      const droppedBody = await (await dropped.app.request('/v1/config')).json();
+      const cleanBody = await (await clean.app.request('/v1/config')).json();
+      expect(droppedBody).toEqual(cleanBody);
+      expect(JSON.stringify(droppedBody)).not.toContain('droppedSeeds');
+
+      dropped.runner.stop();
+      clean.runner.stop();
+    });
+
+    it('records nothing in the operator-actions log, and a later save still records what moved', async () => {
+      // A boot fact is not an operator action: that ring is session-scoped and `signOut` clears it,
+      // so a refusal filed there would be misattributed to whoever signed in first and lost at
+      // their sign-out. This row is also what proves the settings-label TYPE narrowing was not a
+      // narrowing of BEHAVIOR: the log still names exactly the settings whose values moved.
+      const { app, runner, monitor } = droppedTermsApp();
+      const cookie = await login(app);
+      expect(monitor.operatorActions()).toEqual([]);
+
+      const res = await app.request('/v1/operator/settings', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', cookie },
+        body: JSON.stringify({ serviceName: 'Acme (maintenance)' }),
+      });
+      expect(res.status).toBe(200);
+      expect(monitor.operatorActions().map((e) => e.text)).toEqual(['Changed the service name.']);
+
+      runner.stop();
+    });
   });
 
   /**

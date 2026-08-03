@@ -42,6 +42,7 @@ import {
 import {
   SETTINGS_BODY_LIMIT_BYTES,
   type RuntimeSettings,
+  type SettingsFieldKey,
   type SettingsPatch,
   type SettingsSnapshot,
 } from './runtime-settings.js';
@@ -151,8 +152,12 @@ function openTransportSse(c: Context<Env>, transport: HttpServerTransport): Resp
  * entry `Changed {setting}.` (UI-SPEC E13). They are deliberately plain-language rather than the
  * wire keys: the log is read by the operator, not by a machine, and `Changed defaultThreshold.`
  * is a field name where `Changed the default signing threshold.` is a sentence.
+ *
+ * Keyed on {@link SettingsFieldKey} rather than on every snapshot key, because the snapshot also
+ * carries `droppedSeeds`, which is boot provenance and not a setting: it has no `.value` for the
+ * loop below to read and no operator action to name (`05-REVIEW.md` WR-07).
  */
-const SETTING_LABELS: Record<keyof SettingsSnapshot, string> = {
+const SETTING_LABELS: Record<SettingsFieldKey, string> = {
   serviceName: 'the service name',
   defaultBeaconType: 'the default beacon type',
   defaultSize: 'the default cohort size',
@@ -182,7 +187,7 @@ function recordSettingsChanges(
     return;
   }
   try {
-    for (const key of Object.keys(SETTING_LABELS) as (keyof SettingsSnapshot)[]) {
+    for (const key of Object.keys(SETTING_LABELS) as SettingsFieldKey[]) {
       if (!Object.is(before[key].value, after[key].value)) {
         monitor.noteOperatorAction(changedSettingText(SETTING_LABELS[key]));
       }
