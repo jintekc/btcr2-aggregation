@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Planned gap-closure round 5 (05-33..05-35)
-last_updated: "2026-08-03T18:05:58.061Z"
+stopped_at: Completed 05-33-PLAN.md
+last_updated: "2026-08-03T18:36:49.886Z"
 last_activity: 2026-08-03
-last_activity_desc: Planned gap-closure round 5 (05-33..05-35)
+last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 5
-  completed_phases: 5
+  completed_phases: 4
   total_plans: 65
-  completed_plans: 62
+  completed_plans: 63
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 32 of 35 (gap-closure round 5 planned)
-Status: Round-5 gap plans 05-33..05-35 ready to execute (CR-02 blocker, WR-06, WR-07, IN-03/IN-04); checker passed iteration 1
-Last activity: 2026-08-03 - planned gap-closure round 5 from the round-4 re-verification and deep review
+Plan: 2 of 35
+Status: Ready to execute
+Last activity: 2026-08-03 — Phase 05 execution started
 
-Progress: [█████████░] 91%
+Progress: [██████████] 97%
 
 ## Performance Metrics
 
@@ -123,6 +123,7 @@ Progress: [█████████░] 91%
 | Phase 05 P30 | 15 min | 2 tasks | 4 files |
 | Phase 05 P31 | 47 min | 3 tasks | 4 files |
 | Phase 05 P32 | 6 min | 2 tasks | 2 files |
+| Phase 05 P33 | 27 min | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -236,6 +237,10 @@ Recent decisions affecting current work (Phase 2):
 - [Phase 05]: [Phase 05] 05-32: refreshCohorts re-checks the session across its await, so a list answer that outlived a sign-out or an expiry can no longer repaint the console's gated slice (cohort list, metrics, operator log, broadcast-mode chip); the guard is keyed on the SESSION because that is what a list read is a fact about, exactly as 05-28's pollDetail guard is keyed on the cohort (W5 / review WR-01).
 - [Phase 05]: [Phase 05] 05-32: the 401 branch deliberately stays AHEAD of the round guard - a guard may precede only a branch whose subject is narrower than its own, and here both are session-scoped, so keeping both read paths reading the same way costs nothing; the guard sits ahead of the unreachable branch too, because freshness is a fact about a list this session is watching.
 - [Phase 05]: [Phase 05] 05-32: both halves of the guard (pre-await capture + post-await re-check) were proven independently load-bearing by separate mutations - neutralizing the capture alone reds only the pre-await row while the expiry-race row stays green.
+- [Phase 05]: 05-33: the settings route's byte budget is DERIVED from MAX_TERMS_CHARS (six bytes per UTF-16 code unit, the worst-case backslash-u escape, plus 4096 headroom = 124096), because the review's suggested doubling still refuses a terms document at the cap written in a three-byte-per-character script (measured: ASCII 20184, surrogate pairs 40184, three-byte 60184 vs a 44096 budget) - the same defect one layer down, findable only by an operator writing terms in their own language
+- [Phase 05]: 05-33: the derivation is pinned by MEASURING the encoded body across five encoding classes at the cap plus an anti-vacuity row proving the rejected multiplier would have FAILED a real class; a row recomputing the arithmetic from the same constants passes against any multiplier, which is exactly how a five times disagreement between two thoroughly-tested layers passed a 1234 test gate with both halves green
+- [Phase 05]: 05-33: review IN-03 closed by DELETING the static serviceName option rather than documenting it - a bound that holds only because another code path (createService always constructing a holder) happens to run first is a bound a refactor can drop without failing anything; the evidence is a compile failure (TS2353), not a passing test
+- [Phase 05]: 05-33: review IN-04's retained last-write whole-minute guard is KEPT and pinned through boot OUTPUT across HOSTILE_SEEDS (at most one whole-minute line naming defaultDiscoveryWindowMs), because the guard is silent by construction on every reachable path so the warning count is the only observable a future second writer could move
 
 ### Pending Todos
 
@@ -275,7 +280,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-03T16:40:57.487Z
-Stopped at: Completed 05-32-PLAN.md
+Last session: 2026-08-03T18:36:34.703Z
+Stopped at: Completed 05-33-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
