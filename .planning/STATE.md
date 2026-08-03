@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Completed 05-38-PLAN.md
-last_updated: "2026-08-03T23:21:15.171Z"
+stopped_at: Completed 05-39-PLAN.md
+last_updated: "2026-08-03T23:56:34.898Z"
 last_activity: 2026-08-03
-last_activity_desc: Phase 05 round-6 re-verification recorded
+last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 5
-  completed_phases: 5
+  completed_phases: 4
   total_plans: 71
-  completed_plans: 68
+  completed_plans: 69
 ---
 
 # Project State
@@ -27,12 +27,12 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 
 ## Current Position
 
-Phase: 05 (operator-cohort-lifecycle-control) - AWAITING UAT
-Plan: 38 of 38 (round-6 gap closure 05-36..05-38 executed 2026-08-03)
-Status: Verification pass 7: 7/7 success criteria verified at code level, status human_needed. 16 human items pending in 05-UAT.md (run /gsd-verify-work 5). Round-6 deep review confirmed all seven round-5 closures real (WR-08..10, IN-05..08) and recorded ONE NEW CRITICAL CR-03 in 05-REVIEW.md (probe's session-ended branches neither retire the sessionRound nor clear the gated operator slice, so the next sign-in inherits the dead session's cohort list, drill-down and settings latch; fails closed against the service, display-layer only) plus WR-11 (pre-await status snapshot lets overlapping probes bump the round; fires under dev StrictMode), WR-12 (advertise/readvertise generic 401 copy, stale formError crosses sessions) and IN-09..14. Verifier recommends a 7th gap round for CR-03 before /gsd-secure-phase 5 or milestone completion. REQUIREMENTS.md SVC-04/SVC-05 correctly read Gaps Found (05-38 revert). No 05-SECURITY.md yet.
-Last activity: 2026-08-03 - Phase 05 round-6 re-verification recorded
+Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
+Plan: 40 of 41
+Status: Executing Phase 05 (gap round 7: 05-39 complete, 05-40 next)
+Last activity: 2026-08-03 — Phase 05 execution started
 
-Progress: [██████████] 100%
+Progress: [██████████] 97%
 
 ## Performance Metrics
 
@@ -129,6 +129,7 @@ Progress: [██████████] 100%
 | Phase 05 P36 | 15 min | 3 tasks | 3 files |
 | Phase 05 P37 | 12 min | 2 tasks | 3 files |
 | Phase 05 P38 | 18 min | 3 tasks | 5 files |
+| Phase 05 P39 | 15 min | 3 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -255,6 +256,8 @@ Recent decisions affecting current work (Phase 2):
 - [Phase ?]: 05-38: the settings body budget is a pure FUNCTION of both character caps, applied once to the shipped pair, so the spec asserts the rule over cap pairs rather than re-deriving the number
 - [Phase ?]: 05-38: MAX_SERVICE_NAME_CHARS exported (superseding 05-33's module-local sentence) because the measurement that bounds it must read it rather than retype it; exactly one spec row retypes each cap
 - [Phase ?]: 05-38: budget falls 124096 -> 122224 bytes, clearing the largest legal console body (121369) by 855; the one chosen number left is a 1024 byte allowance sized against a measured 169 byte bare body
+- [Phase ?]: 05-39: ending an operator session is ONE act with ONE implementation - GATED_SLICE_RESET is spread by both signOut and expireSession (closing the five-field IN-11 divergence), and probe's three non-live outcomes route through it so a tab switch after an idle expiry cannot hand the next session the previous one's cohorts, health chip, operator log, drill-down document or settings defaults (CR-03)
+- [Phase ?]: 05-39: the probe's session-boundary decision moved from a pre-await auth snapshot to a stored liveSessionRound fact read at landing time (WR-11), because dedupe leaves the decision on a status and would narrate a deliberate signOut landing mid-probe as an expiry the operator did not cause; signIn gets NO gated-slice clear, declined deliberately so the CR-03 latch row stays non-vacuous
 
 ### Pending Todos
 
@@ -294,7 +297,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-03T22:09:58.873Z
-Stopped at: Completed 05-38-PLAN.md
+Last session: 2026-08-03T23:56:34.675Z
+Stopped at: Completed 05-39-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
