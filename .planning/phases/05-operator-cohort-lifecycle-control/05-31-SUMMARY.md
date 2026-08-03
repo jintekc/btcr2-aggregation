@@ -292,6 +292,12 @@ None - no external service configuration required.
 - After 05-32: re-verify the phase, then the 16 pending human items in `05-UAT.md`.
 - Nothing in this plan changes a wire format, a stored artifact or a refusal string, so no migration or re-pin is owed to any earlier phase.
 
+## Self-Check: PASSED
+
+- All four modified source/doc files exist on disk.
+- All four commits resolve in `git log` (`f29a3df`, `3c43c03`, `93cd87f`, `3737055`).
+- Every task's `<acceptance_criteria>` re-run and passing; plan-level `<verification>` commands re-run (see the Verification table).
+
 ---
 *Phase: 05-operator-cohort-lifecycle-control*
 *Completed: 2026-08-03*

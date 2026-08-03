@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Completed 05-30-PLAN.md
-last_updated: "2026-08-03T15:39:45.421Z"
-last_activity: 2026-08-02
+stopped_at: Completed 05-31-PLAN.md
+last_updated: "2026-08-03T16:29:38.807Z"
+last_activity: 2026-08-03
 last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 5
-  completed_phases: 5
+  completed_phases: 4
   total_plans: 62
-  completed_plans: 60
+  completed_plans: 61
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 4 of 30
+Plan: 2 of 32
 Status: Ready to execute
-Last activity: 2026-08-02 — Phase 05 execution started
+Last activity: 2026-08-03 — Phase 05 execution started
 
-Progress: [██████████] 100%
+Progress: [██████████] 98%
 
 ## Performance Metrics
 
@@ -121,6 +121,7 @@ Progress: [██████████] 100%
 | Phase 05 P28 | 6 min | 2 tasks | 4 files |
 | Phase 05 P29 | 12 min | 2 tasks | 4 files |
 | Phase 05 P30 | 15 min | 2 tasks | 4 files |
+| Phase 05 P31 | 47 min | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -228,6 +229,9 @@ Recent decisions affecting current work (Phase 2):
 - [Phase 05]: 05-30: close the boot-seed settings wedge at the HOLDER, never at each env read, because the holder is the one place every seed path meets including the derived ones (minParticipants, cohortTtlMs, fundingWindowMs) that need no malformed DEFAULT_* value at all
 - [Phase 05]: 05-30: numericKnob's integrality check is OPT-IN and defaults off, so the eleven existing call sites (including PORT with a minimum of 0) resolve byte-identically and the demo-server diff is empty; a non-integer takes the SAME warn-and-fall-back branch as a NaN
 - [Phase 05]: 05-30: a non-whole-minute window is FLOORED (never rounded up, never refused, never a boot abort), the ceiling is quantized BEFORE it is a clamp target and the discovery window AFTER the clamp, so every window the console is served survives msToMinutesText into parseWindow unchanged
+- [Phase 05]: 05-31: textKnob bounds both free-text boot seeds at the holder, dropping (never truncating) an over-long SERVICE_NAME or TERMS_TEXT with a warning naming the length, the ceiling and the cost; a truncated terms document is one participants would DID-sign in mutilated form (SC3, review CR-01)
+- [Phase 05]: 05-31: the discovery-window quantizer runs on the SEED, before the ceiling comparison, so the clamp fires only when its own sentence is true; the ceiling's own floor went SILENT because it is derived from COHORT_TTL_MS and its truncations are disclosed by the window line, making one variable set produce one warning (W6, review WR-02)
+- [Phase 05]: 05-31: expectHolderInvariants now asserts the string fields too, plus a predicate-only property row, because inside the per-row test a row's own stored assertion fires first and masks a predicate that stopped covering a field
 
 ### Pending Todos
 
@@ -267,7 +271,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-02T16:30:52.168Z
-Stopped at: Completed 05-30-PLAN.md
+Last session: 2026-08-03T16:29:38.772Z
+Stopped at: Completed 05-31-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)

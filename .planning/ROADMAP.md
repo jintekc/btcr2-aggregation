@@ -196,7 +196,7 @@ Plans:
 
 **Slip order** (CONTEXT D-22, three tiers): CORE never slips - SVC-04 lifecycle control (plans 01 through 07 and 10). SECOND - the four absorbed parked items (plans 08 and 09). SLIP-FIRST - the three folded scoping one-pagers (plans 11, 12, and 13), which re-park cleanly to Phase 6 or the next milestone if the phase runs long.
 
-**Plans**: 30/32 plans executed (2 gap-closure plans added 2026-08-03, round 4)
+**Plans**: 31/32 plans executed
 Plans:
 **Wave 1**
 
@@ -324,7 +324,7 @@ Note on the `depends_on` chain: 05-22 through 05-26 each declare the previous pl
 
 **Gap round 4, wave 1**
 
-- [ ] 05-31-PLAN.md - An over-long SERVICE_NAME or TERMS_TEXT seed can no longer wedge every settings save, and every window boot warning is true of a variable the operator set (SVC-04, Gap 1 / SC 3 / review CR-01, plus W6 / review WR-02, wave 1)
+- [x] 05-31-PLAN.md - An over-long SERVICE_NAME or TERMS_TEXT seed can no longer wedge every settings save, and every window boot warning is true of a variable the operator set (SVC-04, Gap 1 / SC 3 / review CR-01, plus W6 / review WR-02, wave 1)
 
 **Gap round 4, wave 2** *(serialized behind 05-31)*
 
@@ -357,5 +357,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 2. Participant Discovery + Browse-and-Pick Join | 9/9 | Complete    | 2026-07-16 |
 | 3. Participant Submit, Co-Sign, Track, and Resolve | 9/9 | Complete    | 2026-07-22 |
 | 4. Operator Cohort Monitoring | 8/8 | Complete    | 2026-07-27 |
-| 5. Operator Cohort Lifecycle Control | 30/30 | In Progress|  |
+| 5. Operator Cohort Lifecycle Control | 31/32 | In Progress|  |
 | 6. Two-Stranger End-to-End + Real-Aggregator Framing | 0/TBD | Not started | - |
