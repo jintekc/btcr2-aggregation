@@ -14,13 +14,15 @@ function bareApp(networkName?: string) {
   return createHonoApp(transport, networkName ? { networkName: networkName as never } : {});
 }
 
-/** A bare app with an operator-supplied SERVICE_NAME threaded in (D-51). */
-function namedApp(serviceName: string) {
-  const transport = new HttpServerTransport({ resolveSenderPk: resolveBtcr2SenderPk, heartbeatIntervalMs: 0 });
-  return createHonoApp(transport, { serviceName });
-}
-
-/** A bare app wired with a runtime settings holder, exactly as `createService` wires one. */
+/**
+ * A bare app wired with a runtime settings holder, exactly as `createService` wires one.
+ *
+ * This is now the ONLY way to give an app a display name (review IN-03). A `namedApp` helper used
+ * to sit here, threading a static `serviceName` option straight into `createHonoApp`; that option
+ * is gone, because it bypassed the holder's own 200 character bound and survived in production only
+ * by never firing. The row below moved onto this helper and kept its served-body assertion byte for
+ * byte: it asserts a RESULT, and the result must not move when the construction shape does.
+ */
 function holderApp(serviceName?: string) {
   const transport = new HttpServerTransport({ resolveSenderPk: resolveBtcr2SenderPk, heartbeatIntervalMs: 0 });
   const runtimeSettings = createRuntimeSettings({ serviceName });
@@ -78,7 +80,7 @@ describe('GET /v1/config route', () => {
     // The service-name carrier extends the config DTO for the health strip + public header
     // WITHOUT touching the frozen network fields: the three network keys stay byte-identical
     // (same values as the unnamed default above) plus the optional serviceName.
-    const res = await namedApp('Acme Aggregation').request('/v1/config');
+    const res = await holderApp('Acme Aggregation').app.request('/v1/config');
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body).toEqual({

@@ -1367,10 +1367,6 @@ export function createService(opts: CreateServiceOptions): Service {
     // single source of truth for this coordinator's chain) and validated by
     // resolveNetwork, independent of the live/broadcast path.
     networkName: resolveNetwork(opts.config.network).name,
-    // Optional service display name (D-51), surfaced additively on GET /v1/config for the
-    // health strip + public directory header. Undefined leaves the config DTO byte-identical.
-    // Threaded still, as the fallback for the (test-only) shape where no holder is wired.
-    serviceName: opts.serviceName,
     // This service's own DID (SVC-05, D-19), served additively on GET /v1/config so a
     // participant's browser can build the acceptance record it signs before it joins anything,
     // and required by the acceptance route so a record addressed to another service is refused.

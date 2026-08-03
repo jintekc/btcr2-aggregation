@@ -433,26 +433,14 @@ export interface HonoAppOptions {
    */
   networkName?: NetworkName;
   /**
-   * Optional operator-supplied service display name (D-51), a boot-time env constant
-   * (`SERVICE_NAME`) surfaced on `GET /v1/config` beside the network so the operator console
-   * health strip and the public directory header can label the service. Additive and optional:
-   * when unset the config DTO is byte-identical (no `serviceName` key), so the frozen public
-   * network fields never change. It is display text only, never markup or a URL (the browser
-   * renders it as auto-escaped React text content, T-04-03-01).
-   *
-   * Superseded by {@link runtimeSettings} when one is threaded in (Phase 5 D-16 makes the name
-   * runtime-editable): this static option remains the fallback for callers that wire no holder
-   * (the headless path and the older specs), so its behavior is unchanged for them.
-   */
-  serviceName?: string;
-  /**
    * Per-service runtime settings holder (SVC-04, D-08/D-12/D-16). When present it is the
    * PER-REQUEST source of truth for the service display name on `GET /v1/config`, so an
    * operator's runtime rename is reflected on the very next request instead of being frozen
    * into this app's construction closure. It also backs the gated
    * `POST /v1/operator/advertising/pause` + `/resume` routes and the `paused` bit on the
-   * no-operator-surface `GET /v1/status` fallback. Optional: a caller that omits it keeps the
-   * pre-existing behavior exactly (a never-paused service whose name is the static option above).
+   * no-operator-surface `GET /v1/status` fallback. Optional, and it is now the ONLY source of the
+   * display name (review IN-03): a caller that omits it serves a config DTO with no `serviceName`
+   * key at all, which is byte-identical to what an unnamed service has always served.
    */
   runtimeSettings?: RuntimeSettings;
   /**
@@ -564,7 +552,6 @@ export function createHonoApp(
     store,
     acceptanceLedger = createAcceptanceLedger(),
     networkName,
-    serviceName,
     serviceDid,
     resolveSenderPk,
     runtimeSettings,
@@ -614,8 +601,16 @@ export function createHonoApp(
   //
   // Read PER REQUEST from the runtime holder when one is wired (Phase 5 D-16): the name is now
   // runtime-editable, and a value captured into this construction closure would serve the boot
-  // name forever while the console claimed the rename had applied. Without a holder this falls
-  // back to the static boot option, so the pre-Phase-5 behavior is unchanged.
+  // name forever while the console claimed the rename had applied.
+  //
+  // The holder is the name's ONLY source (review IN-03). A second, static option used to sit
+  // beside it as a fallback for callers that wire no holder, and it was unbounded: the 200
+  // character cap lives at the holder, so that path could serve an operator-supplied name of any
+  // length to every anonymous browser. In production it never fired, because `createService`
+  // always constructs a holder, which is exactly the problem. A bound that holds only because
+  // another code path happens to run first is a bound a refactor can drop without failing
+  // anything, so the second path is deleted rather than documented. With no holder the key is
+  // simply absent, which is what an unnamed service has always served.
   //
   // The participation terms (SVC-05, D-19) ride the SAME per-request read as a SECOND additive
   // key. They belong here rather than on a new route because the participant who must accept them
@@ -632,7 +627,7 @@ export function createHonoApp(
   // absent when no DID was threaded in, so the frozen network fields stay byte-identical for
   // every caller that wires none.
   app.get('/v1/config', (c) => {
-    const name = runtimeSettings ? runtimeSettings.serviceName.value : serviceName;
+    const name = runtimeSettings?.serviceName.value;
     const termsText = runtimeSettings?.termsText.value;
     return c.json({
       ...networkDto,

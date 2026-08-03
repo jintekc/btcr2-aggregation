@@ -855,6 +855,39 @@ describe('no seed the holder ACCEPTS is a value it would REFUSE (W3, review WR-2
     }
   });
 
+  it('keeps the retained last-write whole-minute guard a NO-OP across the whole table (review IN-04)', () => {
+    // WHAT THIS ROW IS FOR, since a reader will otherwise see a test asserting that nothing
+    // happens. The quantizer's third call, the last-write `floorToWholeMinute` on the discovery
+    // window, is deliberately DEAD on every path a caller can reach today: point 1 quantizes the
+    // ceiling, point 2 quantizes the seed, and the clamp between them can only ever choose one of
+    // those two already-quantized values. It is kept anyway, because it is where the invariant is
+    // ENFORCED rather than merely arrived at, and a future second writer into that value would
+    // otherwise be unguarded. The cost the review names (IN-04) is that no test could tell the
+    // guard from its own deletion. This row is that test: it turns dead code into PINNED code.
+    //
+    // The assertion has to be OBSERVABLE from outside the module, because the guard is silent by
+    // construction on every current path. What it WOULD change if it ever fired is the boot output:
+    // it warns with both numbers. So a second whole-minute line about this one field is exactly the
+    // signal that a later writer made it fire, and this row goes RED when that happens rather than
+    // letting the change land silently.
+    //
+    // The stored value is asserted beside the count, so the property states the invariant the guard
+    // enforces and not merely the guard's silence: a fix that deleted the guard AND the warning
+    // would pass a count-only row.
+    for (const row of HOSTILE_SEEDS) {
+      const { warnings, warn } = withWarnings();
+      const settings = createRuntimeSettings({ ...row.seed, warn });
+      const wholeMinuteLines = warnings.filter(
+        (line) => /^defaultDiscoveryWindowMs=/.test(line) && /is not a whole number of minutes/.test(line),
+      );
+      expect(wholeMinuteLines.length).toBeLessThanOrEqual(1);
+      const stored = settings.defaultDiscoveryWindowMs.value;
+      if (stored !== undefined) {
+        expect(stored % MINUTE_MS).toBe(0);
+      }
+    }
+  });
+
   it('warns on a malformed seed rather than storing it, naming the value it ignored', () => {
     const { warnings, warn } = withWarnings();
     createRuntimeSettings({ defaultSize: 2.5, warn });
