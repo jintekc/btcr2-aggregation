@@ -697,27 +697,35 @@ describe('operator store refreshCohorts concurrency (W5: a list answer belongs t
   const PASSWORD = 'operator-password';
 
   /**
-   * Stage the ABA race: session A starts a slow read, a second read 401s and expires A, then the
-   * operator signs back in as session B. Returns A's still-outstanding read so a row settles it.
+   * Stage the ABA race: session A starts a slow read, session A ends (either way it can end), then
+   * the operator signs back in as session B. Returns A's still-outstanding read so a row settles it.
    *
    * Session B's own follow-up read (`signIn` fires one) is staged and deliberately left IN FLIGHT:
    * these rows assert about what A's answer does to B, not about what B reads for itself, and a
    * settled B read would write the very fields the assertions are about.
    */
-  async function stageSignBackIn(): Promise<{
+  async function stageSignBackIn(endedBy: 'expiry' | 'sign-out'): Promise<{
     slow: ReturnType<typeof deferred<Response>>;
     slowRead: Promise<void>;
   }> {
     const slow = deferred<Response>();
     const expiring = deferred<Response>();
     const sessionBOwnRead = deferred<Response>();
-    stubListQueue([slow.promise, expiring.promise, sessionBOwnRead.promise]);
+    stubListQueue(
+      endedBy === 'expiry'
+        ? [slow.promise, expiring.promise, sessionBOwnRead.promise]
+        : [slow.promise, sessionBOwnRead.promise],
+    );
     seedEmptySlice('logged-in');
 
     const slowRead = useOperator.getState().refreshCohorts(BASE);
-    const expiringRead = useOperator.getState().refreshCohorts(BASE);
-    expiring.resolve(new Response('no', { status: 401 }));
-    await expiringRead;
+    if (endedBy === 'expiry') {
+      const expiringRead = useOperator.getState().refreshCohorts(BASE);
+      expiring.resolve(new Response('no', { status: 401 }));
+      await expiringRead;
+    } else {
+      await useOperator.getState().signOut(BASE);
+    }
     expect(useOperator.getState().auth).toBe('logged-out');
 
     await useOperator.getState().signIn(BASE, PASSWORD);
@@ -726,7 +734,7 @@ describe('operator store refreshCohorts concurrency (W5: a list answer belongs t
   }
 
   it('discards a list answer from a session that ENDED even though a NEW session is now signed in', async () => {
-    const { slow, slowRead } = await stageSignBackIn();
+    const { slow, slowRead } = await stageSignBackIn('expiry');
 
     // Session A's answer lands into session B, which is the whole race.
     slow.resolve(okList());
@@ -747,7 +755,7 @@ describe('operator store refreshCohorts concurrency (W5: a list answer belongs t
   });
 
   it('leaves the new session with no freshness stamp it did not earn (the ABA sequence)', async () => {
-    const { slow, slowRead } = await stageSignBackIn();
+    const { slow, slowRead } = await stageSignBackIn('expiry');
     expect(useOperator.getState().lastUpdated).toBeUndefined();
 
     slow.resolve(okList());
@@ -782,6 +790,125 @@ describe('operator store refreshCohorts concurrency (W5: a list answer belongs t
     expect(s.defaults).toEqual(POPULATED.defaults);
     expect(s.listStale).toBe(false);
     expect(typeof s.lastUpdated).toBe('number');
+  });
+
+  it('discards a list answer that outlived a SIGN-OUT, once a new session has signed back in', async () => {
+    // The sign-out half of ABA. Both ways a session can end are now covered against the returning
+    // sequence, matching how the rows above cover both against the simple one.
+    const { slow, slowRead } = await stageSignBackIn('sign-out');
+
+    slow.resolve(okList());
+    await slowRead;
+
+    const s = useOperator.getState();
+    expect(s.cohorts).toEqual([]);
+    expect(s.rows).toEqual([]);
+    expect(s.metrics).toBeUndefined();
+    expect(s.health).toBeUndefined();
+    expect(s.operatorActions).toEqual([]);
+    expect(s.defaults).toBeUndefined();
+    expect(s.lastUpdated).toBeUndefined();
+    expect(s.listStale).toBe(false);
+    // The dead session's answer changed NOTHING, rather than changing something harmless: the new
+    // session is left signed in with a clean slate to read for itself.
+    expect(s.auth).toBe('logged-in');
+    expect(s.error).toBeUndefined();
+  });
+
+  /**
+   * Answer only the AUTH routes, leaving any list read hanging in flight. The coverage rows below
+   * are about the round a session start or end takes, not about what that session reads afterwards,
+   * and a settled list read would write state those rows have no reason to speak about.
+   */
+  function stubAuthOnly(options: { session?: number; login?: number }): void {
+    vi.stubGlobal('fetch', (input: unknown) => {
+      const url = String(input);
+      if (url.endsWith('/v1/operator/session')) {
+        return Promise.resolve(new Response(null, { status: options.session ?? 401 }));
+      }
+      if (url.endsWith('/v1/operator/login')) {
+        return Promise.resolve(new Response(null, { status: options.login ?? 200 }));
+      }
+      if (url.endsWith('/v1/operator/logout')) {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      return new Promise<Response>(() => {});
+    });
+  }
+
+  it('starts a new session on a fresh round (the operator signs in)', async () => {
+    stubAuthOnly({ login: 200 });
+    // Captured immediately before the action and compared against, never against a literal: the
+    // rule is that the round MOVES, so these rows survive any change to the initial value.
+    const before = useOperator.getState().sessionRound;
+    await useOperator.getState().signIn(BASE, PASSWORD);
+    expect(useOperator.getState().auth).toBe('logged-in');
+    expect(useOperator.getState().sessionRound).not.toBe(before);
+  });
+
+  it('starts a returning session on a fresh round (a probe finds a live session)', async () => {
+    stubAuthOnly({ session: 200 });
+    const before = useOperator.getState().sessionRound;
+    await useOperator.getState().probe(BASE);
+    expect(useOperator.getState().auth).toBe('logged-in');
+    expect(useOperator.getState().sessionRound).not.toBe(before);
+  });
+
+  it('retires the round of the session an EXPIRY ended', () => {
+    seedEmptySlice('logged-in');
+    const before = useOperator.getState().sessionRound;
+    useOperator.getState().expireSession();
+    expect(useOperator.getState().auth).toBe('logged-out');
+    expect(useOperator.getState().sessionRound).not.toBe(before);
+  });
+
+  it('retires the round of the session a deliberate SIGN-OUT ended', async () => {
+    stubAuthOnly({});
+    seedEmptySlice('logged-in');
+    const before = useOperator.getState().sessionRound;
+    await useOperator.getState().signOut(BASE);
+    expect(useOperator.getState().auth).toBe('logged-out');
+    expect(useOperator.getState().sessionRound).not.toBe(before);
+  });
+
+  it('takes no round where no session becomes live (throttled, disabled and rejected sign-ins, and a probe that finds none)', async () => {
+    // The landed code bumps ONLY where a session becomes live, and this row is what keeps it that
+    // way. A bump placed one branch too wide would retire a round no session ever held: harmless
+    // today, and exactly the kind of thing that becomes load-bearing once a second guard compares
+    // a round without also checking the status.
+    for (const login of [429, 404, 401]) {
+      stubAuthOnly({ login });
+      const before = useOperator.getState().sessionRound;
+      await useOperator.getState().signIn(BASE, PASSWORD);
+      expect(useOperator.getState().auth).not.toBe('logged-in');
+      expect(useOperator.getState().sessionRound).toBe(before);
+    }
+    for (const session of [401, 404]) {
+      stubAuthOnly({ session });
+      const before = useOperator.getState().sessionRound;
+      await useOperator.getState().probe(BASE);
+      expect(useOperator.getState().auth).not.toBe('logged-in');
+      expect(useOperator.getState().sessionRound).toBe(before);
+    }
+  });
+
+  it('still raises the staleness banner for a read the NEW session issued and could not complete', async () => {
+    // The scope control on the strengthened guard: it must refuse answers from a session that has
+    // ENDED and nothing else. An over-refusing guard would silently disable the D-25 banner for
+    // every session that signed in after another one ended, and every ABA row above would still
+    // pass.
+    const sessionBOwnRead = deferred<Response>();
+    const failing = deferred<Response>();
+    stubListQueue([sessionBOwnRead.promise, failing.promise]);
+    seedEmptySlice('logged-out');
+
+    await useOperator.getState().signIn(BASE, PASSWORD);
+    const read = useOperator.getState().refreshCohorts(BASE);
+    failing.reject(new Error('network down'));
+    await read;
+
+    expect(useOperator.getState().listStale).toBe(true);
+    expect(useOperator.getState().auth).toBe('logged-in');
   });
 });
 
