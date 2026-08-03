@@ -15,8 +15,8 @@ Requirements for the realigned two-sided product. Each maps to roadmap phases.
 - [x] **SVC-02**: Operator can advertise (publish) a configured cohort so it becomes visible and joinable in that service's cohort directory
 - [x] **SVC-03**: Operator can monitor a cohort in real time (members joined, pending DID-update submissions, co-sign progress, anchor status)
 - [x] **LIVE-01**: The live broadcast path is operable from the product itself, not only via an e2e script: a real boot can enable live co-sign + broadcast behind ADR 0010-style guard rails (`BROADCAST=1` requires `LIVE=1`), with a watch-only cohort-beacon funding stage (waiting / seen-in-mempool / funded / terminal dead-end) driven by the library's own `selectSpendableUtxo` against one consistent suggested minimum, a clamped funding wait that fails with a specific reason before any library timer, honest funding-window / blind-lapse / recovery-key / mainnet disclosure, bounded broadcast send retry, and honest participant-side awaiting-funding / stall / unconfirmed-signal-resolve copy (formalized 2026-07-24 from Phase 4 CONTEXT D-35..D-46, planning note 4)
-- [ ] **SVC-04**: Operator can run aggregation and manage a cohort's lifecycle (open -> close -> finalize) and pause, cancel, or reconfigure advertising without restarting the process
-- [ ] **SVC-05**: Operator can set participation terms text at runtime; when set, joining through the web app requires the participant to accept, and the acceptance is recorded as a DID-signed artifact that the service verifies server-side and binds to the hash of the exact terms shown, with the app-level enforcement boundary disclosed honestly (a client speaking the protocol directly joins without the step). Payments, notifications, and contracts are explicitly NOT in scope (formalized 2026-07-28 from Phase 5 CONTEXT D-19, planning note 5)
+- [x] **SVC-04**: Operator can run aggregation and manage a cohort's lifecycle (open -> close -> finalize) and pause, cancel, or reconfigure advertising without restarting the process
+- [x] **SVC-05**: Operator can set participation terms text at runtime; when set, joining through the web app requires the participant to accept, and the acceptance is recorded as a DID-signed artifact that the service verifies server-side and binds to the hash of the exact terms shown, with the app-level enforcement boundary disclosed honestly (a client speaking the protocol directly joins without the step). Payments, notifications, and contracts are explicitly NOT in scope (formalized 2026-07-28 from Phase 5 CONTEXT D-19, planning note 5)
 
 ### Participant (attendee experience)
 
@@ -71,8 +71,8 @@ Which phases cover which requirements. Populated during roadmap creation.
 | SVC-02 | Phase 1 | Complete |
 | SVC-03 | Phase 4 | Complete |
 | LIVE-01 | Phase 4 | Complete |
-| SVC-04 | Phase 5 | Gaps Found |
-| SVC-05 | Phase 5 | Gaps Found |
+| SVC-04 | Phase 5 | Complete |
+| SVC-05 | Phase 5 | Complete |
 | PART-01 | Phase 2 | Complete |
 | PART-02 | Phase 2 | Complete |
 | PART-03 | Phase 3 | Complete |
