@@ -27,10 +27,10 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 
 ## Current Position
 
-Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 4 of 35
-Status: Ready to execute
-Last activity: 2026-08-03 — Phase 05 execution started
+Phase: 05 (operator-cohort-lifecycle-control) - AWAITING UAT
+Plan: 35 of 35 (round-5 gap closure 05-33..05-35 executed 2026-08-03)
+Status: Verification pass 5: 7/7 success criteria verified at code level, status human_needed. 16 human items pending in 05-UAT.md (run /gsd-verify-work 5). Round-5 deep review confirmed all five closures real (CR-02, WR-06, WR-07, IN-03, IN-04) and recorded three NEW non-gating warnings WR-08/09/10 in 05-REVIEW.md (dead-session 401 handling, guard coverage on pollDetail/loadSettings, stale restart caption). REQUIREMENTS.md marks SVC-04/SVC-05 Complete while UAT is pending (verifier warning: premature-completion pattern). No 05-SECURITY.md yet: run /gsd-secure-phase 5 before Phase 6.
+Last activity: 2026-08-03 - Phase 05 round-5 re-verification recorded
 
 Progress: [██████████] 100%
 
