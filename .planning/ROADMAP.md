@@ -196,7 +196,7 @@ Plans:
 
 **Slip order** (CONTEXT D-22, three tiers): CORE never slips - SVC-04 lifecycle control (plans 01 through 07 and 10). SECOND - the four absorbed parked items (plans 08 and 09). SLIP-FIRST - the three folded scoping one-pagers (plans 11, 12, and 13), which re-park cleanly to Phase 6 or the next milestone if the phase runs long.
 
-**Plans**: 35/35 plans executed
+**Plans**: 35/38 plans executed (05-36 through 05-38 are the sixth gap-closure round, planned 2026-08-03)
 Plans:
 **Wave 1**
 
@@ -343,6 +343,20 @@ Note on the `depends_on` chain: 05-22 through 05-26 each declare the previous pl
 **Gap round 5, wave 3** *(serialized behind 05-34; also a genuine file dependency on 05-33)*
 
 - [x] 05-35-PLAN.md - A boot seed this service refused is disclosed on the field it cost, instead of captioning as the environment default (SVC-05/SVC-04, review WR-07, wave 3)
+
+**Sixth gap round** (planned 2026-08-03 from `05-REVIEW.md`, the round-5 re-review, read with `05-VERIFICATION.md` pass 6: 7 of 7 Success Criteria verified at code level, `gaps: []`, `status: human_needed`; run with `/gsd-execute-phase 5 --gaps-only`). This round is therefore driven by the review's new findings rather than by a failed criterion. Owner-approved scope is exactly eight items: warnings WR-08, WR-09 and WR-10, the info findings IN-05, IN-06, IN-07 and IN-08, and the `REQUIREMENTS.md` traceability correction (SVC-04 and SVC-05 marked Complete while 16 human items are pending, the third occurrence of a twice-reverted pattern). Waves restart at 1 and are SINGLETONS for the same reason as rounds 2 through 5: each plan deliberately puts the tree into a RED state and each ends by running its own suite. 05-37 additionally has a genuine file dependency on 05-36 (both amend `settings.spec.ts`); 05-38 is the only plan that changes service code and runs `pnpm e2e:gate` once for the round.
+
+**Gap round 6, wave 1**
+
+- [ ] 05-36-PLAN.md - A round identifies a session, a 401 ends only the session that asked, and no gated read writes into a session that did not ask (SVC-04, review WR-08/WR-09/IN-07, wave 1)
+
+**Gap round 6, wave 2** *(serialized behind 05-36; also a genuine file dependency on it)*
+
+- [ ] 05-37-PLAN.md - The refused-seed captions state what the refusal costs now and what actually repairs it, and a changed field stops claiming the environment set nothing (SVC-05/SVC-04, review WR-10/IN-05, wave 2)
+
+**Gap round 6, wave 3** *(serialized behind 05-37)*
+
+- [ ] 05-38-PLAN.md - The settings body budget is derived from every field it carries, the deploy document and the option docstring match shipped behavior, and the traceability table matches this phase's status (SVC-04/SVC-05, review IN-06/IN-08 plus the REQUIREMENTS correction, wave 3)
 
 **UI hint**: yes
 
