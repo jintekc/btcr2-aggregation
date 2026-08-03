@@ -71,8 +71,8 @@ Which phases cover which requirements. Populated during roadmap creation.
 | SVC-02 | Phase 1 | Complete |
 | SVC-03 | Phase 4 | Complete |
 | LIVE-01 | Phase 4 | Complete |
-| SVC-04 | Phase 5 | Complete |
-| SVC-05 | Phase 5 | Complete |
+| SVC-04 | Phase 5 | Gaps Found |
+| SVC-05 | Phase 5 | Gaps Found |
 | PART-01 | Phase 2 | Complete |
 | PART-02 | Phase 2 | Complete |
 | PART-03 | Phase 3 | Complete |
