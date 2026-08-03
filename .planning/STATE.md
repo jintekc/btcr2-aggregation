@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Completed 05-36-PLAN.md
-last_updated: "2026-08-03T21:46:45.504Z"
+stopped_at: Completed 05-37-PLAN.md
+last_updated: "2026-08-03T21:55:52.887Z"
 last_activity: 2026-08-03
 last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 68
-  completed_plans: 66
+  completed_plans: 67
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 2 of 38
+Plan: 3 of 38
 Status: Ready to execute
 Last activity: 2026-08-03 — Phase 05 execution started
 
-Progress: [██████████] 97%
+Progress: [██████████] 99%
 
 ## Performance Metrics
 
@@ -127,6 +127,7 @@ Progress: [██████████] 97%
 | Phase 05 P34 | 7 min | 2 tasks | 2 files |
 | Phase 05 P35 | 13 min | 3 tasks | 8 files |
 | Phase 05 P36 | 15 min | 3 tasks | 3 files |
+| Phase 05 P37 | 12 min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -248,6 +249,8 @@ Recent decisions affecting current work (Phase 2):
 - [Phase 05]: [Phase 05] 05-35 (WR-07): a boot seed this service REFUSED is served by NAME on the gated settings read (droppedSeeds on SettingsSnapshot, populated on textKnob's own drop-and-warn branch so the boot line and the record cannot disagree, copied fresh per read). NAMES only, pinned against the SERIALIZED snapshot rather than the field so a future carrier stashing the value elsewhere fails; nothing added to the anonymous GET /v1/config, pinned by an exact toEqual against a second real app. Numeric seeds deliberately do NOT join (a numeric fallback renders a value the operator can see and fix on the same screen; a dropped terms seed renders an ABSENCE that turns the SVC-05 gate off, and numericKnob also serves PORT and the runner knobs). A refusal is NOT filed in the session-scoped operator-actions ring, pinned by a row.
 - [Phase 05]: [Phase 05] 05-35: the console gained the THIRD source caption, a bad-tone line naming the refused variable and what the refusal COST that field (the terms cost states the join flow has no terms step and every acceptance is refused; the display name cost says only what it loses). Precedence pinned: a field the operator has CHANGED this session keeps the changed caption, because it holds a value they chose. THE PIN asserts the caption the COMPONENT produces, not the data behind it, because the data was already correct and it was the caption that lied. New SettingsFieldKey (derived structurally) keys SETTING_LABELS and the operator-actions loop, so seven members are settings and one is provenance.
 - [Phase ?]: [Phase 05] 05-36 (SVC-04, session-identity sweep): a session round identifies a SESSION, so probe bumps only on a transition INTO a live session with the status captured BEFORE its own set({auth:'checking'}) (measured after that line the condition is dead code and bumps exactly as before). All four gated reads (refreshCohorts, pollDetail, loadSettings, saveSettings) now capture the asking session before their await and act only when that round is still live: a 401 is evidence about the ASKER, so a refusal from a session that already ended can no longer sign the session that replaced it out (WR-08), and a late ok can no longer paint a dead session's drill-down into a live one that reopened the same cohort id, nor land a dead session's settings snapshot which also defeated OperatorConsole's once-per-session read latch (WR-09). The 401 branches compare the ROUND and deliberately not the status (every end path bumps the round, and a status check would defer a genuine expiry landing inside a probe's checking window). OperatorConsole.tsx is unedited: the latch is asserted as a boolean in the store spec. Nine operator-initiated action verbs keep the unguarded shape by owner scope and are enumerated in 05-36-SUMMARY.md.
+- [Phase ?]: [Phase 05] 05-37: a refusal record carries variable + cost + REMEDY as three members, because a cost and a repair are true at different times and one sentence fused them; the remedy names the in-session repair FIRST (what the operator can do while reading) and the environment edit SECOND, and the no-restart property is pinned over each cost MEMBER rather than over the composed caption whose remedy half legitimately names a restart (review WR-10).
+- [Phase ?]: [Phase 05] 05-37: precedence is KEPT and the parenthetical repaired - a changed field still takes the changed caption, and that caption's environment-default slot names the refusal via refusedEnvDefaultText rather than reading as an absence, so the format's shape is untouched and there are still three formats; the precedence rationale's premise (the boot value is not rendered) was false and is corrected in place (review IN-05).
 
 ### Pending Todos
 
@@ -287,7 +290,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-03T21:46:34.900Z
-Stopped at: Completed 05-36-PLAN.md
+Last session: 2026-08-03T21:55:52.856Z
+Stopped at: Completed 05-37-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
