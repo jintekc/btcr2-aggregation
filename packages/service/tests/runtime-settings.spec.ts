@@ -752,6 +752,22 @@ const HOSTILE_SEEDS: readonly HostileSeed[] = [
     // is already a whole minute at or below what the operator's ceiling allowed.
     stored: (s) => expect(s.defaultDiscoveryWindowMs.value).toBe(2 * MINUTE_MS),
   },
+  {
+    what: 'an over-long service name',
+    seed: { serviceName: 'x'.repeat(5_000) },
+    // Nothing, rather than the first 200 characters: a name this service would refuse on a save is
+    // a name it must not store at boot either, and a half-name is a display string the operator
+    // never wrote.
+    stored: (s) => expect(s.serviceName.value).toBeUndefined(),
+  },
+  {
+    what: 'an over-long participation-terms document',
+    seed: { termsText: 'x'.repeat(100_000) },
+    // Nothing, and deliberately not a truncation: the acceptance record binds the HASH of the exact
+    // text shown, so a truncated document is one participants would DID-sign in mutilated form.
+    // Serving no terms is the honest fallback and the boot warning says what it costs.
+    stored: (s) => expect(s.termsText.value).toBeUndefined(),
+  },
 ];
 
 /**
@@ -776,6 +792,21 @@ function expectHolderInvariants(settings: RuntimeSettings): void {
     // the console validates the WHOLE form before it will post.
     expect(window % MINUTE_MS).toBe(0);
   }
+  // The FREE-TEXT half (Gap 1 / SC3, review CR-01). This predicate is what makes the table above a
+  // statement of the invariant rather than a list of examples, and until now it iterated two
+  // numbers and two windows and never looked at a string. That is precisely how a 100000 character
+  // terms seed passed a 1215 test gate: the rule was stated for every field the holder stores and
+  // checked for the fields somebody had already thought about. Naming the subject explicitly is the
+  // difference, so a field added later without a bound fails here rather than passing.
+  for (const [text, maximum] of [
+    [settings.serviceName.value, MAX_SERVICE_NAME_CHARS],
+    [settings.termsText.value, MAX_TERMS_CHARS],
+  ] as const) {
+    if (text === undefined) {
+      continue;
+    }
+    expect(text.length).toBeLessThanOrEqual(maximum);
+  }
 }
 
 describe('no seed the holder ACCEPTS is a value it would REFUSE (W3, review WR-2 and WR-3)', () => {
@@ -791,6 +822,17 @@ describe('no seed the holder ACCEPTS is a value it would REFUSE (W3, review WR-2
       expect(settings.serviceName.value).toBe('renamed');
     });
   }
+
+  it('satisfies the holder invariant for EVERY field across the whole table, as a property', () => {
+    // The predicate on its own, with no row-specific expectation in front of it. Inside the per-row
+    // test above a row's own `stored` assertion fires first and would mask a predicate that had
+    // stopped covering a field, which is exactly the failure mode that let the string half sit
+    // vacuous through a green gate. Here the predicate is the only thing being asked.
+    for (const row of HOSTILE_SEEDS) {
+      const { warn } = withWarnings();
+      expectHolderInvariants(createRuntimeSettings({ serviceName: 'boot', ...row.seed, warn }));
+    }
+  });
 
   it('stores only WHOLE-MINUTE windows across the entire table, asserted as a property', () => {
     // Row by row, a missed window would only fail the row that produced it. As a property over

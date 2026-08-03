@@ -348,6 +348,11 @@ recorded as a DID-signed artifact, verified server-side before anything is store
 HASH of the exact document that was shown, so editing the terms afterwards cannot rewrite what
 somebody agreed to. Clearing the terms removes the step entirely; the feature is absent, not empty.
 
+The terms are capped at **20000 characters** (roughly 3500 words), on both paths that set them. A
+runtime save above the cap is refused with the limit named. A boot value above it is ignored with a
+warning and is never truncated to fit, because a truncated document is one participants would
+DID-sign in mutilated form; until you shorten it, the join flow has no terms step at all.
+
 **Be honest with yourself about what this enforces.** The aggregation protocol carries no message
 that could hold an acceptance, so enforcement is app-level: it applies to participants joining
 through the web app. A client speaking the protocol directly opts in WITHOUT the step. That limit
@@ -495,13 +500,13 @@ liveness on the response status, not on a fixed key set.
 | `RECOVERY_KEY` | unset | x-only recovery pubkey for funded cohorts. Required before funding (else keys are throwaway). |
 | `FUNDING_WINDOW_MS` | `720000` (12m) | How long co-signing waits for a cohort beacon to be funded before it dead-ends (needs `BROADCAST=1`; must be < `PHASE_TIMEOUT_MS`). Also SEEDS `DEFAULT_FUNDING_WINDOW_MS` when that is unset, and is subject to the same whole-minute rule on that path. |
 | `LIVE_CHANGE_ADDRESS` | beacon address | Route the beacon tx change to an operator wallet instead of the beacon address (needs `BROADCAST=1`). |
-| `SERVICE_NAME` | unset | Display name shown in the operator console health strip and the public directory header. Plain escaped text. Editable at runtime from the settings surface; a restart returns it to this value. |
+| `SERVICE_NAME` | unset | Display name shown in the operator console health strip and the public directory header. Plain escaped text, at most **200 characters**: a longer value is IGNORED at boot with a warning naming both lengths, and the name is left unset until you shorten it. Editable at runtime from the settings surface; a restart returns it to this value. |
 | `DEFAULT_BEACON_TYPE` | `CASBeacon` | Beacon type a NEW cohort draft starts from (`CASBeacon` or `SMTBeacon`). Runtime-editable; a malformed value warns at boot and falls back. |
 | `DEFAULT_SIZE` | `2` | Seats (n) a NEW cohort draft starts from. Must be a whole number: a fractional value warns at boot and falls back to the built-in default. Seeded from `MIN_PARTICIPANTS` when unset. Runtime-editable. |
 | `DEFAULT_THRESHOLD` | same as `DEFAULT_SIZE` | Fallback signing threshold (k) a NEW cohort draft starts from; clamped to n. Must be a whole number: a fractional value warns at boot and falls back to n. Runtime-editable. |
 | `DEFAULT_DISCOVERY_WINDOW_MS` | unset (seeded from `COHORT_TTL_MS`) | Discovery window a NEW cohort draft starts from, in ms, minimum 60000. Stored to the nearest WHOLE MINUTE at or below what you supply (the console edits this field in minutes), with a boot warning naming both numbers; a non-integer value warns and falls back. Can only SHORTEN a cohort relative to `COHORT_TTL_MS`: a value above it here is CLAMPED down to that maximum at boot with a warning naming both numbers, while a runtime save above it is REFUSED with the maximum named. Runtime-editable. |
 | `DEFAULT_FUNDING_WINDOW_MS` | unset (seeded from `FUNDING_WINDOW_MS`) | Per-cohort funding window a NEW cohort draft starts from, in ms, minimum 60000. Stored to the nearest WHOLE MINUTE at or below what you supply, with a boot warning naming both numbers; a non-integer value warns and falls back. Runtime-editable. |
-| `TERMS_TEXT` | unset | Participation terms shown at join in the web app. Set = a DID-signed acceptance is required to join through the web app (app-level enforcement only, see above). Empty = no terms step at all. Runtime-editable. |
+| `TERMS_TEXT` | unset | Participation terms shown at join in the web app, at most **20000 characters** (roughly 3500 words). Set = a DID-signed acceptance is required to join through the web app (app-level enforcement only, see above). Empty = no terms step at all. A LONGER value is IGNORED at boot with a warning naming both lengths, and is never truncated to fit (participants would otherwise sign a mutilated document), so the join flow has no terms step until you shorten it. Runtime-editable. |
 | `PHASE_TIMEOUT_MS` | (built-in default) | Per-phase stall budget. Under `BROADCAST=1` it must exceed `FUNDING_WINDOW_MS` (boot-validated). |
 | `COHORT_TTL_MS` | (built-in default) | Overall wall-clock budget per cohort, from advertise to signing-complete. Also SEEDS `DEFAULT_DISCOVERY_WINDOW_MS` when that is unset (and supplies the shorten-only ceiling either way), so it is subject to the same whole-minute rule on that path: `COHORT_TTL_MS=90000` seeds a 1 min discovery default, with a boot warning naming both numbers. |
 | `OPERATOR_PASSWORD` | unset | Operator console password (HOST-01, ADR 0015). Set it to enable the login-gated console + gated telemetry. Unset = fail-closed: public participant surface still serves, operator surface disabled with a loud boot warning. Keep it in a `.env` file, never bake it into the image. |

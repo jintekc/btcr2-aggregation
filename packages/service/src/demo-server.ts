@@ -397,9 +397,14 @@ export async function startDemoServer(opts: DemoServerOptions = {}): Promise<Dem
 
   // Boot seeds for the runtime SETTINGS holder (SVC-04 criterion 3 / SVC-05, D-10/D-12/D-19): what
   // a NEW cohort starts from, and the participation terms. Each rides an existing idiom rather than
-  // a new one - the NaN-guarded `numericKnob` for the numbers (review WR-04), the RECOVERY_KEY/
-  // SERVICE_NAME trim-to-undefined for the strings - so a malformed value warns and falls back
-  // instead of poisoning a comparison or storing an empty string that reads as "set to nothing".
+  // a new one, and the two idioms do different jobs in different places. The numbers are NaN-guarded
+  // HERE by `numericKnob` (review WR-04), so a malformed value warns and falls back instead of
+  // poisoning a comparison. The strings are TRIMMED here, by the RECOVERY_KEY/SERVICE_NAME idiom, so
+  // an empty value collapses to undefined rather than storing an empty string that reads as "set to
+  // nothing". Their LENGTH bound is not here at all: it lives once inside `createRuntimeSettings`,
+  // where every seed path meets, deliberately rather than a second time here, because a guard that
+  // exists twice is a guard that can be fixed once and stay broken once (the same reason 05-30 put
+  // the discovery-window ceiling clamp at the holder).
   //
   // Every one of these is a SEED, never a lock: the console edits the in-memory value behind the
   // gated settings routes, and a restart returns each to the environment value below. They also
