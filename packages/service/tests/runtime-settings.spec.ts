@@ -49,6 +49,8 @@ import {
  */
 
 const RUNTIME_SETTINGS_SRC = fileURLToPath(new URL('../src/runtime-settings.ts', import.meta.url));
+/** The deploy runbook, which states the same refusal fact a third and fourth time (review IN-16). */
+const DEPLOY_DOC = fileURLToPath(new URL('../../../docs/DEPLOY.md', import.meta.url));
 
 /** Collect the warnings a seed emits instead of writing them to the console. */
 function withWarnings() {
@@ -1343,7 +1345,8 @@ describe('no free-text seed the holder ACCEPTS is a value it would REFUSE (SC3, 
       // which is exactly the class of unearned claim this finding is about. The two lines are
       // compared whole rather than by substring: an absent key must be the SAME sentence as an
       // explicit `false`, not merely a sentence that also happens to omit the promise.
-      const { operatorSurfaceMounted: _statedInTheRow, ...bare } = row.seed;
+      const bare: RuntimeSettingsSeed = { ...row.seed };
+      delete bare.operatorSurfaceMounted;
       expect(refusalLine(bare, row.variable)).toBe(
         refusalLine({ ...row.seed, operatorSurfaceMounted: false }, row.variable),
       );
@@ -1440,6 +1443,41 @@ describe('no free-text seed the holder ACCEPTS is a value it would REFUSE (SC3, 
     expect(terms).toMatch(/acceptance/);
     expect(name).not.toMatch(/terms step/);
     expect(name).not.toMatch(/acceptance/);
+  });
+
+  /**
+   * THE DEPLOY RUNBOOK IS THE THIRD AND FOURTH STATEMENT OF THIS FACT (`05-REVIEW.md` IN-16).
+   *
+   * Round 6 corrected the console caption, round 7 corrected these two boot clauses and the two
+   * environment-table rows, and a prose sentence fourteen lines above those rows still named
+   * shortening the variable as the only way back, contradicting its own section's opening sentence
+   * three paragraphs earlier. Four statements, corrected two at a time, is how a fact drifts.
+   *
+   * These rows follow the source-walk style already shipped in this file (the no-persistence pin
+   * above reads `runtime-settings.ts` the same way) rather than inventing a documentation harness.
+   * They pin the CLAIM, not the prose: a rewrite that keeps one account of the refusal stays green,
+   * and a rewrite that reintroduces the overclaim does not.
+   */
+  it('leaves no statement in docs/DEPLOY.md naming shortening as the ONLY repair (review IN-16)', () => {
+    const doc = readFileSync(DEPLOY_DOC, 'utf8');
+    // The exact overclaim, verbatim from the finding. It is the sentence a self-hosting stranger
+    // reads while deciding whether a refused terms document costs them a restart. It does not.
+    expect(doc).not.toMatch(/until you shorten it, the join flow has no terms step at all/);
+    // ... replaced by the same order every other statement of this fact uses: the cost, then the
+    // repair available in the running session, then the environment edit that survives a restart.
+    expect(doc).toMatch(/the join flow then has no terms step at all until you set the\s+participation terms in the settings surface/);
+    expect(doc).toMatch(/shortening `TERMS_TEXT` is what makes a restart keep them/);
+  });
+
+  it('qualifies EVERY in-session repair the runbook offers, all three of them (review IN-17)', () => {
+    // The decision this round took about the two environment rows, made assertable rather than
+    // left in a summary: an operator reading the table is configuring a service that may have no
+    // `OPERATOR_PASSWORD`, and after this round the boot warning omits the in-session repair on
+    // exactly that service. So every place the runbook names that repair names its precondition,
+    // in one short form, and the count is pinned so a fourth statement cannot be added unqualified.
+    const doc = readFileSync(DEPLOY_DOC, 'utf8');
+    const qualified = doc.match(/settings surface \(present when `OPERATOR_PASSWORD` is set\)/g) ?? [];
+    expect(qualified).toHaveLength(3);
   });
 
   it('says none of this for a seed within the cap: no warning at all, and no dropped name', () => {
