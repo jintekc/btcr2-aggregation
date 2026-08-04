@@ -412,6 +412,27 @@ const SETTINGS_BODY_FIXED_FIELD_BYTES = 1024;
  * far larger than today's, so a row goes red the moment the derivation stops carrying a term. A row
  * that recomputed this arithmetic from the same constants would pass against any derivation at all,
  * which is exactly how the original five times disagreement survived a green gate.
+ *
+ * WHICH LENGTH IT CHARGES, stated as a decision rather than left as an oversight (review IN-14).
+ * It quantifies the STORED length: what {@link RuntimeSettings.applySettings} keeps once
+ * {@link trimToUndefined} has run, which is the length both caps bound. The route enforces this
+ * budget over the TRANSMITTED body instead, during streaming, before anything is parsed. The two
+ * are the same number for every value the console can produce and differ for one that is not: a
+ * document at the cap padded with enough surrounding whitespace is legal to this holder, because
+ * the trim happens before the bound, and is refused 413 by the route, behind a sentence naming no
+ * field. That is a real exception to this module's own rule that no value one layer accepts may be
+ * refused by another, so it is written here and MEASURED by a row rather than argued
+ * (`runtime-settings.spec.ts`, "the budget charges the trimmed length, and the gap that leaves is
+ * measured": the holder accepts a padded value and stores it at the cap, the transmitted body
+ * exceeds this budget, and the same value unpadded sits well inside it).
+ *
+ * THE ALTERNATIVE NOT TAKEN: bound the JSON string field before trimming, so the budget quantifies
+ * what is sent. It is rejected as disproportionate to what it buys. The console cannot produce such
+ * a body (it posts the value the operator typed into a bounded field, not one padded with hundreds
+ * of thousands of spaces), every previous budget this route carried had exactly the same property
+ * including the 4 KiB one, and the failure is a 413 refusal rather than a wrong stored value, so it
+ * fails closed. Charging the untrimmed length would also mean the budget stopped being a function
+ * of the caps alone, which is the property {@link SETTINGS_BODY_LIMIT_BYTES} exists to hold.
  */
 export function settingsBodyLimitBytes(maxServiceNameChars: number, maxTermsChars: number): number {
   return (

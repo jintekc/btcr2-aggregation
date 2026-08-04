@@ -903,11 +903,15 @@ export function createHonoApp(
       app.put(
         '/v1/operator/settings',
         // The one gated write whose budget is DERIVED rather than shared, because it is the one
-        // carrying a field with a documented character cap ({@link SETTINGS_BODY_LIMIT_BYTES},
-        // `05-VERIFICATION.md` SC3 / review CR-02). It is computed from `MAX_TERMS_CHARS` in
-        // `runtime-settings.ts`, so the FIELD's cap is what answers an over-long terms document and
-        // this route's budget is never the binding constraint on a value the holder documents as
-        // storable. The same 4 KiB constant every other gated write uses sat here before, and since
+        // carrying fields with documented character caps ({@link SETTINGS_BODY_LIMIT_BYTES},
+        // `05-VERIFICATION.md` SC3 / review CR-02). It is derived through `settingsBodyLimitBytes`
+        // in `runtime-settings.ts` from BOTH string caps that module bounds, `MAX_TERMS_CHARS` and
+        // `MAX_SERVICE_NAME_CHARS` (review IN-06, then review IN-12 for this sentence): the console
+        // posts the whole form on every save (D-12), so the largest legal body carries both fields
+        // at their cap and a budget naming only one of them stops bounding the other the moment its
+        // cap moves. The FIELD's cap is therefore what answers an over-long value on either field,
+        // and this route's budget is never the binding constraint on a value the holder documents
+        // as storable. The same 4 KiB constant every other gated write uses sat here before, and since
         // the console posts the WHOLE form on every save (D-12), it refused every settings save once
         // the stored terms passed roughly 3900 characters, well inside the 20000 the holder stores.
         //

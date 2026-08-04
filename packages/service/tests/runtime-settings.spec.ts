@@ -1516,6 +1516,48 @@ describe('the settings body budget bounds every encoding a terms document at the
     expect(SETTINGS_BODY_LIMIT_BYTES).toBeLessThanOrEqual(512 * 1024);
     expect(SETTINGS_BODY_LIMIT_BYTES).toBeGreaterThan(4 * 1024);
   });
+
+  /**
+   * THE ONE DOCUMENTED EXCEPTION TO THIS MODULE'S OWN RULE (`05-REVIEW.md` IN-14), measured rather
+   * than described.
+   *
+   * `settingsBodyLimitBytes` quantifies the STORED length, the one this holder keeps after
+   * {@link trimToUndefined} runs, while the route enforces the budget over the TRANSMITTED body
+   * during streaming. `applySettings` trims first and bounds what is left, so a value padded with
+   * enough surrounding whitespace is legal to the holder and refused 413 by the route, behind a
+   * sentence naming no field. That is the decision taken and not an oversight, so it carries a row:
+   * the module's stated rule is that no value one layer accepts may be refused by another, and an
+   * exception to a stated rule has to be a fact somebody can check rather than a rationale in a
+   * comment. See {@link SETTINGS_BODY_LIMIT_BYTES}'s docstring for why it is proportionate.
+   */
+  describe('the budget charges the trimmed length, and the gap that leaves is measured', () => {
+    /** Enough whitespace on each side to clear the budget several times over. */
+    const PADDING = ' '.repeat(200_000);
+    const AT_CAP = 'x'.repeat(MAX_TERMS_CHARS);
+    const PADDED = `${PADDING}${AT_CAP}${PADDING}`;
+
+    it('is a value the HOLDER accepts: the padding is trimmed away and the stored value sits at the cap', () => {
+      // The half that makes the gap a gap. Without it the row below measures a body nothing would
+      // have accepted anyway, which proves nothing about the two layers disagreeing.
+      const { warnings, warn } = withWarnings();
+      const settings = createRuntimeSettings({ warn });
+      expect(settings.applySettings({ termsText: PADDED })).toBeUndefined();
+      expect(settings.termsText.value).toBe(AT_CAP);
+      expect(warnings).toEqual([]);
+    });
+
+    it('and a body the ROUTE refuses: the transmitted form exceeds the budget', () => {
+      // Measured through the same helper every row in this block uses, with the name field empty
+      // so the figure is about the padding and nothing else.
+      expect(encodedBodyBytes(PADDED, '')).toBeGreaterThan(SETTINGS_BODY_LIMIT_BYTES);
+    });
+
+    it('is about the PADDING: the same value unpadded is well inside the budget', () => {
+      // The control. Without it the row above would pass just as happily against a cap the budget
+      // never covered, and the documented exception would be a different defect wearing its name.
+      expect(encodedBodyBytes(AT_CAP, '')).toBeLessThanOrEqual(SETTINGS_BODY_LIMIT_BYTES);
+    });
+  });
 });
 
 /**
