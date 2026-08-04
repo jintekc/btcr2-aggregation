@@ -196,7 +196,7 @@ Plans:
 
 **Slip order** (CONTEXT D-22, three tiers): CORE never slips - SVC-04 lifecycle control (plans 01 through 07 and 10). SECOND - the four absorbed parked items (plans 08 and 09). SLIP-FIRST - the three folded scoping one-pagers (plans 11, 12, and 13), which re-park cleanly to Phase 6 or the next milestone if the phase runs long.
 
-**Plans**: 41/41 plans executed
+**Plans**: 41/44 plans executed (three planned in the eighth gap round, 2026-08-04)
 Plans:
 **Wave 1**
 
@@ -371,6 +371,20 @@ Note on the `depends_on` chain: 05-22 through 05-26 each declare the previous pl
 **Gap round 7, wave 3** *(serialized behind 05-40)*
 
 - [x] 05-41-PLAN.md - A refused boot seed reads the same way in the boot output, the console and the deploy document, and both descriptions of the settings budget describe the budget that shipped (SVC-04/SVC-05, review IN-13/IN-12/IN-14, wave 3)
+
+**Eighth gap round** (planned 2026-08-04 from `05-REVIEW.md`, the round-7 re-review, read with `05-VERIFICATION.md` pass 8: 7 of 7 Success Criteria still verified at code level, `gaps: []`, `status: human_needed`; run with `/gsd-execute-phase 5 --gaps-only`). The first review in this series to find ZERO critical findings. Scope is exactly the seven items it did find, all in the session-identity subsystem rounds 6 and 7 both rewrote: warnings WR-13 (the sweep guards only the 401 branch of the eleven gated action verbs, so a dead session's success navigates the live session into a cohort it never opened and a dead session's failure paints a bad-tone sentence about an action it never took, via the file's last status-as-identity comparison at `stores/operator.ts:1290`), WR-14 (`submitDraft` is a sixteenth gated call site the round-7 enumeration omits, and `CreateDraftResult` has no `unauthorized` member, so a 401 on create renders the service's raw denial string as create-form validation copy and ends no session), and WR-15 (a consequence-level REGRESSION from the CR-03 fix: `sessionProbe` folds every non-200/non-404 status including a 5xx into the same value a 401 produces, which round 7 gave the power to clear the whole gated slice and narrate an expiry the service never claimed, contradicting the store's own sibling rule that a transport fault is not evidence of expiry, D-25); plus info findings IN-15 (the probe's session-START branch takes no capture, so an answer landing after an expiry re-establishes a phantom session for one tick), IN-16 (a fourth statement of the refused-seed fact, in `docs/DEPLOY.md` prose fourteen lines above the two rows round 7 corrected), IN-17 (both boot consequence clauses promise an operator settings surface a fail-closed boot never mounts, since the settings routes register only inside the operator-auth block, D-07) and IN-18 (`GATED_SLICE_RESET`'s four nested values are shared instances landing in live state on every reset). Waves restart at 1 and are SINGLETONS for the same reason as rounds 2 through 7: each plan deliberately puts the tree into a RED state and each ends by running its own suite, and `pnpm test` is a whole-workspace command, so file-level disjointness does not make two plans safe to run together. 05-43 additionally has a genuine file dependency on 05-42 (it adds a sixteenth site to the enumeration 05-42's row counts, and both edit the same store methods); 05-44 is the only plan that touches `packages/service` and runs `pnpm e2e:gate` once for the round, which also covers the two web plans serialized ahead of it. `REQUIREMENTS.md` is deliberately untouched this round: all four Phase 5 rows already read `Gaps Found`.
+
+**Gap round 8, wave 1**
+
+- [ ] 05-42-PLAN.md - Every gated action verb honors the session that asked on every branch, and each session end mints fresh containers (SVC-04, review WR-13/IN-18, wave 1)
+
+**Gap round 8, wave 2** *(serialized behind 05-42; also a genuine file dependency on it)*
+
+- [ ] 05-43-PLAN.md - Cohort creation joins the enumeration, only a 401 can end a session, and a probe cannot re-establish one the service already refused (SVC-04, review WR-14/WR-15/IN-15, wave 2)
+
+**Gap round 8, wave 3** *(serialized behind 05-43; the round's gate)*
+
+- [ ] 05-44-PLAN.md - A fail-closed boot promises no repair surface it never mounts, the refused-seed fact reads the same everywhere the repo states it, and the round's whole gate runs (SVC-04/SVC-05, review IN-17/IN-16, wave 3)
 
 **UI hint**: yes
 
