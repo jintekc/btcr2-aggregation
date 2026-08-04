@@ -1091,42 +1091,124 @@ async function advertisingToggle(baseUrl: string, verb: 'pause' | 'resume'): Pro
 }
 
 /**
- * POST the advertise action for a draft (SVC-02). Gated + same-origin (the session cookie rides
- * `credentials: 'same-origin'`). Returns the LIVE cohort id on success, or `null` when the server
- * did not accept it (so the store can surface the transient success message and land the operator
- * in the correct drill-down, D-13).
+ * The result of an advertise call (SVC-02, review WR-12). Built on the shared {@link FetchResult}
+ * vocabulary exactly as {@link FinalizeResult} is, with TWO extra members rather than one, because
+ * these routes have two failures that are neither a session problem nor a transport fault:
  *
- * The returned id is deliberately the response DTO's `draftId`, which the server sets to the NEW
- * live cohort id: `advertiseDraft` calls `runner.advertiseCohort`, which mints a fresh cohort id
- * and deletes the draft, so the original draft id is stale the instant advertise succeeds. Landing
- * the drill-down on that stale id would poll a cohort the monitor has no entry for (an empty
- * "Seats: 0/0" page), so the caller MUST open the returned live id instead.
+ * - `refused` is the paused-advertising gate (SVC-04, D-06), which answers 409 with a reason the
+ *   app authored server-side. Preserving it matters for the same reason it matters on a refused
+ *   finalize and more so here: a paused advertise is precisely the race the disabled-button reason
+ *   exists to prevent (advertising paused between the render and the click), so replacing the
+ *   service's own sentence with a generic retry line tells the operator to retry the one thing this
+ *   service is currently refusing on purpose.
+ * - `declined` is any OTHER non-ok answer, chiefly the 404 for an unknown or already-advertised
+ *   draft. It is kept apart from `unreachable` deliberately: a service that answered and said no
+ *   and a service that could not be reached are different facts about the operator's own
+ *   deployment, and the console says which one it observed.
+ *
+ * `ok` carries the LIVE cohort id. That id is deliberately the response DTO's `draftId`, which the
+ * server sets to the NEW live cohort id: `advertiseDraft` calls `runner.advertiseCohort`, which
+ * mints a fresh cohort id and deletes the draft, so the original draft id is stale the instant
+ * advertise succeeds. Landing the drill-down on that stale id would poll a cohort the monitor has
+ * no entry for (an empty "Seats: 0/0" page), so the caller MUST open the returned live id instead.
+ * A 200 that names no live cohort is therefore `declined` rather than `ok`: there is no id to open.
+ *
+ * The name is not the bare word the service package already uses for its own advertise verdict. One
+ * word with two meanings across the repo is exactly what this codebase's comments exist to prevent.
  */
-export async function advertise(baseUrl: string, id: string): Promise<string | null> {
-  const res = await fetch(endpoint(baseUrl, `/v1/operator/cohorts/${encodeURIComponent(id)}/advertise`), {
-    method: 'POST',
-    credentials: 'same-origin',
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-  });
-  if (!res.ok) {
-    return null;
+export type AdvertiseActionResult =
+  | FetchResult<string>
+  | { kind: 'refused'; reason: string }
+  | { kind: 'declined' };
+
+/**
+ * The result of a re-advertise call (SVC-02 F2, review WR-12). The exact mirror of
+ * {@link AdvertiseActionResult} except that its `ok` member carries no id: re-advertising an
+ * expired cohort leaves the operator on the list rather than in a drill-down (D-13 applies to a
+ * freshly minted cohort), so the store has nothing to open.
+ */
+export type ReadvertiseActionResult =
+  | FetchResult<true>
+  | { kind: 'refused'; reason: string }
+  | { kind: 'declined' };
+
+/**
+ * Read the app-authored refusal reason out of a 409 body, defensively, exactly as
+ * {@link finalizeCohort} reads it: a body that somehow carries none still refuses, just without a
+ * reason, rather than the console inventing one or rendering whatever arrived.
+ */
+async function refusalReason(res: Response): Promise<string> {
+  try {
+    const body = (await res.json()) as { error?: string };
+    return typeof body.error === 'string' ? body.error : '';
+  } catch {
+    // Non-JSON body: refuse with no reason rather than inventing one.
+    return '';
   }
-  const dto = (await res.json()) as { draftId?: unknown };
-  return typeof dto.draftId === 'string' && dto.draftId ? dto.draftId : null;
 }
 
 /**
- * POST the re-advertise action for an EXPIRED cohort (SVC-02, F2). Gated + same-origin
- * (the session cookie rides `credentials: 'same-origin'`); returns whether the server
- * accepted it (200) so the store can surface the transient success message and refresh.
+ * POST the advertise action for a draft (SVC-02). Gated + same-origin (the session cookie rides
+ * `credentials: 'same-origin'`), discriminated like {@link finalizeCohort}, and it NEVER throws.
  */
-export async function readvertise(baseUrl: string, id: string): Promise<boolean> {
-  const res = await fetch(endpoint(baseUrl, `/v1/operator/cohorts/${encodeURIComponent(id)}/readvertise`), {
-    method: 'POST',
-    credentials: 'same-origin',
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-  });
-  return res.ok;
+export async function advertise(baseUrl: string, id: string): Promise<AdvertiseActionResult> {
+  let res: Response;
+  try {
+    res = await fetch(endpoint(baseUrl, `/v1/operator/cohorts/${encodeURIComponent(id)}/advertise`), {
+      method: 'POST',
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+  } catch {
+    return { kind: 'unreachable' };
+  }
+  if (res.status === 401) {
+    return { kind: 'unauthorized' };
+  }
+  if (res.status === 409) {
+    return { kind: 'refused', reason: await refusalReason(res) };
+  }
+  if (!res.ok) {
+    return { kind: 'declined' };
+  }
+  let dto: { draftId?: unknown };
+  try {
+    dto = (await res.json()) as { draftId?: unknown };
+  } catch {
+    // The service answered 200 with something this console cannot read, which is a service that
+    // said yes without naming the cohort to open. Treated as a refusal to name one, never as an ok
+    // carrying an invented id.
+    return { kind: 'declined' };
+  }
+  return typeof dto.draftId === 'string' && dto.draftId
+    ? { kind: 'ok', value: dto.draftId }
+    : { kind: 'declined' };
+}
+
+/**
+ * POST the re-advertise action for an EXPIRED cohort (SVC-02, F2). Gated + same-origin, and
+ * discriminated exactly like {@link advertise} above, because both routes are advertise actions:
+ * both answer 401 before any lookup, both answer the SAME 409 when advertising is paused, and both
+ * answer 404 for an id they do not hold.
+ */
+export async function readvertise(baseUrl: string, id: string): Promise<ReadvertiseActionResult> {
+  let res: Response;
+  try {
+    res = await fetch(endpoint(baseUrl, `/v1/operator/cohorts/${encodeURIComponent(id)}/readvertise`), {
+      method: 'POST',
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+  } catch {
+    return { kind: 'unreachable' };
+  }
+  if (res.status === 401) {
+    return { kind: 'unauthorized' };
+  }
+  if (res.status === 409) {
+    return { kind: 'refused', reason: await refusalReason(res) };
+  }
+  return res.ok ? { kind: 'ok', value: true } : { kind: 'declined' };
 }
 
 /**

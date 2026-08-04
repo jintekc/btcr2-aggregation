@@ -9,9 +9,14 @@ import {
   useOperator,
   actionFailedWith,
   ACTION_FAILED,
+  ADVERTISED_OK,
+  ADVERTISE_FAILED,
   EXPORT_FAILED,
+  READVERTISED_OK,
+  READVERTISE_FAILED,
   SESSION_EXPIRED,
   SETTINGS_SAVED_OK,
+  UNREACHABLE,
   type OperatorState,
 } from '../src/stores/operator';
 
@@ -2186,5 +2191,187 @@ describe('operator store cancelCohort and finalizeCohort (SVC-04, D-16, audit en
     // Still a refusal, so nothing about the cohort changed and the busy flag is released.
     expect(s.actionError).toContain('Nothing about this cohort changed.');
     expect(s.finalizing).toBeUndefined();
+  });
+});
+
+/**
+ * Review WR-12: the console's PRIMARY action, and the one beside it, are the only two gated verbs
+ * in this store that collapsed every non-ok answer into one sentence.
+ *
+ * Two consequences, both of which these rows pin. An expired session was narrated as a transient
+ * failure worth retrying, on the button an operator presses more than any other, instead of the one
+ * honest re-login D-16 makes the single meaning of a 401. And the service's own paused-advertising
+ * refusal (D-06, a 409 carrying an app-authored reason) was replaced by the same generic line, on
+ * exactly the race the disabled-button reason exists to prevent: advertising paused between the
+ * render and the click.
+ *
+ * The two verbs are separate call sites, so each crossing is pinned twice, once per verb: a fix
+ * applied to one is no evidence at all about the other.
+ */
+describe('operator store advertise and readvertise (review WR-12)', () => {
+  beforeEach(resetStore);
+
+  /** Answer every request with one status and body, as a gated route would. */
+  function stubStatus(status: number, body = 'no'): void {
+    vi.stubGlobal('fetch', () => Promise.resolve(new Response(body, { status })));
+  }
+
+  /**
+   * The service's own paused-advertising refusal, byte-identical to `ADVERTISING_PAUSED_REASON` in
+   * `packages/service/src/operator-cohorts.ts`, which `pause.spec.ts` pins there. Both advertise
+   * routes answer it with a 409.
+   */
+  const PAUSED_REASON = 'advertising is paused on this service';
+
+  /** A 409 carrying the app-authored reason, exactly as both advertise routes answer it. */
+  function stubPaused(): void {
+    vi.stubGlobal('fetch', () =>
+      Promise.resolve(new Response(JSON.stringify({ error: PAUSED_REASON }), { status: 409 })),
+    );
+  }
+
+  /**
+   * Answer the advertise POST with one response and every following list read with a served list,
+   * so a SUCCESS row exercises the whole path (the confirmation, the re-read, and, for advertise,
+   * the drill-down) rather than stopping at the first branch.
+   */
+  function stubAdvertiseThenList(advertiseBody: string, list: unknown): void {
+    vi.stubGlobal('fetch', (input: unknown) => {
+      const url = String(input);
+      if (url.includes('/advertise') || url.includes('/readvertise')) {
+        return Promise.resolve(new Response(advertiseBody, { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify(list), { status: 200 }));
+    });
+  }
+
+  it('takes an EXPIRED session to the one honest re-login rather than inviting a retry (advertise)', async () => {
+    stubStatus(401);
+
+    await useOperator.getState().advertise(BASE, 'draft-1');
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-out');
+    expect(s.error).toBe(SESSION_EXPIRED);
+    // No control is left claiming to be mid-advertise when the next sign-in renders.
+    expect(s.advertiseStatus).toBe('idle');
+    expect(s.advertisingId).toBeUndefined();
+  });
+
+  it('takes an EXPIRED session to the one honest re-login on RE-ADVERTISE too', async () => {
+    // The second call site. The two verbs are separate branches, so a fix applied to one is no
+    // evidence at all about the other, which is why this is a row and not a parameter.
+    stubStatus(401);
+
+    await useOperator.getState().readvertise(BASE, 'cohort-expired');
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-out');
+    expect(s.error).toBe(SESSION_EXPIRED);
+    expect(s.advertiseStatus).toBe('idle');
+    expect(s.advertisingId).toBeUndefined();
+  });
+
+  it('renders the SERVICE\'S own paused reason on a refused (409) advertise, in the slot the list renders', async () => {
+    stubPaused();
+
+    await useOperator.getState().advertise(BASE, 'draft-1');
+
+    const s = useOperator.getState();
+    expect(s.actionError).toBe(actionFailedWith(PAUSED_REASON));
+    expect(s.actionError).toContain(PAUSED_REASON);
+    // The create form's validation field is NOT where this lands: it renders only while the New
+    // cohort form is open, so a failure written there is invisible on the surface with the button.
+    expect(s.formError).toBeUndefined();
+    // A refusal is not a session change, and nothing about the draft or the list moved.
+    expect(s.auth).toBe('logged-in');
+    expect(s.error).toBeUndefined();
+    expect(s.cohorts).toEqual([]);
+    expect(s.advertisingId).toBeUndefined();
+  });
+
+  it('renders the SERVICE\'S own paused reason on a refused (409) re-advertise', async () => {
+    stubPaused();
+
+    await useOperator.getState().readvertise(BASE, 'cohort-expired');
+
+    const s = useOperator.getState();
+    expect(s.actionError).toBe(actionFailedWith(PAUSED_REASON));
+    expect(s.formError).toBeUndefined();
+    expect(s.auth).toBe('logged-in');
+    expect(s.cohorts).toEqual([]);
+    expect(s.advertisingId).toBeUndefined();
+  });
+
+  it('keeps the VERB-SPECIFIC sentence when the service answers no without a reason (advertise)', async () => {
+    // The 404 for a draft this service does not hold. The sentence is preserved byte for byte
+    // rather than replaced by the shared action line, because it names which action failed and the
+    // shared line cannot: the cohort list carries several one-shot actions raising into one slot.
+    stubStatus(404, 'unknown draft');
+
+    await useOperator.getState().advertise(BASE, 'draft-1');
+
+    expect(useOperator.getState().actionError).toBe(ADVERTISE_FAILED);
+    expect(ADVERTISE_FAILED).toBe('Could not advertise the draft. Try again.');
+    expect(useOperator.getState().auth).toBe('logged-in');
+  });
+
+  it('keeps the VERB-SPECIFIC sentence when the service answers no without a reason (re-advertise)', async () => {
+    stubStatus(404, 'unknown expired cohort');
+
+    await useOperator.getState().readvertise(BASE, 'cohort-expired');
+
+    expect(useOperator.getState().actionError).toBe(READVERTISE_FAILED);
+    expect(READVERTISE_FAILED).toBe('Could not re-advertise the cohort. Try again.');
+    expect(useOperator.getState().auth).toBe('logged-in');
+  });
+
+  it('keeps a service that could not be REACHED distinguishable from one that said no', async () => {
+    // Two different things for the operator to go and check, so they stay two sentences. A helper
+    // that folded a thrown fetch into the answered-no branch would pass every row above.
+    vi.stubGlobal('fetch', () => Promise.reject(new Error('offline')));
+
+    await useOperator.getState().advertise(BASE, 'draft-1');
+
+    const s = useOperator.getState();
+    expect(s.actionError).toBe(UNREACHABLE);
+    expect(s.actionError).not.toBe(ADVERTISE_FAILED);
+    // A transport fault is not a session change either.
+    expect(s.auth).toBe('logged-in');
+  });
+
+  it('STILL confirms, re-reads, and opens the drill-down on the id the RESPONSE carried', async () => {
+    // The anti-vacuity control, and the one that pins a shipped property with no row until now:
+    // advertise mints a NEW cohort id server-side and deletes the draft, so opening the draft id
+    // would poll a cohort the monitor has no entry for.
+    const served = { cohorts: [], monitoring: { rows: [], metrics: { open: 1, inFlight: 0, anchored: 0, failed: 0 } } };
+    stubAdvertiseThenList(JSON.stringify({ draftId: 'cohort-live' }), served);
+
+    await useOperator.getState().advertise(BASE, 'draft-1');
+
+    const s = useOperator.getState();
+    expect(s.advertiseMessage).toBe(ADVERTISED_OK);
+    expect(s.actionError).toBeUndefined();
+    expect(s.advertiseStatus).toBe('idle');
+    expect(s.advertisingId).toBeUndefined();
+    expect(s.view).toEqual({ kind: 'detail', cohortId: 'cohort-live' });
+    // The re-read happened: the served metrics could only have arrived through `refreshCohorts`.
+    expect(s.metrics).toEqual({ open: 1, inFlight: 0, anchored: 0, failed: 0 });
+  });
+
+  it('STILL confirms and re-reads on a successful RE-advertise', async () => {
+    const served = { cohorts: [], monitoring: { rows: [], metrics: { open: 2, inFlight: 0, anchored: 0, failed: 0 } } };
+    stubAdvertiseThenList(JSON.stringify({ ok: true }), served);
+
+    await useOperator.getState().readvertise(BASE, 'cohort-expired');
+
+    const s = useOperator.getState();
+    expect(s.advertiseMessage).toBe(READVERTISED_OK);
+    expect(s.actionError).toBeUndefined();
+    expect(s.advertiseStatus).toBe('idle');
+    expect(s.advertisingId).toBeUndefined();
+    expect(s.metrics).toEqual({ open: 2, inFlight: 0, anchored: 0, failed: 0 });
+    // Re-advertising leaves the operator on the list: no NEW cohort id was minted to open.
+    expect(s.view).toEqual({ kind: 'list' });
   });
 });

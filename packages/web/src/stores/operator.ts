@@ -71,16 +71,30 @@ export const NEXT_COHORT_ONLY_LINE =
 export const EDIT_UNAVAILABLE_REASON = 'Only a draft can be edited. This cohort is already advertised.';
 
 /** Transient advertise success copy (UI-SPEC verbatim, em-dash-free). */
-const ADVERTISED_OK = 'Advertised. Now joinable in the directory.';
+export const ADVERTISED_OK = 'Advertised. Now joinable in the directory.';
 
 /** Transient re-advertise success copy (an expired cohort brought back to the directory). */
-const READVERTISED_OK = 'Re-advertised. Back in the directory as a fresh cohort.';
+export const READVERTISED_OK = 'Re-advertised. Back in the directory as a fresh cohort.';
+
+/**
+ * Bad-tone copy when the SERVICE answered an advertise and said no (review WR-12). Byte-identical
+ * to the sentence this verb has always shown, and named rather than inlined so a row can pin it.
+ *
+ * It is kept in preference to the shared {@link ACTION_FAILED} line because it names the verb, and
+ * the shared line cannot: the cohort list carries a draft's `Advertise cohort` button, an expired
+ * row's `Re-advertise` button and several other one-shot actions, all of which raise their failure
+ * into the same slot.
+ */
+export const ADVERTISE_FAILED = 'Could not advertise the draft. Try again.';
+
+/** The re-advertise counterpart of {@link ADVERTISE_FAILED}, equally byte-identical to the shipped sentence. */
+export const READVERTISE_FAILED = 'Could not re-advertise the cohort. Try again.';
 
 /** Exact invalid-password copy (UI-SPEC); never reveals whether a session/account exists. */
 const INVALID_PASSWORD =
   'Incorrect password. Check the operator password set for this service and try again.';
 const THROTTLED = 'Too many attempts. Wait a few minutes and try again.';
-const UNREACHABLE = 'Could not reach the service. Check that it is running, then reload.';
+export const UNREACHABLE = 'Could not reach the service. Check that it is running, then reload.';
 
 /** Bad-tone copy when the gated per-cohort JSON export could not be served (review WR-06). */
 export const EXPORT_FAILED = 'Could not download the monitoring record. Check the service, then try again.';
@@ -1152,55 +1166,93 @@ export const useOperator = create<OperatorState>((set, get) => ({
   },
 
   async advertise(baseUrl, id) {
-    set({ advertiseStatus: 'advertising', advertisingId: id, advertiseMessage: undefined, formError: undefined });
-    try {
-      const liveCohortId = await apiAdvertise(baseUrl, id);
-      if (liveCohortId) {
-        set({ advertiseStatus: 'idle', advertisingId: undefined, advertiseMessage: ADVERTISED_OK });
-        await get().refreshCohorts(baseUrl);
-        // Land the operator in the freshly-advertised cohort's drill-down (D-13). Advertise mints a
-        // NEW live cohort id server-side (the draft is deleted), so open the LIVE id the advertise
-        // response returned, NOT the stale draft id (which the monitor has no entry for). Guard on a
-        // still-signed-in session so a 401 during the refresh above (which drops to logged-out) is
-        // not overridden.
-        if (get().auth === 'logged-in') {
-          get().openCohort(liveCohortId);
-        }
-        // Clear the transient confirmation after a few seconds, but only if it is still
-        // the same message (a later action may have replaced it).
-        setTimeout(() => {
-          if (get().advertiseMessage === ADVERTISED_OK) {
-            set({ advertiseMessage: undefined });
-          }
-        }, 4000);
-      } else {
-        set({ advertiseStatus: 'error', advertisingId: undefined, formError: 'Could not advertise the draft. Try again.' });
-      }
-    } catch {
-      set({ advertiseStatus: 'error', advertisingId: undefined, formError: UNREACHABLE });
+    // The one-shot ACTION-ERROR field is the slot this verb owns, so it is the one cleared on entry
+    // (review WR-12). The create form's `formError` is deliberately no longer touched here, in
+    // either direction: that field is the create form's own validation slot, and `CreateCohortForm`
+    // renders only while the `New cohort` form is open, so an advertise failure written there was
+    // invisible on the surface the button lives on. `actionError` renders in bad tone at the top of
+    // `OperatorCohortList`, beside the good-tone advertise confirmation and directly above the rows
+    // whose buttons raise it, and it is already where a failed discard and a failed dismissal land.
+    set({ advertiseStatus: 'advertising', advertisingId: id, advertiseMessage: undefined, actionError: undefined });
+    const result = await apiAdvertise(baseUrl, id);
+    if (result.kind === 'unauthorized') {
+      // The ONE shared session-expiry path (D-16), the same one every other gated verb takes, so a
+      // 401 never means two different things. `expireSession` clears both advertise markers itself.
+      get().expireSession();
+      return;
     }
+    if (result.kind === 'refused') {
+      // The paused-advertising gate (D-06) refused with a reason the SERVICE authored (never a
+      // library string), so it is rendered verbatim inside the shared action-error sentence, exactly
+      // as a refused finalize is. The draft is untouched: a paused service refuses loudly rather
+      // than losing it.
+      set({ advertiseStatus: 'error', advertisingId: undefined, actionError: actionFailedWith(result.reason || undefined) });
+      return;
+    }
+    if (result.kind === 'declined') {
+      // The service answered and said no (a draft it does not hold, or a 200 naming no cohort). The
+      // verb-specific sentence is kept rather than the shared line: it names which action failed,
+      // which the shared line cannot on a surface carrying several one-shot actions.
+      set({ advertiseStatus: 'error', advertisingId: undefined, actionError: ADVERTISE_FAILED });
+      return;
+    }
+    if (result.kind === 'unreachable') {
+      // Kept distinguishable from the branch above: an operator whose own service is unreachable
+      // has a different thing to go and check than one whose service refused.
+      set({ advertiseStatus: 'error', advertisingId: undefined, actionError: UNREACHABLE });
+      return;
+    }
+    set({ advertiseStatus: 'idle', advertisingId: undefined, advertiseMessage: ADVERTISED_OK });
+    await get().refreshCohorts(baseUrl);
+    // Land the operator in the freshly-advertised cohort's drill-down (D-13). Advertise mints a
+    // NEW live cohort id server-side (the draft is deleted), so open the LIVE id the advertise
+    // response returned, NOT the stale draft id (which the monitor has no entry for). Guard on a
+    // still-signed-in session so a 401 during the refresh above (which drops to logged-out) is
+    // not overridden.
+    if (get().auth === 'logged-in') {
+      get().openCohort(result.value);
+    }
+    // Clear the transient confirmation after a few seconds, but only if it is still
+    // the same message (a later action may have replaced it).
+    setTimeout(() => {
+      if (get().advertiseMessage === ADVERTISED_OK) {
+        set({ advertiseMessage: undefined });
+      }
+    }, 4000);
   },
 
   async readvertise(baseUrl, id) {
-    set({ advertiseStatus: 'advertising', advertisingId: id, advertiseMessage: undefined, formError: undefined });
-    try {
-      const ok = await apiReadvertise(baseUrl, id);
-      if (ok) {
-        set({ advertiseStatus: 'idle', advertisingId: undefined, advertiseMessage: READVERTISED_OK });
-        await get().refreshCohorts(baseUrl);
-        // Clear the transient confirmation after a few seconds, but only if it is still
-        // the same message (a later action may have replaced it).
-        setTimeout(() => {
-          if (get().advertiseMessage === READVERTISED_OK) {
-            set({ advertiseMessage: undefined });
-          }
-        }, 4000);
-      } else {
-        set({ advertiseStatus: 'error', advertisingId: undefined, formError: 'Could not re-advertise the cohort. Try again.' });
-      }
-    } catch {
-      set({ advertiseStatus: 'error', advertisingId: undefined, formError: UNREACHABLE });
+    // The same slot decision as `advertise` above, for the same reason: this button lives on the
+    // cohort list, so its failures belong in the field the cohort list renders.
+    set({ advertiseStatus: 'advertising', advertisingId: id, advertiseMessage: undefined, actionError: undefined });
+    const result = await apiReadvertise(baseUrl, id);
+    if (result.kind === 'unauthorized') {
+      // The ONE shared session-expiry path (D-16); `expireSession` clears both markers itself.
+      get().expireSession();
+      return;
     }
+    if (result.kind === 'refused') {
+      // The SAME paused-advertising 409 the advertise route answers, in the service's own words.
+      set({ advertiseStatus: 'error', advertisingId: undefined, actionError: actionFailedWith(result.reason || undefined) });
+      return;
+    }
+    if (result.kind === 'declined') {
+      set({ advertiseStatus: 'error', advertisingId: undefined, actionError: READVERTISE_FAILED });
+      return;
+    }
+    if (result.kind === 'unreachable') {
+      set({ advertiseStatus: 'error', advertisingId: undefined, actionError: UNREACHABLE });
+      return;
+    }
+    set({ advertiseStatus: 'idle', advertisingId: undefined, advertiseMessage: READVERTISED_OK });
+    await get().refreshCohorts(baseUrl);
+    // Clear the transient confirmation after a few seconds, but only if it is still
+    // the same message (a later action may have replaced it).
+    setTimeout(() => {
+      if (get().advertiseMessage === READVERTISED_OK) {
+        set({ advertiseMessage: undefined });
+      }
+    }, 4000);
   },
 
   async discard(baseUrl, id) {
