@@ -1214,6 +1214,111 @@ describe('no free-text seed the holder ACCEPTS is a value it would REFUSE (SC3, 
     handed[0] = 'REWRITTEN';
     expect(settings.snapshot().droppedSeeds).toEqual(['TERMS_TEXT']);
   });
+
+  /**
+   * ONE REFUSAL, THREE STATEMENTS, ONE ORDER (`05-REVIEW.md` IN-13, extending WR-10).
+   *
+   * WR-10's premise, which round 6 accepted and acted on, is that a refused seed is repairable in
+   * the RUNNING session: `applySettings` accepts a value up to this holder's own character ceiling
+   * and the settings route carries it, so the operator can type into the settings field, save, and
+   * have the setting back now. Round 6 corrected exactly one of the three places that state the
+   * repair, the console caption, and left the boot warning and `docs/DEPLOY.md` naming the slow one
+   * as the only one. The boot warning is the statement an operator meets FIRST.
+   *
+   * The rows below assert the ORDER by comparing two positions inside the composed line rather than
+   * by matching a whole sentence, so a later rewording that preserves the order stays green and a
+   * rewording that drops or demotes the in-session repair does not. `REFUSED_SEEDS` in
+   * `packages/web/src/components/operator/SettingsView.tsx` is the fixed point these follow; it is
+   * not edited by this round.
+   */
+  const REFUSED_SEED_LINES: readonly {
+    readonly what: string;
+    readonly seed: RuntimeSettingsSeed;
+    readonly variable: string;
+    readonly suppliedLength: number;
+    readonly ceiling: number;
+    /** The unique substring of the in-session repair clause. */
+    readonly inSessionRepair: string;
+    /** The unique substring of the environment edit clause, which must come after it. */
+    readonly environmentEdit: string;
+  }[] = [
+    {
+      what: 'a refused SERVICE_NAME',
+      seed: { serviceName: 'x'.repeat(5_000) },
+      variable: 'SERVICE_NAME',
+      suppliedLength: 5_000,
+      ceiling: MAX_SERVICE_NAME_CHARS,
+      inSessionRepair: 'Set the service name in the operator settings surface',
+      environmentEdit: 'shorten SERVICE_NAME',
+    },
+    {
+      what: 'a refused TERMS_TEXT',
+      seed: { termsText: 'x'.repeat(100_000) },
+      variable: 'TERMS_TEXT',
+      suppliedLength: 100_000,
+      ceiling: MAX_TERMS_CHARS,
+      inSessionRepair: 'Set the participation terms in the operator settings surface',
+      environmentEdit: 'shorten TERMS_TEXT',
+    },
+  ];
+
+  /** The one boot line about `variable`, which every row below reads through. */
+  function refusalLine(seed: RuntimeSettingsSeed, variable: string): string {
+    const { warnings, warn } = withWarnings();
+    createRuntimeSettings({ ...seed, warn });
+    const matching = warnings.filter((line) => line.includes(variable));
+    expect(matching).toHaveLength(1);
+    return matching[0]!;
+  }
+
+  for (const row of REFUSED_SEED_LINES) {
+    it(`names the in-session repair BEFORE the environment edit for ${row.what}`, () => {
+      const line = refusalLine(row.seed, row.variable);
+      const repairAt = line.indexOf(row.inSessionRepair);
+      const environmentAt = line.indexOf(row.environmentEdit);
+      // Both present at all: an ordering comparison between two -1s is vacuously true.
+      expect(repairAt).toBeGreaterThan(-1);
+      expect(environmentAt).toBeGreaterThan(-1);
+      // The operator can do the first one while reading this line. The second is what stops the
+      // refusal happening again at the next boot, which is why it comes second and not instead.
+      expect(repairAt).toBeLessThan(environmentAt);
+    });
+
+    it(`still names the variable, the supplied length and the ceiling for ${row.what}`, () => {
+      // The split ADDS a repair. It must not cost the measurement the warning already carried,
+      // which is the only thing telling the operator how far over the value was.
+      const line = refusalLine(row.seed, row.variable);
+      expect(line).toContain(row.variable);
+      expect(line).toContain(String(row.suppliedLength));
+      expect(line).toContain(String(row.ceiling));
+    });
+  }
+
+  it('keeps the two consequences DIFFERENT sentences, so neither loss is dressed in the other words', () => {
+    // The reasoning `REFUSED_SEEDS` already records: dropping the display name loses a label, and
+    // dropping the participation terms turns the SVC-05 acceptance gate off. A shared sentence
+    // would either overstate the name's loss or hide the one that matters, and fusing them is
+    // exactly how the cost and the remedy fused in the first place.
+    const terms = refusalLine({ termsText: 'x'.repeat(100_000) }, 'TERMS_TEXT');
+    const name = refusalLine({ serviceName: 'x'.repeat(5_000) }, 'SERVICE_NAME');
+    expect(terms).toMatch(/no terms step at all/);
+    expect(terms).toMatch(/acceptance/);
+    expect(name).not.toMatch(/terms step/);
+    expect(name).not.toMatch(/acceptance/);
+  });
+
+  it('says none of this for a seed within the cap: no warning at all, and no dropped name', () => {
+    // The control that keeps every row above about the REFUSAL path. Without it a holder that
+    // appended this consequence to every seed it saw would satisfy them just as happily.
+    const { warnings, warn } = withWarnings();
+    const settings = createRuntimeSettings({
+      serviceName: 'x'.repeat(MAX_SERVICE_NAME_CHARS),
+      termsText: 'x'.repeat(MAX_TERMS_CHARS),
+      warn,
+    });
+    expect(warnings).toEqual([]);
+    expect(settings.snapshot().droppedSeeds).toEqual([]);
+  });
 });
 
 /**

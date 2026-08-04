@@ -777,6 +777,21 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
   // Both seed sites feed ONE collector, which is what {@link SettingsSnapshot.droppedSeeds} serves
   // to the console. It is written during construction and never afterwards: a refusal is a fact
   // about this boot, so nothing a running service does can add to it or clear it.
+  //
+  // THE TWO CONSEQUENCE CLAUSES BELOW ARE THE SAME FACT THE CONSOLE CAPTION STATES (review IN-13,
+  // extending review WR-10). `REFUSED_SEEDS` in
+  // `packages/web/src/components/operator/SettingsView.tsx` holds the corrected wording: each cost
+  // states only what is true right now, and each remedy names the IN-SESSION repair first and the
+  // environment edit second. That ordering is the caption's own reasoning applied here: a
+  // disclosure exists to make someone act, so a sentence naming only the repair the reader cannot
+  // do yet drops the one they can. Round 6 corrected the caption alone and left these two lines,
+  // and `docs/DEPLOY.md`, saying a restart was the only way back from a refusal that
+  // {@link RuntimeSettings.applySettings} will accept a replacement for immediately.
+  //
+  // The two clauses stay DIFFERENT sentences for the reason `REFUSED_SEEDS` records: dropping the
+  // display name loses a label, dropping the participation terms turns the SVC-05 acceptance gate
+  // off. Each also composes with {@link textKnob}'s prefix rather than repeating it, since the
+  // prefix already names the variable, the supplied length and the stored ceiling.
   const droppedSeeds: string[] = [];
   const serviceName: FieldState<string | undefined> = field(
     textKnob(
@@ -784,7 +799,8 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
       seed.serviceName,
       MAX_SERVICE_NAME_CHARS,
       warn,
-      'the display name is left unset until the value is shortened',
+      'the display name stays unset. Set the service name in the operator settings surface to ' +
+        'restore it for this session, and shorten SERVICE_NAME so a restart keeps it',
       droppedSeeds,
     ),
   );
@@ -799,7 +815,9 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
       seed.termsText,
       MAX_TERMS_CHARS,
       warn,
-      'the terms are left unset, so the join flow has no terms step at all until the value is shortened',
+      'the join flow has no terms step at all, so this service refuses every acceptance. Set the ' +
+        'participation terms in the operator settings surface to restore the acceptance step for ' +
+        'this session, and shorten TERMS_TEXT so a restart keeps it',
       droppedSeeds,
     ),
   );
