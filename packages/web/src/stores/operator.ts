@@ -1143,10 +1143,22 @@ export const useOperator = create<OperatorState>((set, get) => ({
     // The shipped precedent is `pollDetail`'s round guard, keyed on the COHORT because that is what
     // a detail read is a fact about. One house rule, applied to each path's own subject.
     //
-    // Both halves are wanted: the capture rejects an answer to a question no live session asked,
-    // the status check rejects an answer landing into a signed-out console, and the round check
-    // rejects an answer that outlived the session that did ask.
-    if (!stillAsking(get, askedInRound) || get().auth !== 'logged-in') {
+    // Two things are rejected here, and only two (review IN-10): an answer to a question no live
+    // session asked, which the undefined capture refuses, and an answer that outlived the session
+    // that did ask, which the round comparison refuses. A THIRD clause used to sit here comparing
+    // the auth status, and it is gone: every path that ends a session bumps the round, the probe
+    // included since it stopped bumping on a mere confirmation, so an unchanged round already
+    // proves this session never ended. All the status clause added was refusing an ok answer that
+    // lands while a probe is in flight, when `auth` reads `checking` because the probe's own first
+    // statement set it.
+    //
+    // That is the same argument the 401 branch directly above already records for declining a
+    // status comparison there, and the two now agree rather than making opposite cases about one
+    // clause in one method, which is how the asymmetry survived a green gate. All four gated reads
+    // (this one, `pollDetail`, `loadSettings` and `saveSettings`) therefore compare one thing
+    // composed one way; adding the clause to the other three instead would also be uniform and
+    // would be the wrong uniformity, deferring a genuine expiry for a poll tick for no benefit.
+    if (!stillAsking(get, askedInRound)) {
       return;
     }
     if (result.kind === 'unreachable') {

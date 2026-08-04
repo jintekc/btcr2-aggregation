@@ -1156,10 +1156,11 @@ describe('operator store refreshCohorts concurrency (W5: a list answer belongs t
     // retires the live session's round, so a read that was in flight across the tab switch is
     // discarded and the console skips one update.
     //
-    // The one case this does NOT cover, recorded rather than claimed closed: an answer landing
-    // INSIDE the probe's own `checking` window is still discarded by the retained status check in
-    // `refreshCohorts`. That window is one probe round trip rather than one poll interval, and this
-    // plan leaves it exactly as it was.
+    // The one case this row does not itself cover, recorded here when it was still open: an answer
+    // landing INSIDE the probe's own `checking` window, which `refreshCohorts` then discarded
+    // because its guard carried a status clause the other three gated reads did not. That clause is
+    // gone (review IN-10) and the window is covered by the row directly below, so the observation
+    // stands and its caveat no longer does. Nothing in this row's own assertions changed.
     const slow = deferred<Response>();
     const probeOwnRead = deferred<Response>();
     const staged = [slow.promise, probeOwnRead.promise];
@@ -1193,6 +1194,55 @@ describe('operator store refreshCohorts concurrency (W5: a list answer belongs t
     expect(s.operatorActions).toEqual(POPULATED.monitoring?.operatorActions);
     expect(s.defaults).toEqual(POPULATED.defaults);
     expect(typeof s.lastUpdated).toBe('number');
+  });
+
+  it('writes an ok list answer that lands INSIDE a confirming probe\'s checking window (review IN-10)', async () => {
+    // The window the row above recorded as deliberately left open, closed here rather than carried
+    // a second time. It only acquired teeth once the probe stopped bumping the round on a confirming
+    // landing (review IN-07): from then on an ok answer landing while a probe was in flight was
+    // dropped by THIS read alone and written normally by the drill-down poll and both settings
+    // calls, which are fed by the same session and compare the same round.
+    const slow = deferred<Response>();
+    const probeAnswer = deferred<Response>();
+    const probeOwnRead = deferred<Response>();
+    const staged = [slow.promise, probeOwnRead.promise];
+    let next = 0;
+    vi.stubGlobal('fetch', (input: unknown) => {
+      const url = String(input);
+      if (url.endsWith('/v1/operator/session')) {
+        return probeAnswer.promise;
+      }
+      const answer = staged[next];
+      next += 1;
+      return answer ?? Promise.reject(new Error(`no staged answer for list read #${next}`));
+    });
+    seedEmptySlice('logged-in');
+    const round = useOperator.getState().sessionRound;
+
+    const read = useOperator.getState().refreshCohorts(BASE);
+    // The console re-mounts on a tab switch and its probe is still IN FLIGHT, so `auth` reads
+    // `checking`: that status is the probe's own first statement, not a fact about the session.
+    const probing = useOperator.getState().probe(BASE);
+    expect(useOperator.getState().auth).toBe('checking');
+
+    slow.resolve(okList());
+    await read;
+
+    const s = useOperator.getState();
+    expect(s.cohorts).toEqual(POPULATED.cohorts);
+    expect(s.rows).toEqual(POPULATED.monitoring?.rows);
+    expect(s.metrics).toEqual(POPULATED.monitoring?.metrics);
+    expect(s.health).toEqual(POPULATED.monitoring?.health);
+    expect(s.operatorActions).toEqual(POPULATED.monitoring?.operatorActions);
+    expect(s.defaults).toEqual(POPULATED.defaults);
+    expect(typeof s.lastUpdated).toBe('number');
+
+    // And the probe confirms the SAME session, so no boundary was crossed while the answer landed:
+    // the round comparison the guard kept had already proved that.
+    probeAnswer.resolve(new Response(null, { status: 200 }));
+    await probing;
+    expect(useOperator.getState().auth).toBe('logged-in');
+    expect(useOperator.getState().sessionRound).toBe(round);
   });
 
   /**
