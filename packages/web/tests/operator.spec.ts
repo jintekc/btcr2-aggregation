@@ -2233,6 +2233,56 @@ describe('operator store probe-discovered session end (review CR-03)', () => {
     expect(s.sessionRound).not.toBe(ended);
   });
 
+  it('starts NO session when a probe answers LIVE after a 401 already ended the one it asked in (review IN-15)', async () => {
+    // The reviewer's own interleaving, staged: a list read and a probe in flight together, the read
+    // answering 401 first. Nothing about the probe's answer is false (the cookie was good when the
+    // service looked), but the console has since learned something newer from a 401 the service
+    // itself sent, and the newer fact wins.
+    //
+    // The named anti-vacuity control is the shipped row directly below this block's other returning
+    // rows, "still gives a RETURNING session a fresh round after a probe ended the previous one": a
+    // probe that crossed no boundary still starts a session and takes a round. A guard placed on the
+    // wrong branch, or placed too widely, breaks that row rather than satisfying this one.
+    const probeAnswer = deferred<Response>();
+    const listAnswer = deferred<Response>();
+    let listReads = 0;
+    vi.stubGlobal('fetch', (input: unknown) => {
+      const url = String(input);
+      if (url.endsWith('/v1/operator/session')) {
+        return probeAnswer.promise;
+      }
+      listReads += 1;
+      // The first list read is the one this row controls; anything the store fires afterwards hangs,
+      // so what the assertions below see is only what the probe itself decided.
+      return listReads === 1 ? listAnswer.promise : new Promise<Response>(() => {});
+    });
+
+    const read = useOperator.getState().refreshCohorts(BASE);
+    const probing = useOperator.getState().probe(BASE);
+
+    listAnswer.resolve(new Response('no', { status: 401 }));
+    await read;
+
+    const expired = useOperator.getState();
+    expect(expired.auth).toBe('logged-out');
+    expect(expired.error).toBe(SESSION_EXPIRED);
+    const retired = expired.sessionRound;
+
+    probeAnswer.resolve(new Response(null, { status: 200 }));
+    await probing;
+
+    const s = useOperator.getState();
+    // The console stays on the honest re-login screen, on the round the expiry retired.
+    expect(s.auth).toBe('logged-out');
+    expect(s.error).toBe(SESSION_EXPIRED);
+    expect(s.sessionRound).toBe(retired);
+    // Named rather than only the auth string, because the phantom is the SESSION, not the status: a
+    // recorded live session on a cookie the service has already refused is what re-arms every guard
+    // that reads the stored fact.
+    expect(s.liveSessionRound).toBeUndefined();
+    expect(s.cohorts).toEqual([]);
+  });
+
   it('ends the session EXACTLY once when two overlapping probes both discover it has ended', async () => {
     // Where the stored live-session fact of the previous task stops being tidiness and becomes
     // load-bearing: without it the second probe would end an already-ended session and land the

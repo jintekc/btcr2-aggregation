@@ -891,13 +891,24 @@ function gatedSliceReset(): Partial<OperatorState> {
  * never matches. That is the half that refuses an answer to a question nobody asked, rather than
  * letting it match a value some LATER session holds.
  *
- * There is exactly ONE documented exception, and it is `probe`'s session-ended branches. They
- * decide from {@link OperatorState.liveSessionRound}, the stored fact, read at landing time,
- * because nobody asked the probe's question in a round: the probe is the path that discovers a
- * session ended WITHOUT a 401 (an idle expiry seen on the way back to the operator tab), so it has
- * no asking round to compare and must consult what the console records as live. Stated here rather
- * than left to be inferred, because an exemption nobody wrote down is what IN-09 filed against the
- * previous arrangement.
+ * There is exactly ONE documented exception, and it is `probe`'s session-ENDED branches (its
+ * `unreachable` answer, its `catch`, and the branch that discovers a session gone). They decide from
+ * {@link OperatorState.liveSessionRound}, the stored fact, read at landing time, because nobody
+ * asked the probe's question in a round: the probe is the path that discovers a session ended
+ * WITHOUT a 401 (an idle expiry seen on the way back to the operator tab), so it has no asking round
+ * to compare and must consult what the console records as live. `probe`'s CONFIRMING branch decides
+ * from the same stored fact for the same reason, and must not take a round: retiring the round of a
+ * session that never ended would make the field identify a probe event rather than a session
+ * (review IN-07).
+ *
+ * `probe`'s session-START branch is NOT part of that exception, and used to be exempt without
+ * anybody saying so (review IN-15). It now carries its own capture, taken DIRECTLY off
+ * {@link OperatorState.sessionRound} rather than through {@link askingRound}, because that helper
+ * answers undefined unless a session is live and this is exactly the branch that runs when none is.
+ * Without the capture, a probe answer landing after a 401 re-established a signed-in shell for a
+ * cookie the service had already refused. Stated here rather than left to be inferred, because an
+ * exemption nobody wrote down is what IN-09 filed against the previous arrangement and what IN-15
+ * filed against the arrangement that replaced it.
  *
  * Client-side only, like the field it reads: nothing here goes on the wire, and no request is
  * cancelled. The guard makes a late answer HARMLESS rather than preventing it, which is what both
@@ -1049,6 +1060,14 @@ export const useOperator = create<OperatorState>((set, get) => ({
 
   async probe(baseUrl) {
     set({ auth: 'checking', error: undefined });
+    // The round this question is asked in, captured before the await like every other gated call,
+    // but read DIRECTLY off the store rather than through `askingRound` (review IN-15).
+    //
+    // That is deliberate and the next reader will otherwise try to make it consistent with the other
+    // sixteen: `askingRound` answers undefined unless a session is live, and the branch guarded
+    // below is precisely the one that runs when none is, so routing this through the helper would
+    // produce an always-undefined capture and a guard that can never fire.
+    const askedAtRound = get().sessionRound;
     try {
       const state = await sessionProbe(baseUrl);
       if (state === 'unreachable') {
@@ -1065,6 +1084,16 @@ export const useOperator = create<OperatorState>((set, get) => ({
         // statement to say anything at all, and a capture taken there is wrong the moment two
         // probes overlap: the second reads `checking`, concludes no session was live, and bumps.
         if (get().liveSessionRound === undefined) {
+          if (get().sessionRound !== askedAtRound) {
+            // A session boundary was crossed while this question was in flight, so this answer
+            // cannot start one (review IN-15). Nothing about the answer is false: the cookie was
+            // good when the service looked. But the console has since learned something NEWER from
+            // a 401 the service itself sent, and the newer fact wins. Writing nothing at all is the
+            // whole branch: re-entering a signed-in shell for a cookie the service has already
+            // refused left the console contradicting itself, signed in while still carrying the
+            // expiry copy.
+            return;
+          }
           // A live session STARTS here (a returning operator whose cookie is still good), so it
           // takes a fresh round before the read it fires below captures one, and records that round
           // as the live one.
