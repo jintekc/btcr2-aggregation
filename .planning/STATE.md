@@ -4,16 +4,16 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
-status: executing
-stopped_at: Completed 05-40-PLAN.md
-last_updated: "2026-08-04T00:13:49.377Z"
+status: verifying
+stopped_at: Completed 05-41-PLAN.md
+last_updated: "2026-08-04T00:25:03.374Z"
 last_activity: 2026-08-03
 last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 5
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 71
-  completed_plans: 70
+  completed_plans: 71
 ---
 
 # Project State
@@ -29,10 +29,10 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
 Plan: 41 of 41
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-08-03 — Phase 05 execution started
 
-Progress: [██████████] 99%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -131,6 +131,7 @@ Progress: [██████████] 99%
 | Phase 05 P38 | 18 min | 3 tasks | 5 files |
 | Phase 05 P39 | 15 min | 3 tasks | 2 files |
 | Phase 05 P40 | 11 min | 3 tasks | 3 files |
+| Phase 05 P41 | 14 min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -260,6 +261,8 @@ Recent decisions affecting current work (Phase 2):
 - [Phase ?]: 05-39: ending an operator session is ONE act with ONE implementation - GATED_SLICE_RESET is spread by both signOut and expireSession (closing the five-field IN-11 divergence), and probe's three non-live outcomes route through it so a tab switch after an idle expiry cannot hand the next session the previous one's cohorts, health chip, operator log, drill-down document or settings defaults (CR-03)
 - [Phase ?]: 05-39: the probe's session-boundary decision moved from a pre-await auth snapshot to a stored liveSessionRound fact read at landing time (WR-11), because dedupe leaves the decision on a status and would narrate a deliberate signOut landing mid-probe as an expiry the operator did not cause; signIn gets NO gated-slice clear, declined deliberately so the CR-03 latch row stays non-vacuous
 - [Phase ?]: [Phase 05] 05-40 (WR-12/IN-09/IN-10): advertise and readvertise get discriminated results (refused carries the service's own 409 paused reason, declined stays apart from unreachable because a service that said no and a service that cannot be reached are different things to go and check), and their failures move from the create form's validation slot to the one-shot actionError the cohort list renders above the buttons that raise it. The session-identity rule is lifted into ONE trio (askingRound/stillAsking/expireIfStillAsking) used at all FIFTEEN gated call sites (4 reads + 11 action verbs), with probe's session-ended branches the ONE documented exception because no round asked their question; the mutation that removes the comparison turns a read's ABA rows and an action's ABA rows red TOGETHER, which is the property a shared implementation buys and eleven per-site edits could not. refreshCohorts DROPS its auth-status clause rather than the other three reads gaining one: the round comparison already proves the session did not end, so the clause only refused an ok answer landing inside a probe's checking window.
+- [Phase ?]: [Phase 05] 05-41: the console caption is the FIXED POINT and the boot warnings + DEPLOY.md moved to it (review IN-13). One fact stated in three places diverged because round 6 corrected only the one it found; both textKnob consequence clauses now state the cost, then the in-session repair through the operator settings surface, then the environment edit, with the two clauses kept as DIFFERENT sentences (the name loses a label, the terms turn the SVC-05 acceptance gate off). Ordering is asserted by POSITION inside the composed warning, not by sentence match, so a rewording that preserves the order stays green.
+- [Phase ?]: [Phase 05] 05-41: IN-14 is CLOSED AS DOCUMENTED AND MEASURED, not fixed. settingsBodyLimitBytes charges the STORED (trimmed) length while the route enforces the TRANSMITTED body, so a value at the cap padded with whitespace is legal to the holder and refused 413; the docstring names the alternative not taken (bound the JSON field before trimming) and why the decision is proportionate, and three rows measure the gap so the claim is checkable rather than a rationale. Beside it the route comment (review IN-12) now names settingsBodyLimitBytes and BOTH string caps instead of the terms cap alone, with a comment-lines-only diff on hono-adapter.ts.
 
 ### Pending Todos
 
@@ -299,7 +302,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-04T00:13:38.715Z
-Stopped at: Completed 05-40-PLAN.md
+Last session: 2026-08-04T00:24:47.895Z
+Stopped at: Completed 05-41-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
