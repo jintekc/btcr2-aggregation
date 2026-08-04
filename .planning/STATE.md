@@ -7,13 +7,13 @@ current_phase_name: operator-cohort-lifecycle-control
 status: executing
 stopped_at: Completed 05-44-PLAN.md
 last_updated: "2026-08-04T17:44:23.957Z"
-last_activity: "2026-08-04: 05-42 executed (WR-13 branch sweep + IN-18 reset factory)"
+last_activity: "2026-08-04: round 8 executed (05-42..44); review round 8 committed (0 critical, 3 warning, 3 info); verification pass 9 human_needed"
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 74
-  completed_plans: 73
-last_activity_desc: 05-42 executed (WR-13 branch sweep + IN-18 reset factory)
+  completed_plans: 74
+last_activity_desc: round 8 executed (05-42..44); verification pass 9 human_needed, 16 UAT items pending
 ---
 
 # Project State
@@ -27,10 +27,10 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 
 ## Current Position
 
-Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 44 of 44 complete (round 8 in progress: 05-42 done, 05-43 and 05-44 remain)
-Status: Ready to execute 05-43
-Last activity: 2026-08-04: 05-42 executed (WR-13 branch sweep + IN-18 reset factory)
+Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING (awaiting UAT)
+Plan: 44 of 44 complete (round 8 executed 2026-08-04: 05-42, 05-43, 05-44)
+Status: Verification pass 9 human_needed (7/7 SCs code-level); review round 8: 0 critical, 3 warning (WR-16..18), 3 info (IN-19..21); 16 UAT items pending in 05-UAT.md
+Last activity: 2026-08-04: round 8 executed and re-verified; gate green (68 files / 1392 tests, lint, web build, e2e:gate 13 legs)
 
 Progress: [██████████] 99%
 
@@ -312,6 +312,6 @@ Items acknowledged and carried forward from previous milestone close:
 ## Session Continuity
 
 Last session: 2026-08-04T17:44:12.255Z
-Stopped at: Completed 05-44-PLAN.md
+Stopped at: Round 8 complete (05-42..44 executed, reviewed, re-verified pass 9 human_needed)
 Resume file: None
-Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
+Next command: /gsd-verify-work 5 (16 UAT items) or /gsd-secure-phase 5 (security enforcement active, no 05-SECURITY.md yet); round-8 review warnings WR-16..18 are candidates for a round-9 gap plan if the owner wants them closed before UAT
