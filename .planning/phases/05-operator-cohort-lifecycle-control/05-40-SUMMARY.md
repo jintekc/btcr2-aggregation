@@ -186,5 +186,3 @@ One `must_haves` truth is marked `verification: backstop` and remains for the ow
 - `packages/web/src/stores/operator.ts` FOUND, contains `expireIfStillAsking`, `askingRound` and `stillAsking`.
 - `packages/web/tests/operator.spec.ts` FOUND, contains `AdvertiseActionResult`-driven rows and the IN-09 / IN-10 blocks; 97 rows green.
 - `3c1da16` FOUND, `90628a4` FOUND, `26f87db` FOUND.
-</content>
-</invoke>
