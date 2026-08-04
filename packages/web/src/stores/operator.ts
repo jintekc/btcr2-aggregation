@@ -369,6 +369,12 @@ export interface OperatorState {
    * gated read is evidence about exactly one of them. Any guard that must decide whether an answer
    * still belongs to the session that asked compares this, never `auth` alone.
    *
+   * That sentence is general law, and it is now TRUE of every gated call site rather than of the
+   * four reads alone (review IN-09): all fifteen (the four gated reads and the eleven action verbs)
+   * capture and compare through the one shared trio above `useOperator`, whose docstring names the
+   * single documented exception (`probe`'s session-ended branches, which decide from
+   * {@link OperatorState.liveSessionRound} because no round asked their question).
+   *
    * Bumped on every path that makes a session LIVE (a successful `signIn`, a `probe` that finds a
    * session live where none was live before) and on every path that ENDS one (`signOut`,
    * `expireSession`). The correctness argument only needs the START bumps: if every new session
@@ -820,6 +826,58 @@ const GATED_SLICE_RESET: Partial<OperatorState> = {
 };
 
 /**
+ * The session-identity rule, in one place, used by every gated call that can end a session
+ * (review IN-09).
+ *
+ * The rule: an answer is evidence about the session that ASKED, never about whichever session
+ * happens to be live when it lands. `logged-in` to `logged-out` to `logged-in` is the same string
+ * and a different session, so the question "does this answer still belong to me" is decided on
+ * {@link OperatorState.sessionRound}, an identity, and never on {@link OperatorState.auth} alone.
+ *
+ * The trio is used as a sentence: capture the asking round before the await with {@link askingRound},
+ * then ask {@link stillAsking} before writing anything, and {@link expireIfStillAsking} before
+ * ending the session on a 401. Every gated read and every gated action verb in this store uses it,
+ * which is what makes the general-law sentence in `sessionRound`'s own docstring true rather than
+ * aspirational. Before this, the four reads followed it and the eleven action verbs did not, and a
+ * reader could not tell which of those was a decision.
+ *
+ * A capture is `undefined` when NO session was live at the time of asking, and an undefined capture
+ * never matches. That is the half that refuses an answer to a question nobody asked, rather than
+ * letting it match a value some LATER session holds.
+ *
+ * There is exactly ONE documented exception, and it is `probe`'s session-ended branches. They
+ * decide from {@link OperatorState.liveSessionRound}, the stored fact, read at landing time,
+ * because nobody asked the probe's question in a round: the probe is the path that discovers a
+ * session ended WITHOUT a 401 (an idle expiry seen on the way back to the operator tab), so it has
+ * no asking round to compare and must consult what the console records as live. Stated here rather
+ * than left to be inferred, because an exemption nobody wrote down is what IN-09 filed against the
+ * previous arrangement.
+ *
+ * Client-side only, like the field it reads: nothing here goes on the wire, and no request is
+ * cancelled. The guard makes a late answer HARMLESS rather than preventing it, which is what both
+ * shipped precedents (`refreshCohorts` and `fetchCohortFate` in `stores/participant.ts`) already do.
+ */
+function askingRound(get: () => OperatorState): number | undefined {
+  return get().auth === 'logged-in' ? get().sessionRound : undefined;
+}
+
+/** True when the session that asked is still the one running; see {@link askingRound}. */
+function stillAsking(get: () => OperatorState, asked: number | undefined): boolean {
+  return asked !== undefined && get().sessionRound === asked;
+}
+
+/**
+ * End the session on a 401, but only when the 401 answers the session that is live right now; see
+ * {@link askingRound}. It narrows WHOSE refusal counts and never WHETHER a real expiry counts: a
+ * 401 aimed at the live session still ends it immediately, on whichever call discovers it.
+ */
+function expireIfStillAsking(get: () => OperatorState, asked: number | undefined): void {
+  if (stillAsking(get, asked)) {
+    get().expireSession();
+  }
+}
+
+/**
  * The shared body of {@link OperatorState.pauseAdvertising} and
  * {@link OperatorState.resumeAdvertising} (SVC-04, D-06). Both toggles have identical mechanics
  * and differ only in which route they call and which confirmation they show, so they share one
@@ -839,10 +897,14 @@ async function runAdvertisingToggle(
   verb: 'pause' | 'resume',
 ): Promise<void> {
   set({ pauseBusy: true, pauseError: undefined, pauseMessage: undefined });
+  // The asking session, captured before the await like every other gated call (review IN-09).
+  const askedInRound = askingRound(get);
   const result = verb === 'pause' ? await apiPauseAdvertising(baseUrl) : await apiResumeAdvertising(baseUrl);
   if (result.kind === 'unauthorized') {
-    // The ONE shared session-expiry path (D-16); `expireSession` clears `pauseBusy` itself.
-    get().expireSession();
+    // The ONE shared session-expiry path (D-16); `expireSession` clears `pauseBusy` itself. Scoped
+    // to the session that ASKED: a refusal aimed at a session that has already ended must not end
+    // the one that replaced it.
+    expireIfStillAsking(get, askedInRound);
     return;
   }
   if (result.kind === 'unreachable') {
@@ -1039,7 +1101,7 @@ export const useOperator = create<OperatorState>((set, get) => ({
     //
     // Undefined when no session is live, so an answer to a question nobody asked has nothing to
     // match against and is refused below whatever session may have signed in meanwhile.
-    const askedInRound = get().auth === 'logged-in' ? get().sessionRound : undefined;
+    const askedInRound = askingRound(get);
     const result = await fetchOperatorCohorts(baseUrl);
     if (result.kind === 'unauthorized') {
       // Session expired mid-monitoring (D-16): drop to the login screen with the honest
@@ -1059,9 +1121,7 @@ export const useOperator = create<OperatorState>((set, get) => ({
       // additionally refuse a genuine expiry landing inside a probe's `checking` window and defer
       // it to the next tick for no benefit. An undefined capture means no live session asked, so
       // there is nothing to end.
-      if (askedInRound !== undefined && get().sessionRound === askedInRound) {
-        get().expireSession();
-      }
+      expireIfStillAsking(get, askedInRound);
       return;
     }
     // The round guard. Everything BELOW this point is a fact about ONE session, the freshness flag
@@ -1086,7 +1146,7 @@ export const useOperator = create<OperatorState>((set, get) => ({
     // Both halves are wanted: the capture rejects an answer to a question no live session asked,
     // the status check rejects an answer landing into a signed-out console, and the round check
     // rejects an answer that outlived the session that did ask.
-    if (askedInRound === undefined || get().auth !== 'logged-in' || get().sessionRound !== askedInRound) {
+    if (!stillAsking(get, askedInRound) || get().auth !== 'logged-in') {
       return;
     }
     if (result.kind === 'unreachable') {
@@ -1143,6 +1203,8 @@ export const useOperator = create<OperatorState>((set, get) => ({
 
   async saveDraftEdit(baseUrl, id, input) {
     set({ editStatus: 'saving', editError: undefined });
+    // The asking session, captured before the await like every other gated call (review IN-09).
+    const askedInRound = askingRound(get);
     try {
       const result = await apiUpdateDraft(baseUrl, id, input);
       if (result.ok) {
@@ -1154,8 +1216,9 @@ export const useOperator = create<OperatorState>((set, get) => ({
         return;
       }
       if ('unauthorized' in result) {
-        // The ONE shared session-expiry path (D-16); it clears the edit slice itself.
-        get().expireSession();
+        // The ONE shared session-expiry path (D-16); it clears the edit slice itself. Scoped to the
+        // session that ASKED (review IN-09).
+        expireIfStillAsking(get, askedInRound);
         return;
       }
       // The service's own message, rendered verbatim in the inline slot the create form uses.
@@ -1174,11 +1237,14 @@ export const useOperator = create<OperatorState>((set, get) => ({
     // `OperatorCohortList`, beside the good-tone advertise confirmation and directly above the rows
     // whose buttons raise it, and it is already where a failed discard and a failed dismissal land.
     set({ advertiseStatus: 'advertising', advertisingId: id, advertiseMessage: undefined, actionError: undefined });
+    // The asking session, captured before the await like every other gated call (review IN-09).
+    const askedInRound = askingRound(get);
     const result = await apiAdvertise(baseUrl, id);
     if (result.kind === 'unauthorized') {
       // The ONE shared session-expiry path (D-16), the same one every other gated verb takes, so a
       // 401 never means two different things. `expireSession` clears both advertise markers itself.
-      get().expireSession();
+      // Scoped to the session that ASKED (review IN-09).
+      expireIfStillAsking(get, askedInRound);
       return;
     }
     if (result.kind === 'refused') {
@@ -1225,10 +1291,13 @@ export const useOperator = create<OperatorState>((set, get) => ({
     // The same slot decision as `advertise` above, for the same reason: this button lives on the
     // cohort list, so its failures belong in the field the cohort list renders.
     set({ advertiseStatus: 'advertising', advertisingId: id, advertiseMessage: undefined, actionError: undefined });
+    // The asking session, captured before the await like every other gated call (review IN-09).
+    const askedInRound = askingRound(get);
     const result = await apiReadvertise(baseUrl, id);
     if (result.kind === 'unauthorized') {
       // The ONE shared session-expiry path (D-16); `expireSession` clears both markers itself.
-      get().expireSession();
+      // Scoped to the session that ASKED (review IN-09).
+      expireIfStillAsking(get, askedInRound);
       return;
     }
     if (result.kind === 'refused') {
@@ -1257,10 +1326,13 @@ export const useOperator = create<OperatorState>((set, get) => ({
 
   async discard(baseUrl, id) {
     set({ actionError: undefined });
+    // The asking session, captured before the await like every other gated call (review IN-09).
+    const askedInRound = askingRound(get);
     const result = await apiDiscardDraft(baseUrl, id);
     if (result.kind === 'unauthorized') {
-      // Session expiry takes the same honest re-login path as every gated read (D-16).
-      get().expireSession();
+      // Session expiry takes the same honest re-login path as every gated read (D-16), scoped to
+      // the session that ASKED (review IN-09).
+      expireIfStillAsking(get, askedInRound);
       return;
     }
     if (result.kind === 'unreachable') {
@@ -1272,9 +1344,11 @@ export const useOperator = create<OperatorState>((set, get) => ({
 
   async exportCohort(baseUrl, id) {
     set({ actionError: undefined });
+    // The asking session, captured before the await like every other gated call (review IN-09).
+    const askedInRound = askingRound(get);
     const result = await apiDownloadExport(baseUrl, id);
     if (result.kind === 'unauthorized') {
-      get().expireSession();
+      expireIfStillAsking(get, askedInRound);
       return;
     }
     if (result.kind === 'unreachable') {
@@ -1284,12 +1358,14 @@ export const useOperator = create<OperatorState>((set, get) => ({
 
   async cancelCohort(baseUrl, id) {
     set({ actionError: undefined, cancelling: id });
+    // The asking session, captured before the await like every other gated call (review IN-09).
+    const askedInRound = askingRound(get);
     const result = await apiCancelCohort(baseUrl, id);
     if (result.kind === 'unauthorized') {
       // Session expiry takes the same honest re-login path as every gated read and every other
       // one-shot action (D-16), so a 401 never means two different things. `expireSession` clears
-      // `cancelling` itself.
-      get().expireSession();
+      // `cancelling` itself. Scoped to the session that ASKED (review IN-09).
+      expireIfStillAsking(get, askedInRound);
       return;
     }
     if (result.kind === 'unreachable') {
@@ -1309,11 +1385,13 @@ export const useOperator = create<OperatorState>((set, get) => ({
 
   async finalizeCohort(baseUrl, id) {
     set({ actionError: undefined, finalizing: id });
+    // The asking session, captured before the await like every other gated call (review IN-09).
+    const askedInRound = askingRound(get);
     const result = await apiFinalizeCohort(baseUrl, id);
     if (result.kind === 'unauthorized') {
       // The ONE shared session-expiry path, same as every gated read and one-shot action (D-16).
-      // `expireSession` clears `finalizing` itself.
-      get().expireSession();
+      // `expireSession` clears `finalizing` itself. Scoped to the session that ASKED (review IN-09).
+      expireIfStillAsking(get, askedInRound);
       return;
     }
     if (result.kind === 'refused') {
@@ -1335,10 +1413,13 @@ export const useOperator = create<OperatorState>((set, get) => ({
 
   async addTestPeers(baseUrl, id, count) {
     set({ testPeerError: undefined, addingTestPeers: id });
+    // The asking session, captured before the await like every other gated call (review IN-09).
+    const askedInRound = askingRound(get);
     const result = await apiAddTestPeers(baseUrl, id, count);
     if (result.kind === 'unauthorized') {
       // The ONE shared session-expiry path (D-16); `expireSession` clears both fields itself.
-      get().expireSession();
+      // Scoped to the session that ASKED (review IN-09).
+      expireIfStillAsking(get, askedInRound);
       return;
     }
     if (result.kind === 'refused') {
@@ -1368,10 +1449,13 @@ export const useOperator = create<OperatorState>((set, get) => ({
 
   async disableBroadcast(baseUrl) {
     set({ broadcastBusy: true, broadcastError: undefined });
+    // The asking session, captured before the await like every other gated call (review IN-09).
+    const askedInRound = askingRound(get);
     const result = await apiDisableBroadcast(baseUrl);
     if (result.kind === 'unauthorized') {
       // The ONE shared session-expiry path (D-16); `expireSession` clears `broadcastBusy` itself.
-      get().expireSession();
+      // Scoped to the session that ASKED (review IN-09).
+      expireIfStillAsking(get, askedInRound);
       return;
     }
     if (result.kind === 'unreachable') {
@@ -1389,9 +1473,11 @@ export const useOperator = create<OperatorState>((set, get) => ({
 
   async dismissEnded(baseUrl, id) {
     set({ actionError: undefined, dismissing: id });
+    // The asking session, captured before the await like every other gated call (review IN-09).
+    const askedInRound = askingRound(get);
     const result = await apiDismissEnded(baseUrl, id);
     if (result.kind === 'unauthorized') {
-      get().expireSession();
+      expireIfStillAsking(get, askedInRound);
       return;
     }
     if (result.kind === 'unreachable') {
@@ -1425,16 +1511,15 @@ export const useOperator = create<OperatorState>((set, get) => ({
   },
 
   async loadSettings(baseUrl) {
-    // The asking session, captured before the await like every other gated read (review WR-08/WR-09).
-    const askedInRound = get().auth === 'logged-in' ? get().sessionRound : undefined;
+    // The asking session, captured before the await like every other gated call (review
+    // WR-08/WR-09, IN-09).
+    const askedInRound = askingRound(get);
     const result = await apiFetchSettings(baseUrl);
     if (result.kind === 'unauthorized') {
       // The ONE shared session-expiry path (D-16); it clears the settings slice itself. Scoped to
       // the session that ASKED: a refusal aimed at a session that has already ended must not end
       // the one that replaced it (review WR-08).
-      if (askedInRound !== undefined && get().sessionRound === askedInRound) {
-        get().expireSession();
-      }
+      expireIfStillAsking(get, askedInRound);
       return;
     }
     // The round guard, ahead of BOTH branches that write: a late answer must move neither the
@@ -1443,7 +1528,7 @@ export const useOperator = create<OperatorState>((set, get) => ({
     // console shell re-reads settings only while the snapshot is undefined, so a dead session's
     // answer landing in that gap makes the new session skip its own read and open the create form
     // on a previous session's defaults.
-    if (askedInRound === undefined || get().sessionRound !== askedInRound) {
+    if (!stillAsking(get, askedInRound)) {
       return;
     }
     if (result.kind === 'unreachable') {
@@ -1457,17 +1542,19 @@ export const useOperator = create<OperatorState>((set, get) => ({
 
   async saveSettings(baseUrl, patch) {
     set({ settingsStatus: 'saving', settingsError: undefined, settingsMessage: undefined });
-    // The asking session, captured before the await (review WR-08/WR-09). A save is
+    // The asking session, captured before the await (review WR-08/WR-09, IN-09). A save is
     // operator-initiated and therefore a narrower race than a poll, and it is guarded anyway
     // because the write it lands is the settings snapshot the create form reads.
-    const askedInRound = get().auth === 'logged-in' ? get().sessionRound : undefined;
+    const askedInRound = askingRound(get);
     try {
       const result = await apiSaveSettings(baseUrl, patch);
       // One comparison, read by every branch below, because all four of them act: two write into
       // the settings slice, one writes the error posture, and one ends a session (review WR-09).
-      const stillAsking = askedInRound !== undefined && get().sessionRound === askedInRound;
+      // The shared comparison is read ONCE here rather than expiring and then re-deciding, which is
+      // the one shape the trio has to support (review IN-09).
+      const asking = stillAsking(get, askedInRound);
       if (result.ok) {
-        if (!stillAsking) {
+        if (!asking) {
           return;
         }
         // The SERVED snapshot replaces the previous one. Never the patch that was sent: a value
@@ -1486,12 +1573,12 @@ export const useOperator = create<OperatorState>((set, get) => ({
       }
       if ('unauthorized' in result) {
         // Scoped to the session that ASKED, as in the three reads above (review WR-08).
-        if (stillAsking) {
+        if (asking) {
           get().expireSession();
         }
         return;
       }
-      if (!stillAsking) {
+      if (!asking) {
         // A refusal about a value the PREVIOUS operator typed is a message the current one cannot
         // act on, so it is discarded with the rest of a dead session's answers.
         return;
@@ -1502,7 +1589,7 @@ export const useOperator = create<OperatorState>((set, get) => ({
     } catch {
       // The transport fault is scoped the same way: it is a fact about the request the asking
       // session made, and the console that replaced it made no save to report on.
-      if (askedInRound !== undefined && get().sessionRound === askedInRound) {
+      if (stillAsking(get, askedInRound)) {
         set({ settingsStatus: 'error', settingsError: UNREACHABLE });
       }
     }
@@ -1546,8 +1633,8 @@ export const useOperator = create<OperatorState>((set, get) => ({
     const askedFor = view.cohortId;
     // And capture the SESSION this question is asked in, exactly as `refreshCohorts` does. The two
     // captures answer different questions and both are needed: a detail answer is a fact about one
-    // cohort AND about one session (review WR-08/WR-09).
-    const askedInRound = get().auth === 'logged-in' ? get().sessionRound : undefined;
+    // cohort AND about one session (review WR-08/WR-09, IN-09).
+    const askedInRound = askingRound(get);
     const result = await fetchCohortDetail(baseUrl, askedFor);
     if (result.kind === 'unauthorized') {
       // Handled FIRST, ahead of the cohort guard below, and deliberately so: a session expiry is
@@ -1560,9 +1647,7 @@ export const useOperator = create<OperatorState>((set, get) => ({
       // Scoped to the session that ASKED, on the same reasoning as `refreshCohorts` above: a 401 is
       // evidence about the asker, so a refusal aimed at a session that has already ended must not
       // end the one that replaced it (review WR-08).
-      if (askedInRound !== undefined && get().sessionRound === askedInRound) {
-        get().expireSession();
-      }
+      expireIfStillAsking(get, askedInRound);
       return;
     }
     // The round guard. Everything BELOW this point is a fact about ONE cohort, the freshness flag
@@ -1579,7 +1664,7 @@ export const useOperator = create<OperatorState>((set, get) => ({
     // member DIDs and pubkeys, raw signed updates, co-sign progress and the funding view, so a
     // dead session's copy landing in a live one is operator data crossing a session boundary.
     const current = get().view;
-    if (askedInRound === undefined || get().sessionRound !== askedInRound) {
+    if (!stillAsking(get, askedInRound)) {
       return;
     }
     if (current.kind !== 'detail' || current.cohortId !== askedFor) {

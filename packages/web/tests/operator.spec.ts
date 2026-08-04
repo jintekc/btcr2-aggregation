@@ -2375,3 +2375,273 @@ describe('operator store advertise and readvertise (review WR-12)', () => {
     expect(s.view).toEqual({ kind: 'list' });
   });
 });
+
+/**
+ * Review IN-09: `sessionRound`'s docstring states the session-identity rule as GENERAL LAW ("any
+ * guard that must decide whether an answer still belongs to the session that asked compares this,
+ * never `auth` alone"), and until this plan four call sites of fifteen followed it. The eleven
+ * action verbs called the shared expiry path with no capture and no comparison, so a 401 answering
+ * an action the PREVIOUS session started signed the current session out, behind a message that is
+ * false about a cookie this service would still accept.
+ *
+ * The window is narrower than a poll's (one click and one round trip rather than two reads
+ * permanently outstanding), which is why the review filed it as info. What makes it worth closing
+ * is the review's own argument: a rule written down as general law is a claim about every call site
+ * it names, and nine call sites not following it leave the next reader unable to tell a deliberate
+ * exemption from a missed site.
+ *
+ * Each verb FAMILY gets a pair. The ABA row proves the comparison narrows WHOSE 401 counts; the
+ * anti-vacuity row beside it proves it never narrowed WHETHER a real expiry counts, which is the
+ * failure a shared helper could otherwise hide everywhere at once.
+ */
+describe('operator store session identity across every gated ACTION (review IN-09)', () => {
+  beforeEach(resetStore);
+
+  const PASSWORD = 'operator-password';
+
+  /** A promise plus its settle handles, so a row controls exactly WHEN an answer lands. */
+  function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
+    let resolve!: (v: T) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  /**
+   * Route by URL FRAGMENT, because these rows drive one gated action plus the auth routes in one
+   * sequence. Anything unstaged hangs in flight, the LIST read in particular (the one `signIn`
+   * fires for the new session), which would otherwise write the very fields these rows assert on.
+   */
+  function stubAction(staged: Record<string, Promise<Response>>): void {
+    vi.stubGlobal('fetch', (input: unknown) => {
+      const url = String(input);
+      if (url.endsWith('/v1/operator/login')) {
+        return Promise.resolve(new Response(null, { status: 200 }));
+      }
+      if (url.endsWith('/v1/operator/logout')) {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      for (const [fragment, answer] of Object.entries(staged)) {
+        if (url.includes(fragment)) {
+          return answer;
+        }
+      }
+      return new Promise<Response>(() => {});
+    });
+  }
+
+  /** A live session, exactly as a real `signIn` leaves one (review WR-11). */
+  function seedLive(): void {
+    useOperator.setState({
+      auth: 'logged-in',
+      liveSessionRound: useOperator.getState().sessionRound,
+      error: undefined,
+      actionError: undefined,
+      pauseError: undefined,
+      editError: undefined,
+    });
+  }
+
+  /**
+   * Session B's own gated slice, as its first read would leave it. Asserted field by field after a
+   * stale 401 lands, because `expireSession` clears the WHOLE slice on its way out: a row that only
+   * checked `auth` would pass against a guard that logged the operator back in while throwing away
+   * the cohort list, the served mode and the metrics.
+   */
+  const SESSION_B_SLICE = {
+    cohorts: [
+      {
+        draftId: 'draft-b',
+        beaconType: 'CASBeacon' as const,
+        network: 'regtest',
+        threshold: 2,
+        capacity: 3,
+        joined: 1,
+        state: 'advertised' as const,
+      },
+    ],
+    metrics: { open: 1, inFlight: 0, anchored: 0, failed: 0 },
+    health: { mode: 'live' as const, esploraReachable: true, paused: false },
+  };
+
+  /** End session A and sign session B in, which is the ABA sequence every pair below stages. */
+  async function signBackIn(): Promise<void> {
+    useOperator.getState().expireSession();
+    await useOperator.getState().signIn(BASE, PASSWORD);
+    expect(useOperator.getState().auth).toBe('logged-in');
+    useOperator.setState(SESSION_B_SLICE);
+  }
+
+  /** Assert session B survived a dead session's refusal with everything it holds. */
+  function expectSessionBUntouched(round: number): void {
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-in');
+    expect(s.error).toBeUndefined();
+    expect(s.sessionRound).toBe(round);
+    expect(s.cohorts).toEqual(SESSION_B_SLICE.cohorts);
+    expect(s.metrics).toEqual(SESSION_B_SLICE.metrics);
+    expect(s.health).toEqual(SESSION_B_SLICE.health);
+  }
+
+  it('cancelCohort discards a 401 issued by an ENDED session rather than signing the NEW session out', async () => {
+    const a = deferred<Response>();
+    stubAction({ '/cancel': a.promise });
+    seedLive();
+    const act = useOperator.getState().cancelCohort(BASE, 'cohort-1');
+
+    await signBackIn();
+    const round = useOperator.getState().sessionRound;
+
+    a.resolve(new Response('no', { status: 401 }));
+    await act;
+
+    expectSessionBUntouched(round);
+  });
+
+  it('cancelCohort STILL expires the session when the 401 answers the session that is live right now', async () => {
+    // The anti-vacuity control on the row above, and on the whole one-shot cohort-action family: a
+    // shared helper that quietly stopped expiring would satisfy every ABA row in this file at once
+    // while leaving a dead session's console rendering as though it were live.
+    const a = deferred<Response>();
+    stubAction({ '/cancel': a.promise });
+    seedLive();
+    const act = useOperator.getState().cancelCohort(BASE, 'cohort-1');
+
+    a.resolve(new Response('no', { status: 401 }));
+    await act;
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-out');
+    expect(s.error).toBe(SESSION_EXPIRED);
+    // This verb's own in-flight marker goes with the session, so nothing claims to be mid-cancel.
+    expect(s.cancelling).toBeUndefined();
+  });
+
+  it('the advertising toggle discards a 401 issued by an ENDED session', async () => {
+    // The service-toggle family, whose verbs are the ones an operator reaches for while draining.
+    const a = deferred<Response>();
+    stubAction({ '/advertising/pause': a.promise });
+    seedLive();
+    const act = useOperator.getState().pauseAdvertising(BASE);
+
+    await signBackIn();
+    const round = useOperator.getState().sessionRound;
+
+    a.resolve(new Response('no', { status: 401 }));
+    await act;
+
+    expectSessionBUntouched(round);
+    // The new session's controls card is left alone too: no failure copy from a dead session.
+    expect(useOperator.getState().pauseError).toBeUndefined();
+  });
+
+  it('the advertising toggle STILL expires the session for a 401 that answers the LIVE session', async () => {
+    const a = deferred<Response>();
+    stubAction({ '/advertising/pause': a.promise });
+    seedLive();
+    const act = useOperator.getState().pauseAdvertising(BASE);
+
+    a.resolve(new Response('no', { status: 401 }));
+    await act;
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-out');
+    expect(s.error).toBe(SESSION_EXPIRED);
+    expect(s.pauseBusy).toBe(false);
+  });
+
+  it('saveDraftEdit discards a 401 issued by an ENDED session', async () => {
+    // The form family. Its 401 branch is the one that can take an OPEN edit form down with it, so a
+    // stale refusal would close a form the new session opened for a draft it is mid-way through.
+    const a = deferred<Response>();
+    stubAction({ '/v1/operator/cohorts/draft-1': a.promise });
+    seedLive();
+    useOperator.getState().beginEdit('draft-1');
+    const act = useOperator.getState().saveDraftEdit(BASE, 'draft-1', { beaconType: 'CASBeacon', size: 3, threshold: 3 });
+
+    await signBackIn();
+    useOperator.getState().beginEdit('draft-b');
+    const round = useOperator.getState().sessionRound;
+
+    a.resolve(new Response('no', { status: 401 }));
+    await act;
+
+    expectSessionBUntouched(round);
+    // The new session's own open edit form survives a dead session's refusal.
+    expect(useOperator.getState().editingDraftId).toBe('draft-b');
+  });
+
+  it('saveDraftEdit STILL expires the session for a 401 that answers the LIVE session', async () => {
+    const a = deferred<Response>();
+    stubAction({ '/v1/operator/cohorts/draft-1': a.promise });
+    seedLive();
+    useOperator.getState().beginEdit('draft-1');
+    const act = useOperator.getState().saveDraftEdit(BASE, 'draft-1', { beaconType: 'CASBeacon', size: 3, threshold: 3 });
+
+    a.resolve(new Response('no', { status: 401 }));
+    await act;
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-out');
+    expect(s.error).toBe(SESSION_EXPIRED);
+    expect(s.editingDraftId).toBeUndefined();
+    expect(s.editStatus).toBe('idle');
+  });
+
+  it('advertise discards a 401 issued by an ENDED session', async () => {
+    // The advertise family, which only acquired a 401 branch at all in task 1 of this plan.
+    const a = deferred<Response>();
+    stubAction({ '/advertise': a.promise });
+    seedLive();
+    const act = useOperator.getState().advertise(BASE, 'draft-1');
+
+    await signBackIn();
+    const round = useOperator.getState().sessionRound;
+
+    a.resolve(new Response('no', { status: 401 }));
+    await act;
+
+    expectSessionBUntouched(round);
+    // And the new session is told nothing about an action it never took.
+    expect(useOperator.getState().actionError).toBeUndefined();
+  });
+
+  it('advertise STILL expires the session for a 401 that answers the LIVE session', async () => {
+    const a = deferred<Response>();
+    stubAction({ '/advertise': a.promise });
+    seedLive();
+    const act = useOperator.getState().advertise(BASE, 'draft-1');
+
+    a.resolve(new Response('no', { status: 401 }));
+    await act;
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-out');
+    expect(s.error).toBe(SESSION_EXPIRED);
+    expect(s.advertiseStatus).toBe('idle');
+    expect(s.advertisingId).toBeUndefined();
+  });
+
+  it('expires nothing for a 401 landing into a console that held NO live session when it asked', async () => {
+    // The absent-capture half, matching the shipped list-read row of the same shape: an action
+    // issued while nobody was signed in has no session to speak about, so its refusal must not
+    // match a value a LATER session holds. This is what pins the capture as an identity rather than
+    // a defaulted number.
+    const a = deferred<Response>();
+    stubAction({ '/cancel': a.promise });
+    useOperator.setState({ auth: 'logged-out', liveSessionRound: undefined, error: undefined });
+    const act = useOperator.getState().cancelCohort(BASE, 'cohort-1');
+
+    // A new session signs in while that refusal is still in flight.
+    useOperator.setState({ auth: 'logged-in', liveSessionRound: useOperator.getState().sessionRound });
+    a.resolve(new Response('no', { status: 401 }));
+    await act;
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-in');
+    expect(s.error).toBeUndefined();
+  });
+});
