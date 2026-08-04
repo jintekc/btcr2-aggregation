@@ -2694,4 +2694,235 @@ describe('operator store session identity across every gated ACTION (review IN-0
     expect(s.auth).toBe('logged-in');
     expect(s.error).toBeUndefined();
   });
+
+  /**
+   * Review WR-13: the same ABA shape, INVERTED.
+   *
+   * The rows above prove the comparison narrows WHOSE 401 counts. These prove it narrows whose
+   * SUCCESS and whose FAILURE count, which is the half the round-7 sweep left unguarded: the eleven
+   * action verbs guarded their `unauthorized` branch and wrote every other answer unconditionally,
+   * so an answer to session A's question landed in session B's console. Reproduced by the reviewer
+   * against the shipped store with no source modified: an advertise issued by A wrote A's green
+   * confirmation into B, re-read the list, and then navigated B into A's freshly minted cohort,
+   * while A's failed cancel painted a bad-tone sentence about a cohort B never touched.
+   *
+   * Every inverted row is PAIRED with a same-session control driving the same answer, because a
+   * guard placed too broadly would satisfy every inverted row in this file at once while disabling
+   * the console it protects.
+   *
+   * Session B opens a cohort of its OWN through the shipped `openCohort`, so what the rows assert is
+   * a real navigation rather than a seeded view value.
+   */
+
+  /** A served list, so a same-session control reaches the confirmation, the re-read and the landing. */
+  const SERVED_LIST = {
+    cohorts: [],
+    monitoring: { rows: [], metrics: { open: 1, inFlight: 0, anchored: 0, failed: 0 } },
+  };
+
+  /** The list read, answered once. Stage it AFTER `/advertise` so the narrower fragment wins. */
+  function servedList(): Promise<Response> {
+    return Promise.resolve(new Response(JSON.stringify(SERVED_LIST), { status: 200 }));
+  }
+
+  /** Put session B in its own drill-down, through the shipped verb, and confirm it landed. */
+  function openSessionBCohort(): void {
+    useOperator.getState().openCohort('B-COHORT');
+    expect(useOperator.getState().view).toEqual({ kind: 'detail', cohortId: 'B-COHORT' });
+  }
+
+  it('advertise discards an OK answer issued by an ENDED session rather than navigating the NEW one', async () => {
+    // The reviewer's repro, as a row. Session B is looking at B-COHORT; A's advertise lands after B
+    // signed in and must not move B into the cohort A just minted.
+    const a = deferred<Response>();
+    // The list read is deliberately left UNSTAGED, as the harness docstring requires: session B's
+    // own sign-in fires one, and answering it would overwrite the very slice this row asserts on.
+    // A guarded verb never reaches its own re-read anyway, which is part of what the row proves.
+    stubAction({ '/advertise': a.promise });
+    seedLive();
+    const act = useOperator.getState().advertise(BASE, 'draft-1');
+
+    await signBackIn();
+    openSessionBCohort();
+    const round = useOperator.getState().sessionRound;
+
+    a.resolve(new Response(JSON.stringify({ draftId: 'A-LIVE-COHORT' }), { status: 200 }));
+    await act;
+
+    const s = useOperator.getState();
+    expect(s.view).toEqual({ kind: 'detail', cohortId: 'B-COHORT' });
+    // And B is told nothing about an advertise B never issued, in either tone.
+    expect(s.advertiseMessage).toBeUndefined();
+    expect(s.actionError).toBeUndefined();
+    expect(s.advertiseStatus).toBe('idle');
+    expect(s.advertisingId).toBeUndefined();
+    expectSessionBUntouched(round);
+  });
+
+  it('advertise STILL confirms and lands the drill-down when the OK answers the LIVE session', async () => {
+    // The anti-vacuity control on the row above: the guard narrows whose success counts, never
+    // whether a success counts, so the whole D-13 landing still runs for the session that asked.
+    stubAction({ '/advertise': Promise.resolve(new Response(JSON.stringify({ draftId: 'cohort-live' }), { status: 200 })), '/v1/operator/cohorts': servedList() });
+    seedLive();
+
+    await useOperator.getState().advertise(BASE, 'draft-1');
+
+    const s = useOperator.getState();
+    expect(s.advertiseMessage).toBe(ADVERTISED_OK);
+    expect(s.view).toEqual({ kind: 'detail', cohortId: 'cohort-live' });
+    // The re-read happened: the served metrics could only have arrived through `refreshCohorts`.
+    expect(s.metrics).toEqual({ open: 1, inFlight: 0, anchored: 0, failed: 0 });
+  });
+
+  it('advertise discards a REFUSED (409) answer issued by an ENDED session', async () => {
+    // The service's paused-advertising reason is about a click the PREVIOUS operator made, so it
+    // must not appear in bad tone above rows the current one is reading.
+    const a = deferred<Response>();
+    stubAction({ '/advertise': a.promise });
+    seedLive();
+    const act = useOperator.getState().advertise(BASE, 'draft-1');
+
+    await signBackIn();
+    openSessionBCohort();
+    const round = useOperator.getState().sessionRound;
+
+    a.resolve(
+      new Response(JSON.stringify({ error: 'advertising is paused on this service' }), { status: 409 }),
+    );
+    await act;
+
+    const s = useOperator.getState();
+    expect(s.actionError).toBeUndefined();
+    expect(s.advertiseStatus).toBe('idle');
+    expectSessionBUntouched(round);
+  });
+
+  it('advertise STILL renders the service reason when the 409 answers the LIVE session', async () => {
+    stubAction({
+      '/advertise': Promise.resolve(
+        new Response(JSON.stringify({ error: 'advertising is paused on this service' }), { status: 409 }),
+      ),
+    });
+    seedLive();
+
+    await useOperator.getState().advertise(BASE, 'draft-1');
+
+    const s = useOperator.getState();
+    expect(s.actionError).toBe(actionFailedWith('advertising is paused on this service'));
+    expect(s.advertiseStatus).toBe('error');
+  });
+
+  it('advertise discards an UNREACHABLE answer issued by an ENDED session', async () => {
+    const a = deferred<Response>();
+    stubAction({ '/advertise': a.promise });
+    seedLive();
+    const act = useOperator.getState().advertise(BASE, 'draft-1');
+
+    await signBackIn();
+    openSessionBCohort();
+    const round = useOperator.getState().sessionRound;
+
+    a.reject(new Error('offline'));
+    await act;
+
+    const s = useOperator.getState();
+    expect(s.actionError).toBeUndefined();
+    expect(s.advertiseStatus).toBe('idle');
+    expectSessionBUntouched(round);
+  });
+
+  it('advertise STILL shows the unreachable line when the transport fault answers the LIVE session', async () => {
+    const a = deferred<Response>();
+    stubAction({ '/advertise': a.promise });
+    seedLive();
+    const act = useOperator.getState().advertise(BASE, 'draft-1');
+
+    a.reject(new Error('offline'));
+    await act;
+
+    const s = useOperator.getState();
+    expect(s.actionError).toBe(UNREACHABLE);
+    expect(s.advertiseStatus).toBe('error');
+  });
+
+  it('advertise discards a DECLINED answer issued by an ENDED session', async () => {
+    // The fourth failure branch, whose verb-specific sentence names an action B never took.
+    const a = deferred<Response>();
+    stubAction({ '/advertise': a.promise });
+    seedLive();
+    const act = useOperator.getState().advertise(BASE, 'draft-1');
+
+    await signBackIn();
+    openSessionBCohort();
+    const round = useOperator.getState().sessionRound;
+
+    a.resolve(new Response('unknown draft', { status: 404 }));
+    await act;
+
+    const s = useOperator.getState();
+    expect(s.actionError).toBeUndefined();
+    expectSessionBUntouched(round);
+  });
+
+  it('readvertise discards an OK answer issued by an ENDED session', async () => {
+    // The second advertise call site. Two verbs are two branches, so a fix applied to one is no
+    // evidence at all about the other.
+    const a = deferred<Response>();
+    // Unstaged list read, for the same reason as the advertise row above.
+    stubAction({ '/readvertise': a.promise });
+    seedLive();
+    const act = useOperator.getState().readvertise(BASE, 'cohort-expired');
+
+    await signBackIn();
+    openSessionBCohort();
+    const round = useOperator.getState().sessionRound;
+
+    a.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    await act;
+
+    const s = useOperator.getState();
+    expect(s.advertiseMessage).toBeUndefined();
+    expect(s.actionError).toBeUndefined();
+    // Re-advertising opens no drill-down, so what the guard protects here is B staying put.
+    expect(s.view).toEqual({ kind: 'detail', cohortId: 'B-COHORT' });
+    expectSessionBUntouched(round);
+  });
+
+  it('readvertise STILL confirms and re-reads when the OK answers the LIVE session', async () => {
+    stubAction({
+      '/readvertise': Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 })),
+      '/v1/operator/cohorts': servedList(),
+    });
+    seedLive();
+
+    await useOperator.getState().readvertise(BASE, 'cohort-expired');
+
+    const s = useOperator.getState();
+    expect(s.advertiseMessage).toBe(READVERTISED_OK);
+    expect(s.metrics).toEqual({ open: 1, inFlight: 0, anchored: 0, failed: 0 });
+  });
+
+  it('opens no drill-down when the session expires INSIDE the post-success list re-read', async () => {
+    // The property the retired status comparison was buying, and the reason the landing re-reads the
+    // comparison on the far side of the refresh instead of caching a boolean across it: the list
+    // read can itself answer 401 and end the session between the confirmation and the landing.
+    let advertised = false;
+    vi.stubGlobal('fetch', (input: unknown) => {
+      const url = String(input);
+      if (url.includes('/advertise')) {
+        advertised = true;
+        return Promise.resolve(new Response(JSON.stringify({ draftId: 'cohort-live' }), { status: 200 }));
+      }
+      return Promise.resolve(new Response('no', { status: advertised ? 401 : 200 }));
+    });
+    seedLive();
+
+    await useOperator.getState().advertise(BASE, 'draft-1');
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-out');
+    expect(s.error).toBe(SESSION_EXPIRED);
+    // Never the freshly advertised cohort's drill-down, on top of the login screen.
+    expect(s.view).toEqual({ kind: 'list' });
+  });
 });

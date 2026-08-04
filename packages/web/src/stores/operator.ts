@@ -1259,6 +1259,15 @@ export const useOperator = create<OperatorState>((set, get) => ({
       expireIfStillAsking(get, askedInRound);
       return;
     }
+    // The round guard, ahead of every branch below that writes, exactly as `refreshCohorts` places
+    // its own (review WR-13). Nothing below this point is evidence about the session that is live
+    // now: it is an answer to a question THIS session asked, and the four lower branches would
+    // otherwise write a green confirmation for an action the current operator never took, a
+    // bad-tone sentence about a cohort they never touched, and a navigation into a cohort they
+    // never opened. The reviewer reproduced all three against one advertise.
+    if (!stillAsking(get, askedInRound)) {
+      return;
+    }
     if (result.kind === 'refused') {
       // The paused-advertising gate (D-06) refused with a reason the SERVICE authored (never a
       // library string), so it is rendered verbatim inside the shared action-error sentence, exactly
@@ -1284,10 +1293,15 @@ export const useOperator = create<OperatorState>((set, get) => ({
     await get().refreshCohorts(baseUrl);
     // Land the operator in the freshly-advertised cohort's drill-down (D-13). Advertise mints a
     // NEW live cohort id server-side (the draft is deleted), so open the LIVE id the advertise
-    // response returned, NOT the stale draft id (which the monitor has no entry for). Guard on a
-    // still-signed-in session so a 401 during the refresh above (which drops to logged-out) is
-    // not overridden.
-    if (get().auth === 'logged-in') {
+    // response returned, NOT the stale draft id (which the monitor has no entry for).
+    //
+    // The comparison is RE-READ here rather than reusing the one taken above, and that is the whole
+    // point of this line: the list re-read on the line above can itself answer 401 and end the
+    // session, so a value captured on the near side of that await is stale by the time this decides
+    // (review WR-13). Caching one boolean across the refresh would put the same class of bug back in
+    // a new place. It also keeps the property the previous check bought, that an expiry during the
+    // refresh is never overridden by a drill-down opening on top of the login screen.
+    if (stillAsking(get, askedInRound)) {
       get().openCohort(result.value);
     }
     // Clear the transient confirmation after a few seconds, but only if it is still
@@ -1310,6 +1324,13 @@ export const useOperator = create<OperatorState>((set, get) => ({
       // The ONE shared session-expiry path (D-16); `expireSession` clears both markers itself.
       // Scoped to the session that ASKED (review IN-09).
       expireIfStillAsking(get, askedInRound);
+      return;
+    }
+    // The same round guard `advertise` places, for the same reason (review WR-13). This verb has the
+    // same five branches and no drill-down landing, so one comparison covers it whole: below here a
+    // confirmation, a service reason and two failure sentences would all otherwise be written into a
+    // console that re-advertised nothing.
+    if (!stillAsking(get, askedInRound)) {
       return;
     }
     if (result.kind === 'refused') {
