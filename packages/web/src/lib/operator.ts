@@ -40,12 +40,28 @@ export async function logout(baseUrl: string): Promise<void> {
   });
 }
 
-/** The three states the session probe can resolve to. */
-export type SessionState = 'logged-in' | 'logged-out' | 'disabled';
+/**
+ * The four states the session probe can resolve to.
+ *
+ * `unreachable` is the member that keeps the other three honest (review WR-15). It says the service
+ * could not answer the question, which is not evidence ABOUT the session at all, where `logged-out`
+ * says the service answered and refused the cookie. Folding the two together left a 502 from a
+ * reverse proxy indistinguishable from a genuine 401 by the time the store saw it, and the store
+ * cannot recover a distinction this function has already collapsed.
+ *
+ * The line is drawn here rather than argued again: it is the same one {@link fetchCohortDetail}
+ * draws in its own comment for the same statuses (D-25), and every other read in this codebase
+ * already draws it. Deliberately NOT mirrored into the console's rendered auth posture: an
+ * unreachable probe leaves the operator at the login screen with the unreachable line, so the store
+ * maps this answer explicitly rather than passing it through as a status.
+ */
+export type SessionState = 'logged-in' | 'logged-out' | 'disabled' | 'unreachable';
 
 /**
- * GET `/v1/operator/session`: 200 = a live session, 401 = no/invalid session, 404 =
- * the console is disabled (fail-closed boot, D-07). Never reads the httpOnly cookie.
+ * GET `/v1/operator/session`: 200 = a live session, 401 = the service refused the cookie, 404 =
+ * the console is disabled (fail-closed boot, D-07), and ANY other status = the service could not
+ * answer (a 500, a 502 from a proxy mid-reload, a 503 from a load balancer), which says nothing
+ * about the session. Never reads the httpOnly cookie.
  */
 export async function sessionProbe(baseUrl: string): Promise<SessionState> {
   const res = await fetch(endpoint(baseUrl, '/v1/operator/session'), {
@@ -59,7 +75,10 @@ export async function sessionProbe(baseUrl: string): Promise<SessionState> {
   if (res.status === 404) {
     return 'disabled';
   }
-  return 'logged-out';
+  if (res.status === 401) {
+    return 'logged-out';
+  }
+  return 'unreachable';
 }
 
 /** Beacon types an operator may draft (mirrors the service DTO; no service dep). */

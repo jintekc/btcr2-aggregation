@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   fetchCohortDetail,
+  sessionProbe,
   type CohortDetailDTO,
   type OperatorCohortsDTO,
   type SettingsSnapshotDTO,
@@ -123,6 +124,47 @@ describe('fetchCohortDetail', () => {
   it('returns { kind: "unreachable" } on a non-401 non-ok status', async () => {
     vi.stubGlobal('fetch', () => Promise.resolve(new Response('boom', { status: 500 })));
     expect(await fetchCohortDetail(BASE, 'c1')).toEqual({ kind: 'unreachable' });
+  });
+});
+
+/**
+ * Review WR-15: the probe's status contract, pinned per status beside the `fetchCohortDetail` block
+ * above, because that is where a reader looks for a client function's status contract and because
+ * these two functions must now answer the same class of event the same way.
+ *
+ * The mapping used to fold EVERYTHING that was not a 200 or a 404 into the logged-out answer. That
+ * cost nothing while the branch consuming it only set a string; once the CR-03 fix gave that branch
+ * the power to retire a round, clear the console and write the session-expired sentence, a 502 from
+ * a reverse proxy mid-reload became a false claim about the operator's own session.
+ */
+describe('sessionProbe status contract (review WR-15)', () => {
+  function stubStatus(status: number): void {
+    vi.stubGlobal('fetch', () => Promise.resolve(new Response(null, { status })));
+  }
+
+  it('returns "logged-in" on 200', async () => {
+    stubStatus(200);
+    expect(await sessionProbe(BASE)).toBe('logged-in');
+  });
+
+  it('returns "disabled" on 404 (the fail-closed boot answer, D-07)', async () => {
+    stubStatus(404);
+    expect(await sessionProbe(BASE)).toBe('disabled');
+  });
+
+  it('returns "logged-out" on 401, the ONE answer that proves the service refused the cookie', async () => {
+    stubStatus(401);
+    expect(await sessionProbe(BASE)).toBe('logged-out');
+  });
+
+  it('returns "unreachable" on 500, 502 and 503, which prove nothing about the session', async () => {
+    // Three statuses rather than one: a 502 from a reverse proxy mid-reload and a 503 from a load
+    // balancer are the two an operator actually meets, and neither is this service's auth layer
+    // speaking. `fetchCohortDetail` has drawn exactly this line for the same statuses all along.
+    for (const status of [500, 502, 503]) {
+      stubStatus(status);
+      expect(await sessionProbe(BASE)).toBe('unreachable');
+    }
   });
 });
 
@@ -2076,6 +2118,46 @@ describe('operator store probe-discovered session end (review CR-03)', () => {
     const s = useOperator.getState();
     expect(s.auth).toBe('logged-out');
     expect(s.error).toContain('Could not reach the service');
+    expect(s.error).not.toBe(SESSION_EXPIRED);
+  });
+
+  it('makes NO expiry claim when the probe answers 502, on a console holding a live session', async () => {
+    // Review WR-15, and the row this task exists for. Its named anti-vacuity control is the shipped
+    // row four above ("ends the session it discovers has ended"): a 401 probe on this same populated
+    // console still expires it with the session-expired copy, so the PAIR is what makes the
+    // distinction observable. A fix that stopped expiring on both would satisfy this row alone.
+    //
+    // The service never said the session ended. A 502 is as much a transport fault as a thrown
+    // fetch; it differs only in having reached a proxy, which is the rule the `catch` branch below
+    // already records and `fetchCohortDetail` records for the same statuses (D-25).
+    stubService([Promise.resolve(new Response('bad gateway', { status: 502 }))]);
+    await stagePopulatedSession();
+
+    await useOperator.getState().probe(BASE);
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-out');
+    expect(s.error).toContain('Could not reach the service');
+    expect(s.error).not.toBe(SESSION_EXPIRED);
+    // The slice still goes, deliberately and on the record (T-05-43-04): a live session's cohort
+    // list, metrics, operator log and drill-down must not be handed to whoever signs in next. What
+    // this row changes is only the CLAIM made about why.
+    expectGatedSliceEmpty();
+  });
+
+  it('ends NOTHING and takes NO round when a 500 probe lands on a console holding no session', async () => {
+    // The other half: an unreachable answer to a console that never had a session is not an event
+    // the operator had either, so the round must not move.
+    stubService([Promise.resolve(new Response('boom', { status: 500 }))]);
+    await stagePopulatedSession();
+    await useOperator.getState().signOut(BASE);
+    const before = useOperator.getState().sessionRound;
+
+    await useOperator.getState().probe(BASE);
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-out');
+    expect(s.sessionRound).toBe(before);
     expect(s.error).not.toBe(SESSION_EXPIRED);
   });
 

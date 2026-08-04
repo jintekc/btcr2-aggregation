@@ -924,6 +924,32 @@ function expireIfStillAsking(get: () => OperatorState, asked: number | undefined
 }
 
 /**
+ * The ONE no-expiry-claim path, shared by every probe answer that is not evidence a session ended
+ * (review WR-15): the `unreachable` answer and the thrown fetch its `catch` handles.
+ *
+ * The rule, in the words the store already uses four lines from each caller: a transport fault is
+ * NOT evidence that a session ended, so this path claims no expiry and the copy stays the
+ * unreachable line. It equally must not hand a live session's gated slice to whoever signs in next,
+ * so the slice goes either way (review CR-03). A 502 differs from a thrown fetch only in having
+ * reached a proxy, and {@link file://../lib/operator.ts} `fetchCohortDetail` has drawn that line for
+ * the same statuses all along (D-25).
+ *
+ * It is a shared helper rather than two copies, following the {@link runAdvertisingToggle}
+ * precedent, and for a sharper reason than tidiness: two copies of a no-expiry-claim path is two
+ * places for an expiry claim to creep back in, and WR-15 is exactly what one such divergence cost.
+ * `expireSession` is used for the CLEARING it performs, never as a claim: the copy it writes is
+ * overwritten on the very next statement, deliberately and in one place.
+ */
+function probeUnreachable(set: (partial: Partial<OperatorState>) => void, get: () => OperatorState): void {
+  if (get().liveSessionRound !== undefined) {
+    get().expireSession();
+  }
+  // The operator lands at the login screen, never on 'disabled', which is reserved for the explicit
+  // 404 fail-closed signal.
+  set({ auth: 'logged-out', error: UNREACHABLE });
+}
+
+/**
  * The shared body of {@link OperatorState.pauseAdvertising} and
  * {@link OperatorState.resumeAdvertising} (SVC-04, D-06). Both toggles have identical mechanics
  * and differ only in which route they call and which confirmation they show, so they share one
@@ -1025,6 +1051,14 @@ export const useOperator = create<OperatorState>((set, get) => ({
     set({ auth: 'checking', error: undefined });
     try {
       const state = await sessionProbe(baseUrl);
+      if (state === 'unreachable') {
+        // Handled FIRST, so every branch below narrows to the two answers that ARE evidence about a
+        // session (review WR-15). The service could not answer, which is not the service saying the
+        // session ended: before the probe's vocabulary was widened, a 502 took the branch below and
+        // narrated the session-expired sentence about a session this service never ended.
+        probeUnreachable(set, get);
+        return;
+      }
       if (state === 'logged-in') {
         // Decided from the STORED live-session fact, read at LANDING time, never from the `auth`
         // status (review WR-11). A status has to be captured before this method's own first
@@ -1069,15 +1103,11 @@ export const useOperator = create<OperatorState>((set, get) => ({
         set({ auth: state });
       }
     } catch {
-      if (get().liveSessionRound !== undefined) {
-        // A transport fault is NOT evidence that a session ended, so this path claims no expiry
-        // (the copy below stays the unreachable line). It equally must not hand a live session's
-        // gated slice to whoever signs in next, so the slice goes either way (review CR-03).
-        get().expireSession();
-      }
-      // A network/stall signal on the probe leaves the operator at the login screen
-      // (not 'disabled', which is reserved for the explicit 404 fail-closed signal).
-      set({ auth: 'logged-out', error: UNREACHABLE });
+      // A network/stall signal takes the SAME shared no-expiry-claim path the `unreachable` answer
+      // takes above (review WR-15). The reasoning it used to state inline now lives once in
+      // {@link probeUnreachable}, because a rule stated in two places is a rule that can be applied
+      // in one of them, which is precisely what this finding was.
+      probeUnreachable(set, get);
     }
   },
 
