@@ -1,323 +1,227 @@
 ---
 phase: 05-operator-cohort-lifecycle-control
-reviewed: 2026-08-03T18:30:00Z
+reviewed: 2026-08-03T21:00:00Z
 depth: deep
-files_reviewed: 8
+files_reviewed: 7
 files_reviewed_list:
   - packages/web/src/stores/operator.ts
-  - packages/web/src/components/operator/SettingsView.tsx
-  - packages/service/src/runtime-settings.ts
-  - packages/service/src/index.ts
+  - packages/web/src/lib/operator.ts
   - packages/web/tests/operator.spec.ts
-  - packages/web/tests/settings.spec.ts
+  - packages/service/src/runtime-settings.ts
+  - packages/service/src/hono-adapter.ts
   - packages/service/tests/runtime-settings.spec.ts
   - docs/DEPLOY.md
 findings:
-  critical: 1
-  warning: 5
-  info: 8
-  total: 14
+  critical: 0
+  warning: 3
+  info: 4
+  total: 7
 status: issues_found
 ---
 
-# Phase 5: Code Review Report (re-review after gap-closure round 6)
+# Phase 5: Code Review Report (re-review after gap-closure round 7)
 
 **Reviewed:** 2026-08-03
-**Depth:** deep (cross-file: holder caps to route body limit to served DTO to caption; the whole operator session lifecycle from `probe` / `signIn` / `signOut` / `expireSession` into all four gated read paths and the nine one-shot action paths; boot seeding into `GET /v1/config`)
-**Files Reviewed:** 8 (the round-6 delta `90cc28e..HEAD`, traced into `packages/service/src/hono-adapter.ts`, `packages/web/src/lib/operator.ts`, `packages/web/src/components/operator/OperatorConsole.tsx`, `packages/web/src/App.tsx`, `packages/web/src/main.tsx`, `packages/service/src/demo-server.ts`)
+**Depth:** deep (cross-file: the whole operator session lifecycle from `probe` / `signIn` / `signOut` / `expireSession` through all four gated reads and all eleven gated action verbs into the components that render the slice; the boot-seed refusal fact traced through `textKnob`, the served DTO, the console caption, the settings route and `docs/DEPLOY.md`)
+**Files Reviewed:** 7 (the round-7 delta `31baed2..HEAD`, traced into `packages/web/src/components/operator/OperatorConsole.tsx`, `OperatorCohortList.tsx`, `CreateCohortForm.tsx`, `CohortDetail.tsx`, `LifecycleActions.tsx`, `SettingsView.tsx`, `packages/service/src/operator-auth.ts`)
 **Status:** issues_found
 
 ## Summary
 
-Baseline reproduced locally: `vitest run` over the three changed spec files is 3 files / 192 tests green. Every round-5 finding was checked against the shipped code, and every claim in this report that could be executed was executed against the unmodified store rather than argued from the source.
+Baseline reproduced locally: `vitest run packages/web/tests/operator.spec.ts packages/service/tests/runtime-settings.spec.ts` is 2 files / 207 tests green with no source modified. Every claim below that concerns behavior was executed against the shipped store through `bun`, not argued from the source.
 
-**All seven round-5 targets are genuinely closed.** WR-08 now carries a real capture-and-compare on all four gated reads, WR-09 guards `pollDetail`, `loadSettings` and `saveSettings` on the session as well as their own subject, WR-10 splits the cost from the remedy and names the in-session repair first, IN-05 carries the refusal into the changed caption's parenthetical, IN-06 derives the whole byte budget from both caps through an exported function the spec exercises over cap PAIRS, IN-07 makes the probe bump a transition, and IN-08 rewords the `serviceName` option to the seed it actually is. The arithmetic was re-derived independently: the largest legal console body is 121369 bytes against a 122224 byte budget, 855 bytes of slack, matching the docstring byte for byte. The new spec rows are non-vacuous, each refusal row is paired with a still-writes control, and the settings-surface rows now seed a live session instead of the impossible `checking` console they used to stage.
+**All nine round-7 targets are genuinely closed, and the critical one is closed at the mechanism rather than at the symptom.** CR-03 was reproduced closed: a probe that finds the cookie dead now retires the round and clears the whole gated slice, and the next sign-in computes the console shell's own latch condition (`auth === 'logged-in' && settings === undefined`) as true, so the create form re-reads instead of running on a dead session's defaults. WR-11 is closed by a stored `liveSessionRound` fact rather than by a pre-await status snapshot, and two overlapping probes on a live session now leave the round untouched. IN-11 is closed by one `GATED_SLICE_RESET` spread by both ending paths, and the constant covers all thirty-five non-deliberate fields (checked field by field against `OperatorState`). WR-12 is closed with a discriminated result whose four crossings were each executed: a 401 lands on the honest re-login, a 409 carries the service's own paused sentence into `actionError` on the surface the button lives on, a 404 keeps the verb-specific sentence, and an unreachable service stays distinguishable from one that said no. IN-09's trio is used at exactly the fifteen call sites the plan enumerates. IN-10's status clause is gone from `refreshCohorts`. IN-12, IN-13 and IN-14 are real: the route comment now names `settingsBodyLimitBytes` and both caps, the two boot consequence clauses and both `DEPLOY.md` env rows put the in-session repair before the environment edit, and the in-session repair is a true promise (the acceptance route and `GET /v1/config` both read `runtimeSettings.termsText.value` per request, so setting terms at runtime really does turn the acceptance gate back on).
 
-The round nevertheless **leaves the widest door of the WR-08/WR-09 defect class standing, and it is in the exact method round 6 rewrote**. `probe` is the one path that can discover a session has ENDED without a `401` from a read, and it neither retires the round nor clears the gated slice. Reproduced with no source modified: after the probe finds the cookie dead, the next sign-in opens on the previous session's cohort list, metrics, operator-actions log, broadcast-mode chip and drill-down document (member DIDs included), and the shell's once-per-session settings latch never re-reads at all, so the new session's create form runs on the old session's defaults. This is not a race. It is a tab switch after an idle expiry (CR-03).
+**The round nevertheless leaves the session-identity law half-held, and the two halves it did not reach are both in code this round rewrote.** The sweep guards the `401` branch of the eleven action verbs and no other branch, so a dead session's SUCCESS or FAILURE still writes into whichever session is live when it lands: reproduced, an advertise issued by session A navigates session B out of the cohort B was looking at and into A's, carrying A's confirmation with it (WR-13). And `submitDraft` is a sixteenth gated call site that the enumeration does not contain: reproduced, a 401 on create renders the service's raw `operator authentication required` string as create-form validation copy and ends no session (WR-14).
 
-Second, the IN-07 transition condition is decided from a snapshot taken before the probe's round trip, so two overlapping probes still bump the round and still discard the in-flight read the fix's own spec row pins. React StrictMode is enabled in `main.tsx`, which double-invokes the mount effect in development, so this fires on every console mount in dev (WR-11). Reproduced.
+Third, the CR-03 fix gave the probe's coarsest branch teeth it did not have. `sessionProbe` folds every non-200/non-404 status into `logged-out`, so a 502 or a 500 on `GET /v1/operator/session` now narrates "Your operator session ended" and discards the console's whole last-known state, four lines above a `catch` branch whose own comment says a transport fault is not evidence a session ended (WR-15). Reproduced.
 
-Third, `advertise` and `readvertise` still collapse a `401` into "Could not advertise the draft. Try again.", so two of the console's most-used buttons violate the D-16 rule the rest of the store now holds (WR-12).
+Non-finding note, outside the reviewed source set: `.planning/phases/05-operator-cohort-lifecycle-control/05-40-SUMMARY.md` ends with two stray tool-markup lines (`</content>`, `</invoke>`) after its self-check block.
 
 ## Narrative Findings (AI reviewer)
 
 ## Critical Issues
 
-### CR-03 (BLOCKER, NEW): `probe` ends a session without retiring its round or clearing its state, so the next sign-in opens on the previous session's console
+None. No round-7 target regressed, and nothing found in this pass breaks the phase goal or loses data.
 
-**File:** `packages/web/src/stores/operator.ts:813-817` (the `logged-out` / `disabled` branch) and `:818-822` (the transport-fault branch), against the field contract at `:361-368`, driven by `packages/web/src/components/operator/OperatorConsole.tsx:43-45` and `packages/web/src/App.tsx:113-114`, with the latch it defeats at `OperatorConsole.tsx:64-69`
+## Warnings
+
+### WR-13 (WARNING, NEW): The session-identity sweep guards only the 401 branch of the eleven action verbs, so a dead session's success or failure still writes into the session that replaced it
+
+**File:** `packages/web/src/stores/operator.ts:1283-1292` (`advertise` success), `:1290` (the last `auth`-as-identity comparison in the file), `:1383-1390` (`cancelCohort` unreachable), `:915-919` (`runAdvertisingToggle` success), and the same shape at `:1267-1281`, `:1315-1328`, `:1350-1354`, `:1366-1368`, `:1409-1423`, `:1437-1451`, `:1473-1483`, `:1495-1504`, against the rule stated at `:828-859` and `:361-405`
 
 **Issue:**
 
-`sessionRound`'s docstring, edited in this round, states the rule the three new guards lean on:
-
-> Bumped on every path that makes a session LIVE ... and on every path that ENDS one (`signOut`, `expireSession`).
-
-There is a third path that ends one, and it is in this same method. `OperatorConsole` is mounted conditionally on the operator tab, so a switch away and back re-runs `probe`. If the session cookie expired while the operator was on the participant tab (where nothing polls, so no `401` is ever seen), the probe is what discovers it, and the discovery does nothing except set a string:
-
-```ts
-} else {
-  // `logged-out` and `disabled` start no session, so neither takes a round: a round retired
-  // by a probe no session ever held would be a number that identifies nothing.
-  set({ auth: state });
-}
-```
-
-The comment reasons about a session that never existed. It is also reached when a live session just died, and on that path the reasoning is inverted: a session ended, its round is not retired, its gated slice is not cleared, and `view` is not reset. `signIn` clears none of that either (`:825-844`), so the next session inherits all of it.
+The trio's docstring states the rule without qualification: "an answer is evidence about the session that ASKED, never about whichever session happens to be live when it lands". The four gated reads hold it on every branch (`refreshCohorts:1161`, `pollDetail:1679`, `loadSettings:1543`, `saveSettings:1567`). The eleven action verbs hold it on the `unauthorized` branch only. Every other branch writes unconditionally, which means an answer to session A's question lands in session B's console.
 
 Reproduced against the shipped store, no source modified:
 
 ```
-$ bun /tmp/probe-logout.ts
-after probe   auth: logged-out round: 1
-  retained cohorts: [{"id":"A-COHORT"}] health: {"mode":"live","network":"mainnet"}
-  retained settings: {"serviceName":{"value":"SESSION-A SERVICE",...}}
-  retained detail: {"members":[{"did":"did:btcr2:SESSION-A-SECRET"}]} lastUpdated: 1234
-after signIn  auth: logged-in round: 2
-  session B renders cohorts: [{"id":"A-COHORT"}]
-  session B renders health chip: {"mode":"live","network":"mainnet"}
-  session B renders operator log: [{"text":"session A paused advertising"}]
-  session B settings defined? true -> shell re-reads? false
-  session B settings name: SESSION-A SERVICE
+$ bun /tmp/aba-action.ts
+session B round 12 now 12
+B view            : {"kind":"detail","cohortId":"A-LIVE-COHORT"}
+B advertiseMessage: "Advertised. Now joinable in the directory."
+B actionError     : "That action didn't go through. Nothing about this cohort changed."
 ```
 
-Four consequences, in order of how long they last:
-
-1. **The settings snapshot never refreshes for the new session.** `OperatorConsole.tsx:64-69` re-reads settings only while `settings === undefined`. It is defined, so the latch never fires, and the create form opens on a previous session's defaults indefinitely (until the operator happens to open the Settings view, whose own mount effect re-reads). This is the exact harm WR-09's fix cites as its reason for existing, reached with no race at all.
-2. **The health strip renders a previous session's broadcast mode.** If the service was restarted between the two sessions (the ordinary reason a cookie stops being accepted), the mode chip is a claim about whether this service can move Bitcoin, carried over from a boot that is gone. It is corrected only when `signIn`'s list read lands.
-3. **The drill-down opens straight onto the dead session's document.** `view` is not reset, so if the operator was in a cohort detail when the probe ran, session B mounts `CohortDetail` on session A's members, pubkeys, signed updates and funding view, with a `lastUpdated` freshness stamp session B never earned.
-4. **An in-flight read issued by the dead session still writes**, because the round it captured still matches. Only `refreshCohorts` has a status check to save it; `pollDetail`, `loadSettings` and `saveSettings` compare the round alone (by design, per the round-6 comments):
-
-```
-$ bun /tmp/probe-logout2.ts
-after probe auth: logged-out round: 1 view: {"kind":"detail","cohortId":"COHORT-X"}
-A detail painted into a signed-out console? true detailCohortId: COHORT-X lastUpdated set: true
-after signIn auth: logged-in round: 2 view: {"kind":"detail","cohortId":"COHORT-X"}
-  session B opens straight onto: {"members":[{"did":"did:btcr2:SESSION-A-SECRET"}]}
-```
-
-The transport-fault branch at `:818-822` has the same retention with a different truth value: a network fault is not evidence the session ended, so it must not claim an expiry, but it must still not hand the gated slice to whoever signs in next.
-
-This fails closed against the SERVICE (every route still refuses the dead cookie), so it is not an authentication weakness. It is the console asserting facts about a session that no longer exists, on the surface whose own copy promises the opposite ("Monitoring rebuilds from this service's state after you sign in"), plus one wrong value (the settings snapshot) that persists rather than self-healing.
-
-**Fix:** make ending a session one operation with one implementation, and call it from the third path too. The round bump and the slice clear must not be separable, which is precisely how they got separated here.
+Session B had opened `B-COHORT`. Session A's advertise landed afterwards, wrote A's green confirmation, re-read the list, and then navigated B into A's freshly minted cohort. The last hop is the store's one remaining status-as-identity comparison:
 
 ```ts
-async probe(baseUrl) {
-  const wasLive = get().auth === 'logged-in';
-  set({ auth: 'checking', error: undefined });
-  try {
-    const state = await sessionProbe(baseUrl);
-    if (state === 'logged-in') {
-      // ... unchanged (the IN-07 transition branch)
-      return;
-    }
-    if (wasLive) {
-      // A live session ENDED, discovered here rather than by a read's 401. It is the same fact
-      // `expireSession` exists for, so it takes the same path: the round is retired and the whole
-      // gated slice goes with it, which is what the SESSION_EXPIRED copy already promises.
-      get().expireSession();
-      if (state === 'disabled') {
-        // The service rebooted without an operator password: keep the fail-closed notice, but
-        // only AFTER the slice has been cleared.
-        set({ auth: 'disabled', error: undefined });
-      }
-      return;
-    }
-    set({ auth: state });
-  } catch {
-    if (wasLive) {
-      // A transport fault is not evidence the session ended, so it must not claim an expiry; but
-      // the gated slice still must not be inherited by whoever signs in next.
-      get().expireSession();
-    }
-    set({ auth: 'logged-out', error: UNREACHABLE });
-  }
+// operator.ts:1290
+if (get().auth === 'logged-in') {
+  get().openCohort(result.value);
 }
 ```
 
-Consider also clearing the gated slice on a successful `signIn` as defence in depth: a session that has read nothing should render nothing.
+`auth === 'logged-in'` is exactly the comparison `sessionRound` exists to replace, in the one place the round left it. The second line of the repro is the failure half: session A's cancel came back 500 and painted `ACTION_FAILED` into a console that canceled nothing, on a surface (`OperatorCohortList.tsx:357`, `LifecycleActions.tsx:226`, `CohortDetail.tsx:507`) that renders it in bad tone.
 
-Pin it with two rows in `packages/web/tests/operator.spec.ts`, beside the existing probe rows: a probe answering 401 on a console holding a live session, asserting the round is retired, `view` is back to `{kind:'list'}` and every gated field (`cohorts`, `rows`, `metrics`, `health`, `operatorActions`, `settings`, `detail`, `lastUpdated`) is cleared; and a follow-up asserting `auth === 'logged-in' && settings === undefined` after the next `signIn`, which is the shell latch condition the existing WR-09 row already computes that way.
+The window is one click plus one round trip, and it needs a session boundary inside it, so this is narrower than the read paths WR-08 was filed about. It is not cosmetic: the navigation persists until the operator navigates back, and the wrong bad-tone sentence tells them an action they never took did not go through.
 
-## Warnings
-
-### WR-11 (WARNING, NEW): The IN-07 transition test is decided from a pre-await snapshot, so two overlapping probes still bump the round and still discard the read the fix pins
-
-**File:** `packages/web/src/stores/operator.ts:795` (`wasLive`, captured before the `checking` assignment) consumed at `:799-812`, driven by `packages/web/src/components/operator/OperatorConsole.tsx:43-45` under `packages/web/src/main.tsx:6-10` (`StrictMode`)
-
-**Issue:**
-
-`probe`'s first statement takes `auth` away from `logged-in`. The fix captures `wasLive` before that, which is correct for one probe and wrong for two: a second probe entering while the first is in flight reads `checking`, concludes no session was live, and bumps the round when it lands. React StrictMode is enabled at `main.tsx:6-10`, and React double-invokes mount effects in development, so `OperatorConsole.tsx:43-45` fires `probe` twice on every mount in dev. In a production build the same overlap needs only a fast tab toggle (each mount fires a probe; the second reads `checking` if the first has not answered).
-
-Reproduced against the shipped store:
-
-```
-$ bun /tmp/double-probe.ts
-after two confirming probes round: 8 (was 7, IN-07 says it must stay 7)
-in-flight list read applied? false (IN-07 row claims it must apply)
-```
-
-Both assertions of the shipped spec row "lets a list read started before a CONFIRMING probe still write when it lands" are false under a double probe. The cost is the same one IN-07 measured (one discarded list read, self-healing on the next 4000 ms poll tick), so this is not a data-correctness defect; what it costs is the guarantee. The round-6 code and its spec both now describe a property the app's own dev configuration violates on every mount, and CR-03's fix would make that property load-bearing rather than merely tidy.
-
-**Fix:** decide the transition from a fact a concurrent probe cannot erase, rather than from the transient `auth` status. Either dedupe (hold the in-flight probe promise in the store and return it to a second caller), or record the live session explicitly:
+**Fix:** the capture already exists at every one of these call sites. Read `stillAsking(get, askedInRound)` once after the await, as `saveSettings:1567` already does, and let all branches read it:
 
 ```ts
-// set beside every round bump that STARTS a session, cleared by `signOut` / `expireSession`
-liveSessionRound?: number;
-
-// in probe, at landing:
-if (state === 'logged-in') {
-  if (get().liveSessionRound === undefined) {
-    set({ auth: state, sessionRound: get().sessionRound + 1, liveSessionRound: get().sessionRound + 1 });
-  } else {
-    set({ auth: state });
-  }
-  void get().refreshCohorts(baseUrl);
+const result = await apiAdvertise(baseUrl, id);
+if (result.kind === 'unauthorized') {
+  expireIfStillAsking(get, askedInRound);
+  return;
+}
+// Nothing below this point is evidence about the session that is live now.
+if (!stillAsking(get, askedInRound)) {
+  return;
 }
 ```
 
-Add a row that runs two overlapping probes against a live session and asserts the round is unchanged and the in-flight list read still writes, which is the shipped row plus one extra `probe` call.
+and replace `:1290`'s `get().auth === 'logged-in'` with the same comparison, so the file holds no status-as-identity check at all. Pin it with the ABA shape the round already wrote for the 401 paths, inverted: an `ok` and an `unreachable` answer from an ended session must leave session B's `view`, `advertiseMessage` and `actionError` exactly as B left them, each row paired with a same-session control that still writes.
 
-### WR-12 (WARNING, NEW, pre-existing code): `advertise` and `readvertise` turn an expired session into "try again", so two of the console's most-used buttons break the one-honest-re-login rule
+### WR-14 (WARNING, NEW): `submitDraft` is a sixteenth gated call site the sweep does not contain, and it renders the service's raw 401 body as create-form validation copy
 
-**File:** `packages/web/src/stores/operator.ts:1089-1117` and `:1119-1139`, over `packages/web/src/lib/operator.ts:1105-1116` and `:1123-1130`
+**File:** `packages/web/src/stores/operator.ts:1191-1204`, over `packages/web/src/lib/operator.ts:168` (`CreateDraftResult`) and `:175-196` (`createDraft`), against `packages/service/src/operator-auth.ts:169`, rendered at `packages/web/src/components/operator/CreateCohortForm.tsx:123`
 
 **Issue:**
 
-Every other gated call in this store discriminates a `401` (the four reads, plus discard, export, cancel, finalize, add-test-peers, pause, resume, disable-broadcast, dismiss, save-draft-edit). These two do not: the API helpers collapse every non-ok status into `null` / `false`, so the store's else branch runs:
+`UpdateDraftResult` (`lib/operator.ts:208-211`) carries an `unauthorized` member and its docstring says why: "an edit is reachable from a console the operator may have left open past their session, so a 401 must take the one honest re-login path rather than being rendered as a validation failure." Every word of that is equally true of create, and `CreateDraftResult` has no such member. `createDraft` treats a 401 like a 400 and lifts `body.error` verbatim.
 
-```ts
-set({ advertiseStatus: 'error', advertisingId: undefined,
-      formError: 'Could not advertise the draft. Try again.' });
+Reproduced:
+
+```
+$ bun /tmp/create-401.ts
+auth = logged-in | createStatus = error | formError = "operator authentication required" | round 3
 ```
 
-On an expired session the operator is told to retry an action that can never succeed, on the primary action of the whole console, instead of being taken to the login screen with the honest `SESSION_EXPIRED` copy that D-16 makes the single meaning of a `401`. The list poll does correct it within one 4000 ms tick when the operator is on the list view (which is where these buttons live), so the wrong copy is transient. What is not transient is `formError`: `expireSession` does not clear it (see IN-11), so the stale "Could not advertise the draft. Try again." renders on the NEXT session's create form.
+`operator authentication required` is `requireOperator`'s generic denial string (`operator-auth.ts:169`). It is not UI-SPEC copy, it names no field, and it appears in the slot that otherwise holds "Cohort size must be at least 1 signer." The session is not ended and the round is not retired, so the store's own D-16 rule ("a 401 never means two different things") does not hold for the create verb.
 
-The same helpers also swallow a `409` from the paused-advertising gate (D-06) into the same generic sentence, where the service authored a specific reason.
+The blast radius is bounded by the list poll: the create form only renders on the list view, where `OperatorConsole.tsx:51-57` polls every 4000 ms, so `refreshCohorts` expires the session within a tick and `GATED_SLICE_RESET` now clears `formError` with it. What remains is up to one poll interval of an internal auth string presented as form validation, and one gated call site that the IN-09 enumeration (four reads plus eleven verbs) silently excludes, so a reader checking the claim against the file cannot tell the omission from a decision.
 
-**Fix:** give both helpers the discriminated result shape the other thirteen already use (`{kind:'ok'|'unauthorized'|'refused'|'unreachable'}`), route `unauthorized` through `get().expireSession()` and `refused` through `actionFailedWith(reason)`, exactly as `finalizeCohort` (`:1193-1217`) already does. Pin with a row per verb: a 401 advertise leaves `auth === 'logged-out'` with `SESSION_EXPIRED`, and a 409 renders the service's reason.
+**Fix:** give `CreateDraftResult` the same third member `UpdateDraftResult` has, return it on `res.status === 401`, and branch in `submitDraft` exactly as `saveDraftEdit:1230-1234` already does:
 
-### WR-03 (WARNING, carried, out of scope by owner decision): `validateDraft` still accepts a non-whole-minute window, so the wedge survives on the per-draft path
+```ts
+if ('unauthorized' in result) {
+  expireIfStillAsking(get, askedInRound);
+  return;
+}
+```
 
-**File:** `packages/service/src/operator-cohorts.ts:714-731`, consumed at `operator-cohorts.ts:1153,1224`, with the browser half at `packages/web/src/components/operator/DraftEditForm.tsx:129-152`
+Then either add `submitDraft` to the trio docstring's enumeration or state why it is exempt. Pin with the row shape `saveDraftEdit` already has: a 401 create leaves `auth === 'logged-out'` with `SESSION_EXPIRED` and `formError` undefined.
 
-**Issue:** unchanged from rounds 3, 4 and 5. The holder's `validateWindow` (`runtime-settings.ts:834-842`) enforces `ms % ONE_MINUTE_MS === 0`; `validateDraft` enforces only integrality and the one-minute floor while throwing the SAME two constants, so `POST /v1/operator/cohorts` with `discoveryWindowMs: 90000` is still stored and that draft can never be edited again from the console.
+### WR-15 (WARNING, NEW, given teeth by this round): A 5xx on the session probe now narrates an expiry that never happened and throws away the console's last-known state
 
-**Fix:** unchanged (one shared `windowProblem` predicate called by both validators).
+**File:** `packages/web/src/stores/operator.ts:996-1011` (the ended branch this round added), over `packages/web/src/lib/operator.ts:50-63` (`sessionProbe`), against the sibling branch at `:1019-1029` and the shipped rule at `packages/web/src/lib/operator.ts:564-568`
 
-**Status:** out of scope by owner decision, carried for the planning record.
+**Issue:**
 
-### WR-04 (WARNING, carried, out of scope by owner decision): The provenance barrier stops at `LifecycleActions`
+`sessionProbe` maps 200 to `logged-in`, 404 to `disabled`, and **everything else** to `logged-out`. A 500, a 502 from a reverse proxy mid-reload, or a 503 from a load balancer is therefore indistinguishable from a 401 by the time the store sees it. Before this round that mattered little: the branch set a status. Now it calls `expireSession()`, which retires the round, writes the SESSION_EXPIRED sentence and clears the entire gated slice.
 
-**File:** `packages/web/src/components/operator/LifecycleActions.tsx:144-159` (barrier present), `packages/web/src/components/operator/CohortDetail.tsx:308-341,157-205` (barrier absent)
+Reproduced:
 
-**Issue:** unchanged. `TestPeerAction` and `FundingStage` reason about the shared `detail` slot while acting on a `cohortId` prop. CR-03 raises the stakes again: that slot can hold a document from a session that has ENDED, and now reaches the new session on mount rather than only through a race.
+```
+$ bun /tmp/probe-5xx.ts
+after a 502 probe: auth = logged-out | error = "Your operator session ended. Sign in again to keep monitoring. ..."
+  cohorts [] health undefined settings undefined view {"kind":"list"} round 2
+```
 
-**Fix:** unchanged (derive `provenDetail` once at the top of `CohortDetail`).
+The service never said the session ended. Four lines below, the `catch` branch makes precisely the opposite decision on the same class of event, and says so: "A transport fault is NOT evidence that a session ended, so this path claims no expiry (the copy below stays the unreachable line)." A 502 is as much a transport fault as a thrown fetch; it differs only in having reached a proxy. Every other read in this codebase already draws that line at the right place, in the words of `fetchCohortDetail`: "A non-401 non-ok (e.g. 500/502) is a transient fault, not a session change: freeze the last-known view rather than logging the operator out (D-25)."
 
-**Status:** out of scope by owner decision, carried for the planning record.
+The harm is a false claim in the console's most load-bearing sentence plus the loss of the frozen last-known state D-25 exists to preserve, on the one path an operator meets after a service hiccup.
 
-### WR-05 (WARNING, carried, out of scope by owner decision): `lastUpdated` carries two different freshness facts
+**Fix:** widen `SessionState` so the probe can tell the two apart, and keep `expireSession` for the answer that proves an expiry:
 
-**File:** `packages/web/src/stores/operator.ts:549-550,1036,1478`, cleared at `:1406,1416`, read at `packages/web/src/components/operator/HealthStrip.tsx:66,102-103`, `ServiceControls.tsx:202`, `CohortDetail.tsx:311,335-339`
+```ts
+export type SessionState = 'logged-in' | 'logged-out' | 'disabled' | 'unreachable';
+// sessionProbe: 200 -> logged-in, 404 -> disabled, 401 -> logged-out, anything else -> unreachable
+```
 
-**Issue:** unchanged. One field is stamped by a LIST read and by a DETAIL poll and cleared by drill-down navigation, while three consumers read it as three different clocks. Round 6 touched both writers again (both now sit behind session guards) without splitting it, and CR-03's repro shows the stamp surviving a session boundary.
-
-**Fix:** unchanged (split into `listUpdated` and `detailUpdated`).
-
-**Status:** out of scope by owner decision, carried for the planning record.
+then route `unreachable` into the same branch the `catch` already takes (clear the slice, no expiry claim, the UNREACHABLE line). Pin with a row per status: a 401 probe on a live console expires with the session-expired copy, a 502 probe on the same console leaves the unreachable copy and makes no expiry claim.
 
 ## Info
 
-### IN-09 (INFO, NEW): The session-identity rule is now held by the four READS and by none of the nine one-shot actions
+### IN-15 (INFO, NEW): `probe`'s session-START branch takes no capture, so a probe answer landing after an expiry re-establishes a phantom session
 
-**File:** `packages/web/src/stores/operator.ts:726` (`runAdvertisingToggle`), `:1078-1080` (`saveDraftEdit`), `:1146`, `:1160`, `:1175`, `:1199`, `:1224`, `:1257`, `:1277`
+**File:** `packages/web/src/stores/operator.ts:976-995`, against the documented exception at `:846-854`
 
-**Issue:** each of these calls `get().expireSession()` on a `401` with no capture and no comparison, which is the shape WR-08 was filed about. The window is far narrower than a poll's (one click plus one round trip, versus two reads permanently outstanding), and the round-6 plan fenced these paths on the record, so this is recorded rather than raised. Worth keeping visible for one reason: the store's own docstring states the rule as general law ("Any guard that must decide whether an answer still belongs to the session that asked compares this"), and nine call sites do not follow it, so the next reader cannot tell the exemption from an omission.
+**Issue:** the trio's docstring names "`probe`'s session-ended branches" as the ONE documented exception. The session-STARTED branch is exempt too, and is not named: it decides only from `liveSessionRound === undefined` read at landing time, which cannot distinguish "nobody was ever signed in" from "a session ended one millisecond ago".
 
-**Fix:** when CR-03 is fixed, fold the capture into a shared helper (`expireIfStillAsking(askedInRound)`) and use it on the action paths too, or state the exemption in the docstring.
+Reproduced with a list read and a probe in flight together, the read answering 401 first:
 
-### IN-10 (INFO, NEW): `refreshCohorts` is the only gated read that also compares `auth`, and IN-07 gave that asymmetry teeth
+```
+$ bun /tmp/probe-resurrect.ts
+after the 401 : auth= logged-out round= 6 live= undefined error= "Your operator session ended. S"
+after the probe: auth= logged-in round= 7 live= 7 error= "Your operator session ended. ..." cohorts= []
+```
 
-**File:** `packages/web/src/stores/operator.ts:1010` versus `:1329`, `:1351`, `:1465`
+The console leaves the honest re-login screen and re-enters a signed-in shell for a cookie the service has already refused, still carrying the expiry copy in `error`. It self-heals on the phantom session's own first read (another 401, another expiry), so the visible cost is a flicker, and the interleaving needed to reach it is narrow (an action or read cannot be started during the probe's own `checking` window, so the 401 must come from a request issued before the probe). Recorded because the exemption taken is wider than the exemption written down, which is the exact complaint IN-09 filed against the previous arrangement.
 
-**Issue:** before this round every probe bumped the round, so all four reads dropped answers that landed during a probe window. Now a confirming probe leaves the round intact, and the extra `get().auth !== 'logged-in'` clause makes `refreshCohorts` alone discard an ok answer landing inside the probe's `checking` window, where a detail, settings or save answer writes normally. The spec comment at `operator.spec.ts` records the window honestly ("this plan leaves it exactly as it was"); recorded here because after WR-11 and CR-03 the four guards should read as one rule with one composition, and today they do not.
+**Fix:** capture the round in `probe` as well, and start a session only when the console has not crossed a boundary since the question was asked, or state this second exemption in the docstring beside the first.
 
-**Fix:** drop the status clause (the round comparison already proves the session did not end) or add it to the other three, and say in the docstring which was chosen.
+### IN-16 (INFO, NEW): The fourth statement of the refused-seed fact still names shortening as the only repair, in the file this round edited
 
-### IN-11 (INFO, NEW): `expireSession` leaves five fields that `signOut` clears, so one session's transient copy renders on the next one's forms
+**File:** `docs/DEPLOY.md:358`, against `:510` and `:516` (both corrected by this round) and `packages/service/src/runtime-settings.ts:833-844`
 
-**File:** `packages/web/src/stores/operator.ts:909-949` against `:846-907`
+**Issue:** 05-41's own recorded pattern is "when a plan corrects a statement of fact, the first question is how many statements of that fact exist; a repo-wide search for the corrected claim costs one command". The search found the two env-table rows and missed the prose section fourteen lines earlier:
 
-**Issue:** `signOut` clears `createStatus`, `formError`, `advertiseStatus`, `advertisingId` and `advertiseMessage`; `expireSession` clears none of the five. A `formError` from a failed advertise (WR-12) or a green `advertiseMessage` from a successful one therefore survives an expiry and renders on the next session's create form and cohort list. Both surfaces are hidden while logged out, so nothing is visible in between, which is why this is INFO and not a warning.
+> A boot value above it is ignored with a warning and is never truncated to fit, because a truncated document is one participants would DID-sign in mutilated form; **until you shorten it, the join flow has no terms step at all.**
 
-**Fix:** make the two clear the same set. The cleanest form is one `GATED_SLICE_RESET` object spread by both, so a field added to one can never be missed by the other, which is also what CR-03's fix needs.
+That is the WR-10/IN-13 overclaim verbatim, and it contradicts the same section's own opening sentence ("Set `TERMS_TEXT` at boot, or the participation terms field in the settings surface at runtime"), three paragraphs apart.
 
-### IN-12 (INFO, NEW): The route's comment still says the budget is computed from the terms cap alone
+**Fix:** carry the same split into that sentence ("the join flow has no terms step until you set the participation terms in the settings surface, and shortening `TERMS_TEXT` is what makes a restart keep them").
 
-**File:** `packages/service/src/hono-adapter.ts:905-914`, over `packages/service/src/runtime-settings.ts:462-465`
+### IN-17 (INFO, NEW): Both new consequence clauses promise a settings surface that a fail-closed boot does not mount
 
-**Issue:** the comment reads "It is computed from `MAX_TERMS_CHARS` in `runtime-settings.ts`", which was true in round 5 and is not true now: 05-38 made the budget carry `MAX_SERVICE_NAME_CHARS` as well, which is the whole point of IN-06's fix. In a codebase whose convention is that these comments are the contract, the one comment at the consuming end is the one a future reader checks first.
+**File:** `packages/service/src/runtime-settings.ts:823-824` and `:839-841`, against `packages/service/src/hono-adapter.ts:828` and `:903`
 
-**Fix:** reword to "derived from BOTH string caps through `settingsBodyLimitBytes`".
+**Issue:** the settings routes are registered inside `if (operatorAuth)`, so a service booted with no `OPERATOR_PASSWORD` (the documented fail-closed posture, D-07) has no `GET`/`PUT /v1/operator/settings` and no console to reach them from. The refusal warnings are emitted by the holder either way, so that boot prints "Set the participation terms in the operator settings surface to restore the acceptance step for this session" to an operator who has no such surface. The environment half of each sentence is still true, so the line is misleading rather than wrong, and the same boot already prints a loud no-operator-password warning next to it.
 
-### IN-13 (INFO, NEW): The WR-10 correction stopped at the console caption; the boot warnings and DEPLOY.md still name the slow repair as the only one
+**Fix:** either pass the holder a bit saying whether the operator surface is mounted and drop the in-session clause when it is not, or leave it and note the dependency in the clause ("in the operator settings surface, when this service has an operator password set").
 
-**File:** `packages/service/src/runtime-settings.ts:786-788` and `:800-804` (the two `consequence` clauses), `docs/DEPLOY.md:510,516`, against `packages/web/src/components/operator/SettingsView.tsx:95-110`
+### IN-18 (INFO, NEW): `GATED_SLICE_RESET`'s nested values are shared instances written into state on every session end
 
-**Issue:** WR-10's premise was that a refused seed can be repaired in the running session, and round 6 corrected exactly one of the three places that state the repair. The boot warnings still end "until the value is shortened" ("the display name is left unset until the value is shortened", "the terms are left unset ... until the value is shortened"), and `DEPLOY.md:510` still says "the name is left unset until you shorten it" while `DEPLOY.md:516` says "the join flow has no terms step until you shorten it". Both DEPLOY rows do go on to say the value is runtime-editable, so the docs are incomplete rather than false; the boot lines are the same overclaim WR-10 named, in the place an operator reads first.
+**File:** `packages/web/src/stores/operator.ts:786-826` (`cohorts: []`, `rows: []`, `operatorActions: []`, `view: { kind: 'list' }`)
 
-**Fix:** carry the split into both `consequence` clauses (state the cost, then "set it from the operator settings surface to restore it for this session") and tighten the two DEPLOY sentences to match, so the three statements of one fact stop diverging.
+**Issue:** the constant is spread, so its top-level keys are copied, but the four nested values are the SAME objects on every `signOut` and every `expireSession`, and they land in live store state. Nothing mutates them today (checked: no `sort`, `reverse`, `splice` or `push` against a store array in `packages/web/src/components/operator/*` or `lib/operator-rows.ts`, which builds a fresh grouped structure). The hazard is that the first in-place mutation anywhere, an in-place sort of `rows` in a future list surface being the obvious one, would corrupt the constant itself and every later reset would carry the corruption, with the bug appearing in a session that never ran the mutating code.
 
-### IN-14 (INFO, NEW): The derived budget charges the TRIMMED length, while `applySettings` trims before it bounds
+**Fix:** make it a factory (`function gatedSliceReset(): Partial<OperatorState>`) so each reset gets fresh instances, or deep-freeze the constant in development. Either keeps the one-list property IN-11 bought.
 
-**File:** `packages/service/src/runtime-settings.ts:416-421` and `:956-959`, enforced at `packages/service/src/hono-adapter.ts:918`
+## Known-deferred (owner scoped OUT, re-observed, NOT findings)
 
-**Issue:** `applySettings` runs `trimToUndefined` first and bounds what is left, so a value with large leading or trailing whitespace can be legal to the holder and still exceed the route budget. Measured with the spec's own body shape: a 20000 character document padded with 200000 spaces encodes to 420169 bytes against the 122224 byte limit, so it is refused 413 ("request too large", naming no field) for a value the holder would have accepted. Not reachable from the console in any realistic use, and unchanged from the previous budget, so this is a note rather than a defect: it is recorded because the module's stated rule is that no value one layer accepts may be refused by another, and the derivation quantifies the stored length rather than the transmitted one.
+Re-checked against the shipped tree and unchanged. Listed for the planning record only, per the round's own prohibitions:
 
-**Fix:** if it is ever worth closing, bound the JSON string field before trimming (or state in the derivation's docstring that the budget is over the trimmed value, which is the decision actually taken).
+- Review WR-03 (`validateDraft` accepts a non-whole-minute window), WR-04 (the provenance barrier stops at `LifecycleActions`), WR-05 (`lastUpdated` carries two freshness facts).
+- Review IN-01 (`numericKnob`'s bare `Number()` coercion), IN-02 (`parseWindow` has no upper bound).
+- The endpoint verdict cache never cleared in shipped code, `tx-client.ts`'s missing `AbortSignal.timeout`, the unbounded `verdictCache` module singleton, the `/cas` prototype-pollution 500, the test-peer seat cap.
+- Seat reclaim (upstream), the 16 pending human items in `05-UAT.md`, and `.planning/REQUIREMENTS.md` row states.
 
-### IN-01 (INFO, carried, out of scope by owner decision): `numericKnob` coerces environment strings with bare `Number()`
-
-**File:** `packages/service/src/runtime-settings.ts:110`
-
-**Issue:** unchanged. `DEFAULT_SIZE=0x10` stores 16, `DEFAULT_SIZE=1e3` stores 1000, `PORT=+8080` stores 8080, each silently, each passing `Number.isInteger`.
-
-**Fix:** unchanged (shape-guard the string form before coercing).
-
-**Status:** out of scope by owner decision, carried for the planning record.
-
-### IN-02 (INFO, carried, out of scope by owner decision): `parseWindow` has no upper bound
-
-**File:** `packages/web/src/lib/cohort-form.ts:52-61`, reaching `packages/service/src/operator-cohorts.ts:867-889`
-
-**Issue:** unchanged. Not reachable on the documented deploy path (`demo-server.ts` always resolves a TTL); recorded as latent.
-
-**Fix:** unchanged (bound the parser, and refuse a delay above `2_147_483_647` in `armWindowTimer` explicitly).
-
-**Status:** out of scope by owner decision, carried for the planning record.
-
-## Known-deferred findings (owner scoped OUT in earlier rounds)
-
-Re-observed and confirmed still present. Recorded here rather than as new discoveries:
-
-- **Prior WR-5:** the endpoint verdict cache is still never cleared in shipped code (`clearEndpointCache` has callers only in `packages/web/tests/tx-client.spec.ts`).
-- **Prior WR-6:** `packages/web/src/lib/tx-client.ts` still carries no `AbortSignal.timeout`.
-- **Prior IN-1:** `verdictCache` is still an unbounded module-level singleton keyed by participant-typed input.
-- **W4 carried items** (`/cas` prototype-pollution 500, seat cap) unchanged.
-
-## Verification of the round-5 fixes
+## Verification of the round-7 fixes
 
 Each one checked in the shipped code and, where behavior was claimed, executed.
 
-- **WR-08: FIXED on all four gated reads.** `refreshCohorts` (`operator.ts:963,983-985`), `pollDetail` (`:1433,1446-1448`), `loadSettings` (`:1312,1318-1320`) and `saveSettings` (`:1346,1351,1370-1375`) each capture the asking session before the await and expire only on a match. The capture is an identity (`auth === 'logged-in' ? sessionRound : undefined`), so a read issued while nobody was signed in cannot match a later session's round, and that absent-capture case has its own row. Each refusal row is paired with a still-expires control, so a guard that simply stopped expiring would fail. The `catch` in `saveSettings` is scoped too, which the finding did not ask for and which is right.
-- **WR-09: FIXED, and the guards are composed correctly.** `pollDetail` now compares the session AND the cohort, in that order, with the reasoning for both recorded (`:1458-1467`). `loadSettings` guards ahead of BOTH writing branches, so a dead session's answer moves neither the snapshot nor the error posture. `saveSettings` computes one `stillAsking` read by all four branches, including the rejection branch, which is the one a narrower fix would have missed. The spec asserts the shell latch as a computed boolean (`auth === 'logged-in' && settings === undefined`) rather than describing it, which is the right pin for a component condition without a DOM.
-- **WR-10: FIXED, and the split is real.** `RefusedSeed` gains a third member, the two costs no longer mention a restart (pinned by a row asserting `/restart/i` does not match either cost), and each remedy names the in-session repair first and the environment edit second (pinned per field, including that the remedy reaches the composed caption). The terms remedy stays about the acceptance gate and the name remedy about the label, so neither loss is dressed in the other's words. Residual: the same sentence in the boot warnings and DEPLOY.md was not carried (IN-13).
-- **IN-05: FIXED, and the pin was flipped rather than deleted.** `SourceCaption` supplies `refusedEnvDefaultText(dropped)` to the changed caption's parenthetical, so a refused field the operator has edited reads `changed this session (environment default: refused, see TERMS_TEXT)` instead of asserting the environment set nothing. The old negative assertion (`not.toContain('TERMS_TEXT')`) became a positive one, and the anti-vacuity row proves a genuinely unset boot value still reads `not set` and never says `refused`. The bad-tone styling is asserted absent on that branch, so precedence is pinned as well as content.
-- **IN-06: FIXED, and derived rather than re-measured.** `settingsBodyLimitBytes` is exported as a FUNCTION and the spec exercises it over cap PAIRS including 700, 5000 and a swapped pair, with a name-blind derivation used as the anti-vacuity control, so a derivation that dropped either term goes red. The one remaining chosen number is measured (`bare` asserted at 169 bytes) and both caps are pinned against retyped literals in exactly one place. I re-derived the whole budget independently: `(200 + 20000) * 6 + 1024 = 122224`, the largest legal console body (both string fields at their cap in the six-byte escape class) is 121369 bytes, slack 855, matching the docstring. The new budget is SMALLER than round 5's 124096 and still bounds every legal body, so nothing that used to be accepted is now refused. `docs/DEPLOY.md:351-358` now describes the byte budget honestly instead of claiming the character cap is the only limit.
-- **IN-07: FIXED for a single probe, not for concurrent ones.** `wasLive` is captured before the `checking` assignment, with the trap written down, and both the confirming-probe row and the read-survives-the-probe row are the right shape. It does not hold when two probes overlap, which the app's own StrictMode makes routine in development (WR-11).
-- **IN-08: FIXED, and verified against the wire.** `CreateServiceOptions.serviceName` now documents itself as a boot seed for the holder. Traced: `index.ts:675` passes it into `createRuntimeSettings` and nothing else consumes it, and `hono-adapter.ts:635` reads `runtimeSettings?.serviceName.value` per request, so the claim that a rename applies without a restart is true of the shipped code.
+- **CR-03: FIXED, and at the mechanism.** `probe`'s three non-live outcomes route through `expireSession()` whenever `liveSessionRound` is set (`operator.ts:996-1011`, `:1019-1025`), and the 404 branch lands the disabled notice AFTER the clear so the fail-closed message survives. Executed the round-6 repro: after the probe, `cohorts []`, `health undefined`, `settings undefined`, `detail undefined`, `view {"kind":"list"}`, `operatorActions []`, `lastUpdated undefined`, round retired; after the next `signIn`, the shell's own latch condition computes true, so the create form re-reads. The eight rows at `operator.spec.ts:1858-2127` stage a populated console through the shipped paths first and assert the clear field by field, with three anti-vacuity controls beside them (a confirming probe clears nothing, a probe on a console holding no session ends nothing, a returning session still takes a fresh round).
+- **WR-11: FIXED with a stored fact, not a snapshot.** `liveSessionRound` (`:406-426`) is set beside every session start (`signIn:1042-1043`, `probe:985-986`), cleared by `GATED_SLICE_RESET:790` so both ending paths drop it, and cleared by `signIn`'s three non-200 branches so the status and the fact cannot disagree in a state a test can construct. Executed: two overlapping confirming probes leave the round at 40 and the session live. The `wasLive` pre-await capture is gone from the file.
+- **IN-11: FIXED, and the list is complete.** `GATED_SLICE_RESET:786-826` holds thirty-five fields; I enumerated `OperatorState` against it and the only omissions are the three deliberate ones (`auth`, `sessionRound`, `error`), each named in the constant's docstring with its reason. The parity row (`operator.spec.ts:479-490`) compares the WHOLE state after each ending path with those three excluded BY NAME through a `keyof OperatorState`-checked list, so a field added to one path shows up as a difference. The five fields the expiry path used to miss are pinned by two further rows driving real advertise and create failures through the shipped paths first.
+- **WR-12: FIXED, all four crossings executed.** `AdvertiseActionResult` / `ReadvertiseActionResult` (`lib/operator.ts:1119-1133`) add `refused` and `declined` to the shared vocabulary, and neither helper can throw. Executed: 401 leaves `auth: logged-out` with `SESSION_EXPIRED` and `formError` undefined; 409 renders `That action didn't go through: advertising is paused on this service. Nothing about this cohort changed.` on both verbs; 404 keeps `Could not advertise the draft. Try again.`; a thrown fetch keeps the unreachable line, so a service that refused stays distinguishable from one that could not be reached. The failures land in `actionError`, which `OperatorCohortList.tsx:357` renders above the rows whose buttons raise it; `formError` is untouched in both directions. The two preserved sentences are byte-identical named constants rather than re-typed literals.
+- **IN-09: FIXED by the shared implementation rather than by a docstring.** `askingRound` / `stillAsking` / `expireIfStillAsking` (`:860-878`) are used at exactly fifteen sites; I counted the captures in the file (`:901, 1104, 1219, 1253, 1307, 1342, 1360, 1374, 1401, 1429, 1465, 1489, 1528, 1560, 1649`) and they match the plan's enumeration. The one documented exception is stated in the trio's docstring with its reason. Two residual gaps are filed above: the sweep covers only the `401` branch of the action verbs (WR-13), and the enumeration omits `submitDraft` (WR-14).
+- **IN-10: FIXED, and the two comments now agree.** `refreshCohorts:1161` compares the round alone, matching `pollDetail`, `loadSettings` and `saveSettings`; the guard's closing paragraph enumerates the two things it rejects and says what happened to the third, instead of contradicting the 401 branch above it.
+- **IN-12: FIXED.** The route comment (`hono-adapter.ts:905-920`) names `settingsBodyLimitBytes` and both caps, with the reason (the console posts the whole form, so the largest legal body carries both fields at their cap). The `bodyLimit` call itself is unchanged, and the non-comment diff on that file is empty.
+- **IN-13: FIXED in all three statements, and the promise is true.** Both `consequence` clauses (`runtime-settings.ts:823-824`, `:839-841`) state the cost, then the in-session repair, then the environment edit, in the caption's order; `DEPLOY.md:510` and `:516` carry the same split. I verified the in-session repair is a real remedy rather than a nicer sentence: `hono-adapter.ts:807` passes `runtimeSettings?.termsText.value` to the acceptance route per request and `:636` serves it on `GET /v1/config` per request, so a runtime save genuinely turns the SVC-05 acceptance gate back on without a restart. The ordering rows (`runtime-settings.spec.ts:1275`) compare positions inside the composed line and require both to be found, so a comparison between two absent substrings cannot pass; the within-cap control (`:1310`) keeps them about the refusal path. One statement of the fact was missed (IN-16).
+- **IN-14: CLOSED AS DOCUMENTED, and the documentation is checkable.** `settingsBodyLimitBytes`'s docstring (`:416-435`) states which length the budget charges, names the alternative not taken and why it is disproportionate, and points at the rows that measure the gap. The three rows (`runtime-settings.spec.ts:1533-1560`) prove both halves (the holder accepts the padded value and stores it at the cap with no warning; the transmitted body exceeds the budget) plus the unpadded control, so the exception is a measured fact rather than a rationale.
 
 ---
 
