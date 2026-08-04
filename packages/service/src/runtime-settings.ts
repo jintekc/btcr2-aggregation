@@ -156,6 +156,28 @@ export interface RuntimeSettingsSeed {
    * with no TTL never truncates anything).
    */
   discoveryWindowCeilingMs?: number;
+  /**
+   * Whether THIS service mounts the operator settings surface (`05-REVIEW.md` IN-17).
+   *
+   * It exists for exactly one purpose: the boot warnings below tell an operator what a refused
+   * free-text seed cost and what repairs it, and one of those repairs is the settings form. The
+   * settings routes are registered inside the operator-auth block in
+   * `packages/service/src/hono-adapter.ts`, which exists only when an operator password is
+   * configured, so a service booted with no `OPERATOR_PASSWORD` (the documented fail-closed
+   * posture, D-07) has no such form and no console to reach it from. A disclosure exists to make
+   * somebody act, so it may only name repairs that exist for the reader it is printed to.
+   *
+   * ABSENT MEANS NO IN-SESSION PROMISE, and the direction is deliberate. A default that promised a
+   * surface would make every directly constructed holder claim one, and every holder in the test
+   * suite is such a holder: the unearned claim would be the default rather than the exception,
+   * which is the shape of the defect this key closes. `createService` is the one caller that knows
+   * the answer, and it derives this from the same expression that decides whether the operator
+   * auth config is built at all.
+   *
+   * It changes NOTHING but the wording of two boot warnings: no route is mounted or unmounted by
+   * it, and nothing in the served snapshot reads it.
+   */
+  operatorSurfaceMounted?: boolean;
   /** Where a malformed numeric seed is reported. Defaults to `console.warn`. */
   warn?: (message: string) => void;
 }
@@ -813,6 +835,30 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
   // display name loses a label, dropping the participation terms turns the SVC-05 acceptance gate
   // off. Each also composes with {@link textKnob}'s prefix rather than repeating it, since the
   // prefix already names the variable, the supplied length and the stored ceiling.
+  //
+  // AND THE IN-SESSION CLAUSE IS ONLY TRUE WHERE THE SURFACE EXISTS (review IN-17). The settings
+  // routes are registered inside the operator-auth block in `hono-adapter.ts`, which exists only
+  // when an operator password is configured, so a fail-closed boot (D-07) mounts no settings form
+  // at all. Round 7 corrected the ordering of these two clauses and left both promising a console
+  // to every boot, including the boot that has none. {@link RuntimeSettingsSeed.operatorSurfaceMounted}
+  // carries the answer, and {@link consequenceFor} drops the clause where it would be false: the
+  // cost and the environment edit are byte-identical either way, so the two audiences read one
+  // account of the refusal differing only in the repair each can actually reach.
+  const operatorSurfaceMounted = seed.operatorSurfaceMounted === true;
+
+  /**
+   * Compose one refusal consequence for THIS service's audience: cost, then (where it exists) the
+   * repair the reader can do while reading, then the environment edit that stops the refusal
+   * happening at the next boot.
+   *
+   * The unmounted variant joins the cost to the environment edit with a colon rather than dropping
+   * a sentence out of the middle, so the remedy stays a remedy rather than becoming a fragment,
+   * and both halves stay the same bytes in both variants.
+   */
+  function consequenceFor(cost: string, inSessionRepair: string, environmentEdit: string): string {
+    return operatorSurfaceMounted ? `${cost}. ${inSessionRepair} ${environmentEdit}` : `${cost}: ${environmentEdit}`;
+  }
+
   const droppedSeeds: string[] = [];
   const serviceName: FieldState<string | undefined> = field(
     textKnob(
@@ -820,8 +866,11 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
       seed.serviceName,
       MAX_SERVICE_NAME_CHARS,
       warn,
-      'the display name stays unset. Set the service name in the operator settings surface to ' +
-        'restore it for this session, and shorten SERVICE_NAME so a restart keeps it',
+      consequenceFor(
+        'the display name stays unset',
+        'Set the service name in the operator settings surface to restore it for this session, and',
+        'shorten SERVICE_NAME so a restart keeps it',
+      ),
       droppedSeeds,
     ),
   );
@@ -836,9 +885,12 @@ export function createRuntimeSettings(seed: RuntimeSettingsSeed = {}): RuntimeSe
       seed.termsText,
       MAX_TERMS_CHARS,
       warn,
-      'the join flow has no terms step at all, so this service refuses every acceptance. Set the ' +
-        'participation terms in the operator settings surface to restore the acceptance step for ' +
-        'this session, and shorten TERMS_TEXT so a restart keeps it',
+      consequenceFor(
+        'the join flow has no terms step at all, so this service refuses every acceptance',
+        'Set the participation terms in the operator settings surface to restore the acceptance ' +
+          'step for this session, and',
+        'shorten TERMS_TEXT so a restart keeps it',
+      ),
       droppedSeeds,
     ),
   );

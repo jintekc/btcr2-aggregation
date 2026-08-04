@@ -1241,24 +1241,41 @@ describe('no free-text seed the holder ACCEPTS is a value it would REFUSE (SC3, 
     readonly inSessionRepair: string;
     /** The unique substring of the environment edit clause, which must come after it. */
     readonly environmentEdit: string;
+    /**
+     * The COST half in full: what the refusal actually cost this service, which is the half that
+     * must read identically to both audiences (review IN-17). Only the in-session repair may
+     * differ between a service that mounts an operator surface and one that does not.
+     */
+    readonly costHalf: string;
+    /** The ENVIRONMENT-EDIT half in full, the other half that must read identically to both. */
+    readonly environmentHalf: string;
   }[] = [
     {
       what: 'a refused SERVICE_NAME',
-      seed: { serviceName: 'x'.repeat(5_000) },
+      // `operatorSurfaceMounted: true` is the row's own PRECONDITION, stated in the row rather
+      // than inherited from a default (review IN-17). The in-session repair these rows assert is
+      // only true of a service that mounts the operator surface, and the holder's default is the
+      // fail-closed reading, so a row that omitted the key would be asserting the unmounted
+      // variant while claiming to be about ordering.
+      seed: { serviceName: 'x'.repeat(5_000), operatorSurfaceMounted: true },
       variable: 'SERVICE_NAME',
       suppliedLength: 5_000,
       ceiling: MAX_SERVICE_NAME_CHARS,
       inSessionRepair: 'Set the service name in the operator settings surface',
       environmentEdit: 'shorten SERVICE_NAME',
+      costHalf: 'the display name stays unset',
+      environmentHalf: 'shorten SERVICE_NAME so a restart keeps it',
     },
     {
       what: 'a refused TERMS_TEXT',
-      seed: { termsText: 'x'.repeat(100_000) },
+      seed: { termsText: 'x'.repeat(100_000), operatorSurfaceMounted: true },
       variable: 'TERMS_TEXT',
       suppliedLength: 100_000,
       ceiling: MAX_TERMS_CHARS,
       inSessionRepair: 'Set the participation terms in the operator settings surface',
       environmentEdit: 'shorten TERMS_TEXT',
+      costHalf: 'the join flow has no terms step at all, so this service refuses every acceptance',
+      environmentHalf: 'shorten TERMS_TEXT so a restart keeps it',
     },
   ];
 
@@ -1293,6 +1310,124 @@ describe('no free-text seed the holder ACCEPTS is a value it would REFUSE (SC3, 
       expect(line).toContain(String(row.ceiling));
     });
   }
+
+  /**
+   * THE SAME REFUSAL, PRINTED TO AN OPERATOR WITH NO CONSOLE (`05-REVIEW.md` IN-17).
+   *
+   * The settings routes are registered INSIDE the operator-auth block in
+   * `packages/service/src/hono-adapter.ts`, and that block exists only when an operator password
+   * is configured, so a service booted with no `OPERATOR_PASSWORD` (the documented fail-closed
+   * posture, D-07) has no `GET`/`PUT /v1/operator/settings` and no console to reach them from.
+   * The holder emits its refusal warnings on EVERY boot, so the shipped clause sent that operator
+   * looking for a surface their own service never mounted.
+   *
+   * Each row below asserts by ABSENCE beside presence. Asserting only the absence would pass just
+   * as happily against a holder that dropped the whole consequence, which is the other way to
+   * leave an operator with nothing to act on.
+   */
+  for (const row of REFUSED_SEED_LINES) {
+    it(`makes NO in-session promise for ${row.what} when this service mounts no operator surface`, () => {
+      const line = refusalLine({ ...row.seed, operatorSurfaceMounted: false }, row.variable);
+      // The clause that was false on this boot, and the only thing that moves.
+      expect(line).not.toContain(row.inSessionRepair);
+      // Everything the operator can still act on survives: what it cost, and the edit that stops
+      // it happening again at the next boot.
+      expect(line).toContain(row.environmentHalf);
+      expect(line).toContain(row.variable);
+      expect(line).toContain(String(row.suppliedLength));
+      expect(line).toContain(String(row.ceiling));
+    });
+
+    it(`takes the fail-closed reading for ${row.what} when the holder is told NOTHING`, () => {
+      // A default that promises a surface makes every directly-constructed holder claim one,
+      // which is exactly the class of unearned claim this finding is about. The two lines are
+      // compared whole rather than by substring: an absent key must be the SAME sentence as an
+      // explicit `false`, not merely a sentence that also happens to omit the promise.
+      const { operatorSurfaceMounted: _statedInTheRow, ...bare } = row.seed;
+      expect(refusalLine(bare, row.variable)).toBe(
+        refusalLine({ ...row.seed, operatorSurfaceMounted: false }, row.variable),
+      );
+    });
+
+    it(`keeps the cost and the environment edit identical across BOTH variants for ${row.what}`, () => {
+      // The split adds and removes ONE clause. If it ever rewrote the cost or the remedy for one
+      // of the two audiences, two operators would be reading different accounts of one refusal,
+      // which is the whole class of drift this round is closing.
+      const mounted = refusalLine(row.seed, row.variable);
+      const unmounted = refusalLine({ ...row.seed, operatorSurfaceMounted: false }, row.variable);
+      expect(mounted).toContain(row.costHalf);
+      expect(unmounted).toContain(row.costHalf);
+      expect(mounted).toContain(row.environmentHalf);
+      expect(unmounted).toContain(row.environmentHalf);
+      // Anti-vacuity: the two really are different lines, so a holder that ignored the bit
+      // entirely cannot satisfy the four containments above.
+      expect(mounted).not.toBe(unmounted);
+    });
+  }
+
+  /**
+   * Boot a REAL service with an over-long terms seed and read BOTH the warning it printed and the
+   * answer its own HTTP surface gives for the settings route.
+   *
+   * The two belong in one row because the finding is precisely that a SENTENCE and a SURFACE
+   * disagreed. A row that checked only the sentence would go green again the next time somebody
+   * moved the settings routes out of the operator-auth block, and a row that checked only the
+   * route would never notice the boot output still promising one.
+   *
+   * This binds a port, unlike {@link withBootedService} above, because the surface half of the
+   * claim is an HTTP fact. It follows `packages/service/tests/operator-auth-secure.spec.ts`, which
+   * boots on an ephemeral port for the same reason: the rule under test spans `index.ts` deciding
+   * the value and `hono-adapter.ts` acting on it.
+   */
+  async function withBootedRefusal(
+    opts: { operatorPassword?: string },
+    body: (observed: { warning: string; settingsStatus: number }) => void,
+  ): Promise<void> {
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const service = createService({
+      identity: createIdentity(resolveNetwork('signet')),
+      config: buildCohortConfig(2, 'CASBeacon', 'signet'),
+      termsText: 'x'.repeat(100_000),
+      // Plain http on an ephemeral port, exactly as every other local harness runs.
+      operatorCookieSecure: false,
+      ...opts,
+    });
+    try {
+      const { baseUrl } = await service.start(0);
+      const warnings = spy.mock.calls.map((call) => String(call[0])).filter((line) => /TERMS_TEXT/.test(line));
+      expect(warnings).toHaveLength(1);
+      const res = await fetch(`${baseUrl}/v1/operator/settings`);
+      body({ warning: warnings[0]!, settingsStatus: res.status });
+    } finally {
+      await service.stop();
+      spy.mockRestore();
+    }
+  }
+
+  it('promises no in-session repair on a fail-closed boot, and really serves no settings route', async () => {
+    await withBootedRefusal({}, ({ warning, settingsStatus }) => {
+      // The sentence.
+      expect(warning).not.toContain('Set the participation terms in the operator settings surface');
+      expect(warning).toContain('shorten TERMS_TEXT so a restart keeps it');
+      expect(warning).toContain('no terms step at all');
+      // The surface, on the same booted service. 404, not 401: with no operator password the
+      // route was never registered at all, so there is not even a gate to refuse the caller.
+      expect(settingsStatus).toBe(404);
+    });
+  });
+
+  it('DOES promise it on a boot with an operator password, and really serves the route it names', async () => {
+    // The anti-vacuity control for the row above. Without it, a fix that dropped the in-session
+    // clause unconditionally would leave every operator who HAS a console reading a line that
+    // sends them to restart a service they could have repaired from the settings form.
+    await withBootedRefusal({ operatorPassword: 'correct-horse-battery-staple' }, ({ warning, settingsStatus }) => {
+      expect(warning).toContain('Set the participation terms in the operator settings surface');
+      expect(warning).toContain('shorten TERMS_TEXT so a restart keeps it');
+      // 401 rather than 404: the route EXISTS on this boot and the session guard refuses an
+      // anonymous caller before the handler runs, which is what makes the promise true.
+      expect(settingsStatus).toBe(401);
+    });
+  });
 
   it('keeps the two consequences DIFFERENT sentences, so neither loss is dressed in the other words', () => {
     // The reasoning `REFUSED_SEEDS` already records: dropping the display name loses a label, and

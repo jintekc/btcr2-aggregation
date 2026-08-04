@@ -671,6 +671,17 @@ export function createService(opts: CreateServiceOptions): Service {
   // Each shape/timing seed takes its OWN option when the operator set one (the `DEFAULT_*` env
   // vars resolved in demo-server.ts), else falls back to the value derived from this call's cohort
   // config and timing options, so every existing caller boots byte-identically.
+  // WHETHER THIS SERVICE MOUNTS AN OPERATOR SURFACE AT ALL (D-07, `05-REVIEW.md` IN-17). One
+  // binding, read TWICE below: `operatorAuth` a few lines down is built from it, and building it
+  // is what mounts the whole gated block in `createHonoApp` (the settings routes among them);
+  // the runtime settings holder is TOLD about it, so its two refusal warnings only name repairs
+  // this boot's operator can actually reach. They are two readings of ONE fact, which is why they
+  // share one binding rather than each testing `opts.operatorPassword` for themselves: a future
+  // change to the mounting condition then has one place to move, and a boot whose warning promised
+  // a settings form it never mounted is not expressible.
+  const operatorPassword = opts.operatorPassword;
+  const operatorSurfaceMounted = Boolean(operatorPassword);
+
   const runtimeSettings = createRuntimeSettings({
     serviceName: opts.serviceName,
     defaultBeaconType: opts.defaultBeaconType ?? (opts.config.beaconType as BeaconType),
@@ -683,6 +694,9 @@ export function createService(opts: CreateServiceOptions): Service {
     // the same reason it bounds a per-draft window (05-06): the library arms it at advertise and
     // never resets it, so a longer default is a promise this service cannot keep.
     discoveryWindowCeilingMs: opts.cohortTtlMs,
+    // The first of the two readings. Nothing about the holder's behavior changes: this only
+    // decides whether its two refusal warnings may name the settings form as a repair.
+    operatorSurfaceMounted,
   });
 
   // Operator authentication (HOST-01, ADR 0015), constructed per-createService like the
@@ -690,14 +704,17 @@ export function createService(opts: CreateServiceOptions): Service {
   // share sessions) and ONLY when a password is configured. Absent, no operatorAuth is
   // threaded into createHonoApp and the entire operator surface stays unmounted
   // (fail-closed, D-07). Default TTL 24h; Secure cookie defaults on (TLS at the proxy).
+  // The SECOND reading of the `operatorPassword` binding above, and the one that actually mounts
+  // the surface. Deliberately the same binding the holder's `operatorSurfaceMounted` was derived
+  // from: the warning and the mounted surface must never be able to disagree (review IN-17).
   const operatorSessionTtlMs = opts.operatorSessionTtlMs ?? 24 * 60 * 60 * 1000;
-  const operatorAuth = opts.operatorPassword
+  const operatorAuth = operatorPassword
     ? {
         sessions: createSessionStore(operatorSessionTtlMs),
         // ASVS V2 belt-and-suspenders (A5): bound brute-force against a weak password
         // without a lockout that could self-DoS the operator. 10 attempts / 5 min.
         throttle: createLoginThrottle({ maxAttempts: 10, windowMs: 5 * 60 * 1000 }),
-        expectedPassword: opts.operatorPassword,
+        expectedPassword: operatorPassword,
         cookieSecure: opts.operatorCookieSecure ?? true,
         sessionTtlMs: operatorSessionTtlMs,
       }
