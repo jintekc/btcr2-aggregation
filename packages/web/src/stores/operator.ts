@@ -370,7 +370,7 @@ export interface OperatorState {
    * still belongs to the session that asked compares this, never `auth` alone.
    *
    * That sentence is general law, and it is now TRUE of every gated call site rather than of the
-   * four reads alone (review IN-09): all fifteen (the four gated reads and the eleven action verbs)
+   * four reads alone (review IN-09): all sixteen (the four gated reads and the twelve action verbs)
    * capture and compare through the one shared trio above `useOperator`, whose docstring names the
    * single documented exception (`probe`'s session-ended branches, which decide from
    * {@link OperatorState.liveSessionRound} because no round asked their question).
@@ -611,7 +611,8 @@ export interface OperatorState {
   /** Reload the operator cohort list. */
   refreshCohorts: (baseUrl: string) => Promise<void>;
   /**
-   * Create a draft; on a 400 set `formError`, on success clear it and refresh the list.
+   * Create a draft; on a 401 take the one shared session-expiry path (review WR-14), on a 400 set
+   * `formError`, on success clear it and refresh the list.
    * Forwards the whole two-field {@link DraftInput} (`{ beaconType, size, threshold }`)
    * unchanged - size = n seats, threshold = k the signing floor (G-02-1).
    */
@@ -856,6 +857,17 @@ function gatedSliceReset(): Partial<OperatorState> {
  * which is what makes the general-law sentence in `sessionRound`'s own docstring true rather than
  * aspirational. Before this, the four reads followed it and the eleven action verbs did not, and a
  * reader could not tell which of those was a decision.
+ *
+ * The SIXTEEN sites, named so a reader can check the claim against the file: the four gated reads
+ * (`refreshCohorts`, `pollDetail`, `loadSettings`, `saveSettings`) and the twelve gated action verbs
+ * (`submitDraft`, `saveDraftEdit`, `advertise`, `readvertise`, `discard`, `exportCohort`,
+ * `cancelCohort`, `finalizeCohort`, `addTestPeers`, `disableBroadcast`, `dismissEnded`, and the
+ * shared `runAdvertisingToggle` body behind `pauseAdvertising` and `resumeAdvertising`).
+ * `submitDraft` joined last (review WR-14). It was a gated call the sweep never listed at all, and
+ * while it stood outside, a 401 on create rendered the service's own denial string in the create
+ * form's validation slot, ended no session and retired no round. An enumeration that omits a site
+ * is worse than no enumeration, because a reader cannot tell the omission from a decision, which is
+ * why the count is pinned by a row that reads this source rather than stated only here.
  *
  * The coverage owed is one comparison per BRANCH THAT WRITES, not one per call site (review WR-13).
  * The eleven action verbs first adopted the rule on their `unauthorized` branch alone, because the
@@ -1232,15 +1244,42 @@ export const useOperator = create<OperatorState>((set, get) => ({
 
   async submitDraft(baseUrl, input) {
     set({ createStatus: 'creating', formError: undefined });
+    // The asking session, captured before the await like every other gated call (review IN-09).
+    const askedInRound = askingRound(get);
     try {
       const result = await apiCreateDraft(baseUrl, input);
+      if ('unauthorized' in result) {
+        // The ONE shared session-expiry path (D-16), checked FIRST exactly as `saveDraftEdit` checks
+        // its own. This verb is the SIXTEENTH gated call site, and it was the last one outside the
+        // rule: while it stood outside, a 401 on create rendered the service's generic denial string
+        // in the create form's validation slot, ended no session and retired no round, so the store's
+        // own promise that a 401 never means two different things did not hold for this verb (review
+        // WR-14). `expireSession` clears `createStatus` and `formError` itself.
+        expireIfStillAsking(get, askedInRound);
+        return;
+      }
+      // The round guard, ahead of every branch below that writes (review WR-13). What this verb would
+      // otherwise write is a validation sentence about a form the current operator never filled in,
+      // plus a list re-read they never asked for.
+      if (!stillAsking(get, askedInRound)) {
+        return;
+      }
       if (result.ok) {
         set({ createStatus: 'idle', formError: undefined });
         await get().refreshCohorts(baseUrl);
-      } else {
-        set({ createStatus: 'error', formError: result.error });
+        return;
       }
+      // The service's own message, rendered verbatim in the create form's inline slot. That slot is
+      // for the SERVICE's validation copy and for client validation copy, and for nothing else,
+      // which is exactly why the 401 above leaves this branch by another door.
+      set({ createStatus: 'error', formError: result.error });
     } catch {
+      // The transport fault is scoped the same way `saveDraftEdit` and `saveSettings` scope theirs:
+      // it is a fact about the request the ASKING session made, and the console that replaced it
+      // created nothing to report on.
+      if (!stillAsking(get, askedInRound)) {
+        return;
+      }
       set({ createStatus: 'error', formError: UNREACHABLE });
     }
   },

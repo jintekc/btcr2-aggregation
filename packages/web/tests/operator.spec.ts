@@ -3156,6 +3156,136 @@ describe('operator store session identity across every gated ACTION (review IN-0
     expect(s.finalizing).toBeUndefined();
   });
 
+  /**
+   * The service's OWN generic denial string, copied from `packages/service/src/operator-auth.ts`
+   * where `requireOperator` emits it. It is asserted by value rather than described, because the
+   * harm WR-14 filed is precisely that this string reached a slot that otherwise holds field
+   * validation copy: a row that only checked `formError === undefined` would pass against a fix
+   * that swapped one internal sentence for another.
+   */
+  const SERVICE_DENIAL = 'operator authentication required';
+
+  /** The kind of sentence the create form's inline slot is FOR, used by the 400 control below. */
+  const CREATE_VALIDATION_COPY = 'Cohort size must be at least 1 signer.';
+
+  /**
+   * Route the CREATE call apart from the LIST read.
+   *
+   * They share one URL (`/v1/operator/cohorts`) and differ only in method, so the fragment routing
+   * every other row here uses would hand the staged create answer to session B's own sign-in read
+   * as well, expiring the session these rows exist to prove survives. Every list read is answered
+   * with session B's slice and COUNTED, for the reason `stubActionCountingListReads` records: a
+   * guarded verb must be shown never reaching its own re-read, which no copy assertion proves.
+   */
+  function stubCreateCountingListReads(answer: Promise<Response>): { listReads: () => number } {
+    let reads = 0;
+    vi.stubGlobal('fetch', (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/v1/operator/login')) {
+        return Promise.resolve(new Response(null, { status: 200 }));
+      }
+      if (url.endsWith('/v1/operator/logout')) {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (url.endsWith('/v1/operator/cohorts') && (init?.method ?? 'GET') === 'POST') {
+        return answer;
+      }
+      reads += 1;
+      return Promise.resolve(sessionBListResponse());
+    });
+    return { listReads: () => reads };
+  }
+
+  /** The two-field draft body every create row below posts; its shape is not what these rows test. */
+  const DRAFT_INPUT = { beaconType: 'CASBeacon' as const, size: 3, threshold: 3 };
+
+  it('submitDraft routes a 401 create through the ONE honest re-login path, never the form error slot', async () => {
+    // Review WR-14, the sixteenth gated call site. Creating a cohort is as reachable from a console
+    // left open past its session as editing one, so the two verbs owe the operator the same answer.
+    const a = deferred<Response>();
+    stubCreateCountingListReads(a.promise);
+    seedLive();
+    const act = useOperator.getState().submitDraft(BASE, DRAFT_INPUT);
+
+    a.resolve(new Response(JSON.stringify({ error: SERVICE_DENIAL }), { status: 401 }));
+    await act;
+
+    const s = useOperator.getState();
+    expect(s.auth).toBe('logged-out');
+    expect(s.error).toBe(SESSION_EXPIRED);
+    // The form slot is empty, and specifically does not hold the service's internal denial string:
+    // the second assertion is the one that names the harm rather than only the new state.
+    expect(s.formError).toBeUndefined();
+    expect(s.formError).not.toBe(SERVICE_DENIAL);
+    expect(s.createStatus).toBe('idle');
+  });
+
+  it('submitDraft STILL renders the service\'s own 400 message in the create form slot', async () => {
+    // The anti-vacuity control: a fix that routed every non-201 to the expiry path would satisfy the
+    // row above and would break the create form's whole purpose, which is to render the service's
+    // own validation copy verbatim when a rule this client does not mirror refuses the shape.
+    stubCreateCountingListReads(
+      Promise.resolve(new Response(JSON.stringify({ error: CREATE_VALIDATION_COPY }), { status: 400 })),
+    );
+    seedLive();
+
+    await useOperator.getState().submitDraft(BASE, DRAFT_INPUT);
+
+    const s = useOperator.getState();
+    expect(s.formError).toBe(CREATE_VALIDATION_COPY);
+    expect(s.createStatus).toBe('error');
+    // And the session is untouched: a validation failure is not an expiry.
+    expect(s.auth).toBe('logged-in');
+    expect(s.error).toBeUndefined();
+  });
+
+  it('submitDraft discards a 401 issued by an ENDED session', async () => {
+    // The ABA half of the same rule: the new site must scope its expiry like the other fifteen, so a
+    // refusal aimed at a session that already ended cannot sign the session that replaced it out.
+    const a = deferred<Response>();
+    stubCreateCountingListReads(a.promise);
+    seedLive();
+    const act = useOperator.getState().submitDraft(BASE, DRAFT_INPUT);
+
+    await signBackIn();
+    const round = useOperator.getState().sessionRound;
+
+    a.resolve(new Response(JSON.stringify({ error: SERVICE_DENIAL }), { status: 401 }));
+    await act;
+
+    expectSessionBUntouched(round);
+    // And the new session's create form is left clean, in particular of the denial string.
+    expect(useOperator.getState().formError).toBeUndefined();
+  });
+
+  it('submitDraft STILL clears the form and re-reads the list when the create succeeds', async () => {
+    const counter = stubCreateCountingListReads(
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            draftId: 'draft-new',
+            beaconType: 'CASBeacon',
+            network: 'regtest',
+            threshold: 3,
+            capacity: 3,
+            joined: 0,
+            state: 'draft',
+          }),
+          { status: 201 },
+        ),
+      ),
+    );
+    seedLive();
+    const before = counter.listReads();
+
+    await useOperator.getState().submitDraft(BASE, DRAFT_INPUT);
+
+    const s = useOperator.getState();
+    expect(s.createStatus).toBe('idle');
+    expect(s.formError).toBeUndefined();
+    expect(counter.listReads()).toBe(before + 1);
+  });
+
   it('opens no drill-down when the session expires INSIDE the post-success list re-read', async () => {
     // The property the retired status comparison was buying, and the reason the landing re-reads the
     // comparison on the far side of the refresh instead of caching a boolean across it: the list
@@ -3215,7 +3345,7 @@ describe('operator store session-identity enumeration, read out of the SOURCE (r
    * fails, and so adding one WITH a comparison still fails until somebody updates this figure and
    * therefore reads the rule.
    */
-  const CAPTURE_SITES = 15;
+  const CAPTURE_SITES = 16;
 
   it('captures the asking session at exactly the stated number of gated call sites', () => {
     const segments = OPERATOR_SOURCE.split(CAPTURE);

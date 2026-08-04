@@ -164,13 +164,28 @@ export interface CohortDefaultsDTO {
   fundingWindowMs?: number;
 }
 
-/** Discriminated create result so the store can surface a 400's specific message. */
-export type CreateDraftResult = { ok: true; dto: OperatorCohortDTO } | { ok: false; error: string };
+/**
+ * Discriminated create result so the store can surface a 400's specific message.
+ *
+ * It carries `unauthorized` as a third member for the reason stated once on
+ * {@link UpdateDraftResult}: a create is reachable from a console the operator may have left open
+ * past their session, so a 401 must take the one honest re-login path rather than being rendered as
+ * a validation failure (review WR-14).
+ */
+export type CreateDraftResult =
+  | { ok: true; dto: OperatorCohortDTO }
+  | { ok: false; error: string }
+  | { ok: false; unauthorized: true };
 
 /**
- * POST a cohort draft. On 201 returns the created DTO; on any non-201 (notably the
- * 400 validation path) surfaces the server's specific `error` message so the create
- * form can render it verbatim (the two numeric validation strings are the UI-SPEC copy).
+ * POST a cohort draft. On a 401 reports the session expiry; on 201 returns the created DTO; on any
+ * other non-201 (notably the 400 validation path) surfaces the server's specific `error` message so
+ * the create form can render it verbatim (the two numeric validation strings are the UI-SPEC copy).
+ *
+ * The 401 is checked FIRST, exactly as {@link updateDraft} orders its own checks. Before that it
+ * fell through to the message branch, so the service's generic `operator authentication required`
+ * denial was lifted verbatim into the slot that otherwise holds `Cohort size must be at least 1
+ * signer.`, and the session was never ended (review WR-14).
  */
 export async function createDraft(baseUrl: string, input: DraftInput): Promise<CreateDraftResult> {
   const res = await fetch(endpoint(baseUrl, '/v1/operator/cohorts'), {
@@ -180,6 +195,9 @@ export async function createDraft(baseUrl: string, input: DraftInput): Promise<C
     body: JSON.stringify(input),
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
+  if (res.status === 401) {
+    return { ok: false, unauthorized: true };
+  }
   if (res.status === 201) {
     return { ok: true, dto: (await res.json()) as OperatorCohortDTO };
   }
@@ -201,9 +219,14 @@ export async function createDraft(baseUrl: string, input: DraftInput): Promise<C
  * backstop the inline error slot renders VERBATIM, so a rule the client does not mirror yet still
  * reaches the operator in the service's words rather than as a generic "that didn't work".
  *
- * It carries `unauthorized` as a third member, which the create result does not need: an edit is
- * reachable from a console the operator may have left open past their session, so a 401 must take
- * the one honest re-login path rather than being rendered as a validation failure.
+ * Both results carry `unauthorized` as a third member, for one reason stated here once: an edit,
+ * and a create, are both reachable from a console the operator may have left open past their
+ * session, so a 401 must take the one honest re-login path rather than being rendered as a
+ * validation failure.
+ *
+ * This docstring previously claimed the create result did not need the member, and that claim was
+ * false in a way that shipped: a 401 on create rendered the service's own denial string as create
+ * form validation copy and ended no session (review WR-14).
  */
 export type UpdateDraftResult =
   | { ok: true; dto: OperatorCohortDTO }
