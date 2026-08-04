@@ -416,7 +416,7 @@ export interface OperatorState {
    *
    * Set beside every round bump that STARTS a session (`signIn`'s 200 branch, and `probe`'s branch
    * where a session becomes live), to the same value the round takes. Cleared by the shared
-   * `GATED_SLICE_RESET`, so both paths that END a session drop it with everything else and no third
+   * `gatedSliceReset`, so both paths that END a session drop it with everything else and no third
    * place has to remember.
    *
    * Client-side only, on the same reasoning as {@link OperatorState.sessionRound}: which session is
@@ -749,7 +749,8 @@ export interface OperatorState {
 }
 
 /**
- * The ONE set of fields every path that ENDS an operator session clears (review IN-11).
+ * The ONE set of fields every path that ENDS an operator session clears (review IN-11), built
+ * FRESH on each call (review IN-18).
  *
  * The rule it holds: ending a session is one act, so a field added to one ending path can never be
  * missed by the other, because there is only one list. Before this constant there were two, and
@@ -782,48 +783,63 @@ export interface OperatorState {
  *   once-per-session read latch keys on, so retaining it makes the next session skip its own read.
  * - Every IN-FLIGHT ACTION marker goes, so the next sign-in starts with no control claiming to be
  *   mid-cancel, mid-finalize or mid-spawn.
+ *
+ * It is a FUNCTION rather than a constant, and that is a correctness decision rather than a style
+ * one (review IN-18). Spreading a constant copies its top-level keys but hands out the SAME four
+ * nested values every time (`cohorts`, `rows`, `operatorActions` and `view`), and those land in live
+ * store state. Nothing mutates them today, but the first in-place mutation anywhere, an in-place
+ * sort of `rows` in some future list surface being the obvious one, would corrupt the shared value
+ * itself, and every later reset would carry the corruption into a session that never ran the
+ * mutating code. Minting them per call costs one object allocation on a path that runs at most once
+ * per session and removes the whole class.
+ *
+ * The field set is unchanged by that decision: same fields, same order, same three exclusions. What
+ * the parity row measures is the one-list property IN-11 bought, and this is about instance identity
+ * only.
  */
-const GATED_SLICE_RESET: Partial<OperatorState> = {
-  // No session is live once either path has run, so the stored fact says so (review WR-11). It
-  // lives here rather than beside each caller's own round bump precisely so neither path can end a
-  // session while leaving the console recording one.
-  liveSessionRound: undefined,
-  cohorts: [],
-  rows: [],
-  metrics: undefined,
-  health: undefined,
-  defaults: undefined,
-  listStale: false,
-  createStatus: 'idle',
-  formError: undefined,
-  editingDraftId: undefined,
-  editStatus: 'idle',
-  editError: undefined,
-  advertiseStatus: 'idle',
-  advertisingId: undefined,
-  advertiseMessage: undefined,
-  actionError: undefined,
-  pauseBusy: false,
-  pauseMessage: undefined,
-  pauseError: undefined,
-  operatorActions: [],
-  broadcastBusy: false,
-  broadcastError: undefined,
-  dismissing: undefined,
-  settings: undefined,
-  settingsStatus: 'idle',
-  settingsError: undefined,
-  settingsMessage: undefined,
-  view: { kind: 'list' },
-  cancelling: undefined,
-  finalizing: undefined,
-  addingTestPeers: undefined,
-  testPeerError: undefined,
-  detail: undefined,
-  detailCohortId: undefined,
-  detailStale: false,
-  lastUpdated: undefined,
-};
+function gatedSliceReset(): Partial<OperatorState> {
+  return {
+    // No session is live once either path has run, so the stored fact says so (review WR-11). It
+    // lives here rather than beside each caller's own round bump precisely so neither path can end a
+    // session while leaving the console recording one.
+    liveSessionRound: undefined,
+    cohorts: [],
+    rows: [],
+    metrics: undefined,
+    health: undefined,
+    defaults: undefined,
+    listStale: false,
+    createStatus: 'idle',
+    formError: undefined,
+    editingDraftId: undefined,
+    editStatus: 'idle',
+    editError: undefined,
+    advertiseStatus: 'idle',
+    advertisingId: undefined,
+    advertiseMessage: undefined,
+    actionError: undefined,
+    pauseBusy: false,
+    pauseMessage: undefined,
+    pauseError: undefined,
+    operatorActions: [],
+    broadcastBusy: false,
+    broadcastError: undefined,
+    dismissing: undefined,
+    settings: undefined,
+    settingsStatus: 'idle',
+    settingsError: undefined,
+    settingsMessage: undefined,
+    view: { kind: 'list' },
+    cancelling: undefined,
+    finalizing: undefined,
+    addingTestPeers: undefined,
+    testPeerError: undefined,
+    detail: undefined,
+    detailCohortId: undefined,
+    detailStale: false,
+    lastUpdated: undefined,
+  };
+}
 
 /**
  * The session-identity rule, in one place, used by every gated call that can end a session
@@ -1084,8 +1100,9 @@ export const useOperator = create<OperatorState>((set, get) => ({
     } finally {
       set({
         // The ONE list both ending paths clear (review IN-11); its docstring carries the reasoning
-        // for each group that used to sit inline here.
-        ...GATED_SLICE_RESET,
+        // for each group that used to sit inline here. Called rather than spread from a constant so
+        // this session end gets containers of its OWN (review IN-18).
+        ...gatedSliceReset(),
         auth: 'logged-out',
         // The session ENDS here, so its round is retired with the rest of its state: any read it
         // issued is now an answer about a session nobody is running.
@@ -1101,8 +1118,9 @@ export const useOperator = create<OperatorState>((set, get) => ({
       // The SAME list `signOut` clears, spread from one definition (review IN-11). The five fields
       // this path used to miss (`createStatus`, `formError`, `advertiseStatus`, `advertisingId`,
       // `advertiseMessage`) come with it, so a failed advertise message from the session that just
-      // ended can no longer render on the next session's create form.
-      ...GATED_SLICE_RESET,
+      // ended can no longer render on the next session's create form, and this end gets its own
+      // containers rather than the previous end's (review IN-18).
+      ...gatedSliceReset(),
       auth: 'logged-out',
       // The session ENDS here too, on the same reasoning as `signOut` above: an expiry retires the
       // round so a read issued under it can never match the round of whoever signs in next.

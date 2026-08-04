@@ -540,6 +540,58 @@ describe('operator store session-ending parity (review IN-11)', () => {
     expect(s.advertiseStatus).toBe('idle');
     expect(s.advertisingId).toBeUndefined();
   });
+
+  /**
+   * Review IN-18, beside the parity row on purpose, so a reader meets both properties in one place.
+   *
+   * The parity row above buys ONE list. These buy fresh CONTAINERS out of that one list. The two are
+   * genuinely independent: the reset's nested values (`cohorts: []`, `rows: []`,
+   * `operatorActions: []`, `view: { kind: 'list' }`) used to be the same instances on every session
+   * end, and they land in live store state, so the first in-place mutation anywhere (an in-place
+   * sort of `rows` in some future list surface being the obvious one) would corrupt the shared value
+   * and every later reset would carry the corruption into a session that never ran the mutating code.
+   *
+   * Asserted by REFERENCE comparison, never by value. The values are equal by construction, so a
+   * `toEqual` passes identically whether the containers are shared or not, which is exactly how this
+   * survived a green gate of well over a thousand tests.
+   */
+
+  /** The four nested containers a session end hands the next session. */
+  function containers(): Record<string, unknown> {
+    const s = useOperator.getState();
+    return { cohorts: s.cohorts, rows: s.rows, operatorActions: s.operatorActions, view: s.view };
+  }
+
+  /** Assert two ends handed out four DIFFERENT instances, naming each one that did not. */
+  function expectFreshInstances(first: Record<string, unknown>, second: Record<string, unknown>): void {
+    const shared = Object.keys(first).filter((name) => first[name] === second[name]);
+    expect(shared).toEqual([]);
+  }
+
+  it('hands each session end its OWN containers, so one reset can never reach another (review IN-18)', () => {
+    stageDirty();
+    useOperator.getState().expireSession();
+    const first = containers();
+
+    stageDirty();
+    useOperator.getState().expireSession();
+
+    expectFreshInstances(first, containers());
+  });
+
+  it('hands an EXPIRY and a SIGN-OUT containers of their own too (review IN-18)', async () => {
+    // The two paths share one definition, which is the whole point of IN-11 and also the reason a
+    // shared instance would reach both. So the cross-path pair is a row rather than an assumption.
+    stageDirty();
+    useOperator.getState().expireSession();
+    const afterExpiry = containers();
+
+    stageDirty();
+    vi.stubGlobal('fetch', () => Promise.resolve(new Response(null, { status: 204 })));
+    await useOperator.getState().signOut(BASE);
+
+    expectFreshInstances(afterExpiry, containers());
+  });
 });
 
 /**
