@@ -5,8 +5,8 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Completed 05-43-PLAN.md
-last_updated: "2026-08-04T17:30:36.617Z"
+stopped_at: Completed 05-44-PLAN.md
+last_updated: "2026-08-04T17:44:23.957Z"
 last_activity: "2026-08-04: 05-42 executed (WR-13 branch sweep + IN-18 reset factory)"
 progress:
   total_phases: 5
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 43 of 44 complete (round 8 in progress: 05-42 done, 05-43 and 05-44 remain)
+Plan: 44 of 44 complete (round 8 in progress: 05-42 done, 05-43 and 05-44 remain)
 Status: Ready to execute 05-43
 Last activity: 2026-08-04: 05-42 executed (WR-13 branch sweep + IN-18 reset factory)
 
@@ -134,6 +134,7 @@ Progress: [██████████] 99%
 | Phase 05 P41 | 14 min | 2 tasks | 4 files |
 | Phase 05 P42 | 15 min | 3 tasks | 2 files |
 | Phase 05 P43 | 9 min | 3 tasks | 3 files |
+| Phase 05 P44 | 12 min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -268,6 +269,9 @@ Recent decisions affecting current work (Phase 2):
 - [Phase 05]: [Phase 05] 05-42 (SVC-04, round 8 plan 1 of 3): the session-identity rule is now true of every BRANCH of every gated action verb, not just the 401. Eleven verbs (runAdvertisingToggle covering pause+resume, saveDraftEdit, advertise, readvertise, discard, exportCohort, cancelCohort, finalizeCohort, addTestPeers, disableBroadcast, dismissEnded) each take ONE stillAsking(get, askedInRound) early-return guard directly BELOW their unauthorized branch, covering ok/refused/declined/unreachable and the catch blocks. The guard goes below and never above the 401 branch, because a 401 is session-scoped and must be acted on by whichever call discovers it (the ordering refreshCohorts already records). advertise's D-13 drill-down landing dropped its auth-status comparison for a FRESH round read taken AFTER the post-success list re-read: that refresh can itself 401 and end the session, so a boolean cached across it is stale by the time the landing decides, and caching would have reintroduced the bug class in a new place. saveDraftEdit's unauthorized check moved ahead of its result.ok check (behavior-preserving: a result carrying unauthorized is never ok). The store now holds exactly ONE status-as-identity comparison, inside askingRound's body. Rationale: Review WR-13: reproduced against the shipped store, session A's advertise wrote A's green confirmation into session B, re-read the list, then navigated B into A's freshly minted cohort, while A's failed cancel painted a bad-tone sentence about a cohort B never touched. General lesson worth carrying past this phase: when a rule is stated over a call site, the coverage owed is one row per BRANCH of that call site, not one row per call site.
 - [Phase 05]: [Phase 05] 05-42: the enumeration is CHECKED, not claimed. operator.spec.ts splits the shipped store source on the capture statement, asserts fifteen gated capture sites, and requires a comparison against the captured round after each, using the source-walk convention participant-fate.spec.ts established. The comparison token is spelled with its lowercase initial deliberately so expireIfStillAsking(get, askedInRound) does NOT match it, which is what makes a verb guarding only its 401 branch fail the row. A second row pins exactly one status-as-identity comparison and that it lives inside askingRound. 05-43 will have to raise the stated count from 15 to 16 when it adds submitDraft (WR-14), which is the row working as designed. Rationale: The round-7 finding was that a reader could not distinguish a deliberate exemption from a missed site. A row that counts is the only thing that makes the distinction checkable, and it turns a sixteenth capture into a deliberate decision rather than a silent addition.
 - [Phase 05]: [Phase 05] 05-42 (IN-18): GATED_SLICE_RESET became gatedSliceReset(), a factory both signOut and expireSession call, so the four nested containers (cohorts, rows, operatorActions, view) are no longer ONE shared set written into live store state on every session end. Field set, order and the three named exclusions (auth, sessionRound, error) are unchanged: this is instance identity only, and the IN-11 parity row is untouched. A factory rather than a dev-only deep freeze, so there is no behavior difference between builds. Pinned by REFERENCE comparison across two consecutive ends and across the expiry/sign-out pair. Rationale: The shipped parity row compares two states with toEqual, a VALUE comparison, so it passes identically whether the resets share containers or not: the mutation check observed the parity row STAY GREEN while the new rows went red. The property was invisible to a 1348-test suite by construction. The hazard the factory removes is that the first in-place mutation anywhere (an in-place sort of rows in a future list surface) would corrupt the shared value and every later reset would carry the corruption into a session that never ran the mutating code.
+- [Phase 05]: 05-44: operatorSurfaceMounted is a boot seed key derived from the SAME operatorPassword binding that builds operatorAuth, so a fail-closed boot's refusal warning can never promise the settings form it never mounts; absent means the fail-closed reading, because a default that promised a surface would make every directly-constructed holder claim one.
+- [Phase 05]: 05-44: the two refusal consequences keep their cost and environment-edit halves byte-identical across both variants and differ only in the in-session clause, joined by a colon rather than a dropped sentence, so two operators read one account of one refusal.
+- [Phase 05]: 05-44: the two DEPLOY.md environment rows were QUALIFIED rather than left, because the table is read while configuring a service that may have no OPERATOR_PASSWORD; the count of qualified statements (3) is pinned so a fourth cannot be added unqualified.
 
 ### Pending Todos
 
@@ -307,7 +311,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-04T17:30:36.596Z
-Stopped at: Completed 05-43-PLAN.md
+Last session: 2026-08-04T17:44:12.255Z
+Stopped at: Completed 05-44-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
