@@ -841,6 +841,24 @@ const GATED_SLICE_RESET: Partial<OperatorState> = {
  * aspirational. Before this, the four reads followed it and the eleven action verbs did not, and a
  * reader could not tell which of those was a decision.
  *
+ * The coverage owed is one comparison per BRANCH THAT WRITES, not one per call site (review WR-13).
+ * The eleven action verbs first adopted the rule on their `unauthorized` branch alone, because the
+ * finding being closed at the time was about 401s, and every other branch went on writing
+ * unconditionally: a dead session's success navigated the live console into a cohort it never
+ * opened, and a dead session's failure painted a bad-tone sentence about an action it never took.
+ * So each verb now takes ONE comparison directly below its `unauthorized` branch, covering the
+ * success, refusal and transport branches together, including the `catch` blocks. The 401 branch
+ * keeps its position ahead of that guard for the reason `refreshCohorts` records at its own: an
+ * expiry is session-scoped and must be acted on by whichever call discovers it.
+ *
+ * Two call sites re-read the comparison instead of caching it: `advertise`'s drill-down landing and
+ * `saveSettings`'s catch. Both sit on the far side of a SECOND await that can itself end the
+ * session, so a boolean captured before it is stale by the time the decision is made.
+ *
+ * The enumeration is checked rather than asserted in prose: `operator.spec.ts` splits this source on
+ * the capture statement, counts the sites, and requires a comparison after each, so a site added
+ * without one fails there rather than being taken on trust.
+ *
  * A capture is `undefined` when NO session was live at the time of asking, and an undefined capture
  * never matches. That is the half that refuses an answer to a question nobody asked, rather than
  * letting it match a value some LATER session holds.
@@ -905,6 +923,12 @@ async function runAdvertisingToggle(
     // to the session that ASKED: a refusal aimed at a session that has already ended must not end
     // the one that replaced it.
     expireIfStillAsking(get, askedInRound);
+    return;
+  }
+  // The round guard, ahead of both branches that write (review WR-13). The reasoning lives once in
+  // the trio's docstring above; what THIS verb would otherwise write is a state line about a drain
+  // the current operator never started, plus a list re-read they never asked for.
+  if (!stillAsking(get, askedInRound)) {
     return;
   }
   if (result.kind === 'unreachable') {
@@ -1219,6 +1243,23 @@ export const useOperator = create<OperatorState>((set, get) => ({
     const askedInRound = askingRound(get);
     try {
       const result = await apiUpdateDraft(baseUrl, id, input);
+      if ('unauthorized' in result) {
+        // The ONE shared session-expiry path (D-16); it clears the edit slice itself. Scoped to the
+        // session that ASKED (review IN-09).
+        //
+        // This branch moved AHEAD of the success branch below (review WR-13), so the one shared
+        // expiry path keeps the position it holds in every other gated verb and the round guard can
+        // sit directly under it. The move is behavior-preserving: a result carrying the
+        // `unauthorized` member is never an `ok` one.
+        expireIfStillAsking(get, askedInRound);
+        return;
+      }
+      // The round guard, ahead of every branch below that writes (review WR-13). What this verb
+      // would otherwise write is the closing of an EDIT FORM the current operator may be mid-way
+      // through typing into, on a draft they did not save.
+      if (!stillAsking(get, askedInRound)) {
+        return;
+      }
       if (result.ok) {
         // Close the form and RE-READ: the row must render what the service now holds, not what
         // this browser sent, so a value the server normalized is never displayed as the operator
@@ -1227,15 +1268,15 @@ export const useOperator = create<OperatorState>((set, get) => ({
         await get().refreshCohorts(baseUrl);
         return;
       }
-      if ('unauthorized' in result) {
-        // The ONE shared session-expiry path (D-16); it clears the edit slice itself. Scoped to the
-        // session that ASKED (review IN-09).
-        expireIfStillAsking(get, askedInRound);
-        return;
-      }
       // The service's own message, rendered verbatim in the inline slot the create form uses.
       set({ editStatus: 'error', editError: result.error });
     } catch {
+      // The transport fault is scoped the same way `saveSettings` scopes its own catch: it is a
+      // fact about the request the ASKING session made, and the console that replaced it made no
+      // save to report on.
+      if (!stillAsking(get, askedInRound)) {
+        return;
+      }
       set({ editStatus: 'error', editError: UNREACHABLE });
     }
   },
@@ -1368,6 +1409,11 @@ export const useOperator = create<OperatorState>((set, get) => ({
       expireIfStillAsking(get, askedInRound);
       return;
     }
+    // The round guard (review WR-13). Below here a discard would write a failure sentence about a
+    // draft the current operator never touched, or re-read a list they never asked to refresh.
+    if (!stillAsking(get, askedInRound)) {
+      return;
+    }
     if (result.kind === 'unreachable') {
       set({ actionError: DISCARD_FAILED });
       return;
@@ -1382,6 +1428,11 @@ export const useOperator = create<OperatorState>((set, get) => ({
     const result = await apiDownloadExport(baseUrl, id);
     if (result.kind === 'unauthorized') {
       expireIfStillAsking(get, askedInRound);
+      return;
+    }
+    // The round guard (review WR-13). The one branch below writes a failure sentence about a
+    // download the current operator never started.
+    if (!stillAsking(get, askedInRound)) {
       return;
     }
     if (result.kind === 'unreachable') {
@@ -1399,6 +1450,12 @@ export const useOperator = create<OperatorState>((set, get) => ({
       // one-shot action (D-16), so a 401 never means two different things. `expireSession` clears
       // `cancelling` itself. Scoped to the session that ASKED (review IN-09).
       expireIfStillAsking(get, askedInRound);
+      return;
+    }
+    // The round guard (review WR-13), and the second half of the reviewer's repro: below here a
+    // failed cancel writes a bad-tone sentence about a cohort the current session never touched,
+    // and a successful one closes their drill-down and re-reads the list underneath them.
+    if (!stillAsking(get, askedInRound)) {
       return;
     }
     if (result.kind === 'unreachable') {
@@ -1427,6 +1484,12 @@ export const useOperator = create<OperatorState>((set, get) => ({
       expireIfStillAsking(get, askedInRound);
       return;
     }
+    // The round guard (review WR-13). A refusal explaining a phase race the PREVIOUS operator ran
+    // into is a message the current one cannot act on, and the success branch polls a drill-down
+    // they may not even have open.
+    if (!stillAsking(get, askedInRound)) {
+      return;
+    }
     if (result.kind === 'refused') {
       // The server refused with a reason it authored (never a library string), so it is rendered
       // verbatim inside the action-error line. Nothing about the cohort changed.
@@ -1453,6 +1516,11 @@ export const useOperator = create<OperatorState>((set, get) => ({
       // The ONE shared session-expiry path (D-16); `expireSession` clears both fields itself.
       // Scoped to the session that ASKED (review IN-09).
       expireIfStillAsking(get, askedInRound);
+      return;
+    }
+    // The round guard (review WR-13). The spawn card below belongs to the session that clicked it,
+    // so neither its refusal copy nor its detail re-read may land in a console that spawned nothing.
+    if (!stillAsking(get, askedInRound)) {
       return;
     }
     if (result.kind === 'refused') {
@@ -1491,6 +1559,11 @@ export const useOperator = create<OperatorState>((set, get) => ({
       expireIfStillAsking(get, askedInRound);
       return;
     }
+    // The round guard (review WR-13). The kill switch is the one control whose copy is about
+    // whether this service can move Bitcoin, so a dead session's answer must never caption it.
+    if (!stillAsking(get, askedInRound)) {
+      return;
+    }
     if (result.kind === 'unreachable') {
       // Nothing on the service changed, so nothing on screen changes except this line: the mode
       // chip, the control and the log all still show the last SERVED state.
@@ -1511,6 +1584,11 @@ export const useOperator = create<OperatorState>((set, get) => ({
     const result = await apiDismissEnded(baseUrl, id);
     if (result.kind === 'unauthorized') {
       expireIfStillAsking(get, askedInRound);
+      return;
+    }
+    // The round guard (review WR-13). A failed dismissal writes a bad-tone sentence about an ended
+    // cohort the current operator never asked to clear, and a successful one re-reads their list.
+    if (!stillAsking(get, askedInRound)) {
       return;
     }
     if (result.kind === 'unreachable') {

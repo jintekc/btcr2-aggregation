@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   fetchCohortDetail,
@@ -12,6 +14,7 @@ import {
   ADVERTISED_OK,
   ADVERTISE_FAILED,
   EXPORT_FAILED,
+  PAUSED_OK,
   READVERTISED_OK,
   READVERTISE_FAILED,
   SESSION_EXPIRED,
@@ -2902,6 +2905,205 @@ describe('operator store session identity across every gated ACTION (review IN-0
     expect(s.metrics).toEqual({ open: 1, inFlight: 0, anchored: 0, failed: 0 });
   });
 
+  /**
+   * The list read, answered with session B's OWN slice.
+   *
+   * Staging it matters for the two rows whose guarded branch is followed by a re-read: left
+   * unstaged, a store that skipped the guard would hang on `refreshCohorts` and the row would fail
+   * by TIMEOUT rather than by assertion, which reads as a broken test rather than as the defect.
+   * Answering with B's own values keeps `expectSessionBUntouched` honest either way, so what fails
+   * under the defect is the copy assertion and the read counter, which is what the row is about.
+   */
+  function sessionBListResponse(): Response {
+    return new Response(
+      JSON.stringify({
+        cohorts: SESSION_B_SLICE.cohorts,
+        monitoring: { rows: [], metrics: SESSION_B_SLICE.metrics, health: SESSION_B_SLICE.health },
+      }),
+      { status: 200 },
+    );
+  }
+
+  /**
+   * Route one gated action plus the auth routes, answer every LIST read with session B's slice, and
+   * COUNT those reads. The count is the assertion that a guarded verb never reached its own re-read,
+   * which no copy assertion can prove on its own.
+   */
+  function stubActionCountingListReads(
+    fragment: string,
+    answer: Promise<Response>,
+  ): { listReads: () => number } {
+    let reads = 0;
+    vi.stubGlobal('fetch', (input: unknown) => {
+      const url = String(input);
+      if (url.endsWith('/v1/operator/login')) {
+        return Promise.resolve(new Response(null, { status: 200 }));
+      }
+      if (url.endsWith('/v1/operator/logout')) {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (url.includes(fragment)) {
+        return answer;
+      }
+      reads += 1;
+      return Promise.resolve(sessionBListResponse());
+    });
+    return { listReads: () => reads };
+  }
+
+  it('the advertising toggle discards an OK answer issued by an ENDED session', async () => {
+    // The service-toggle family. Its success branch writes a state line and then re-reads, so a
+    // dead session's toggle would caption the current operator's console with a drain they never
+    // started.
+    const a = deferred<Response>();
+    const counter = stubActionCountingListReads('/advertising/pause', a.promise);
+    seedLive();
+    const act = useOperator.getState().pauseAdvertising(BASE);
+
+    await signBackIn();
+    const round = useOperator.getState().sessionRound;
+    const before = counter.listReads();
+
+    a.resolve(new Response(JSON.stringify({ paused: true }), { status: 200 }));
+    await act;
+
+    const s = useOperator.getState();
+    expect(s.pauseMessage).toBeUndefined();
+    expect(s.pauseError).toBeUndefined();
+    expect(s.pauseBusy).toBe(false);
+    // The re-read is the toggle's own next statement, so its absence proves the guard sits ahead of
+    // it rather than merely suppressing the confirmation copy.
+    expect(counter.listReads()).toBe(before);
+    expectSessionBUntouched(round);
+  });
+
+  it('the advertising toggle STILL confirms and re-reads when the OK answers the LIVE session', async () => {
+    const counter = stubActionCountingListReads(
+      '/advertising/pause',
+      Promise.resolve(new Response(JSON.stringify({ paused: true }), { status: 200 })),
+    );
+    seedLive();
+    const before = counter.listReads();
+
+    await useOperator.getState().pauseAdvertising(BASE);
+
+    const s = useOperator.getState();
+    expect(s.pauseMessage).toBe(PAUSED_OK);
+    expect(s.pauseBusy).toBe(false);
+    expect(counter.listReads()).toBe(before + 1);
+  });
+
+  it('saveDraftEdit discards an OK answer issued by an ENDED session', async () => {
+    // The form family's SUCCESS branch, which closes the open edit form. A dead session's save
+    // would close a form the current operator may be mid-way through typing into.
+    const a = deferred<Response>();
+    const counter = stubActionCountingListReads('/v1/operator/cohorts/draft-1', a.promise);
+    seedLive();
+    useOperator.getState().beginEdit('draft-1');
+    const act = useOperator.getState().saveDraftEdit(BASE, 'draft-1', { beaconType: 'CASBeacon', size: 3, threshold: 3 });
+
+    await signBackIn();
+    useOperator.getState().beginEdit('draft-b');
+    const round = useOperator.getState().sessionRound;
+    const before = counter.listReads();
+
+    a.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    await act;
+
+    const s = useOperator.getState();
+    expect(s.editingDraftId).toBe('draft-b');
+    expect(s.editStatus).toBe('idle');
+    expect(counter.listReads()).toBe(before);
+    expectSessionBUntouched(round);
+  });
+
+  it('saveDraftEdit STILL closes the form and re-reads when the OK answers the LIVE session', async () => {
+    const counter = stubActionCountingListReads(
+      '/v1/operator/cohorts/draft-1',
+      Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 })),
+    );
+    seedLive();
+    useOperator.getState().beginEdit('draft-1');
+    const before = counter.listReads();
+
+    await useOperator.getState().saveDraftEdit(BASE, 'draft-1', { beaconType: 'CASBeacon', size: 3, threshold: 3 });
+
+    const s = useOperator.getState();
+    expect(s.editingDraftId).toBeUndefined();
+    expect(s.editStatus).toBe('idle');
+    expect(counter.listReads()).toBe(before + 1);
+  });
+
+  it('cancelCohort discards an UNREACHABLE answer issued by an ENDED session', async () => {
+    // The second half of the reviewer's repro: a failed cancel painting a bad-tone sentence into a
+    // console that canceled nothing, about a cohort it never touched.
+    const a = deferred<Response>();
+    stubAction({ '/cancel': a.promise });
+    seedLive();
+    const act = useOperator.getState().cancelCohort(BASE, 'cohort-1');
+
+    await signBackIn();
+    const round = useOperator.getState().sessionRound;
+
+    a.resolve(new Response('boom', { status: 500 }));
+    await act;
+
+    const s = useOperator.getState();
+    expect(s.actionError).toBeUndefined();
+    expect(s.cancelling).toBeUndefined();
+    expectSessionBUntouched(round);
+  });
+
+  it('cancelCohort STILL writes the action-error line when the fault answers the LIVE session', async () => {
+    const a = deferred<Response>();
+    stubAction({ '/cancel': a.promise });
+    seedLive();
+    const act = useOperator.getState().cancelCohort(BASE, 'cohort-1');
+
+    a.resolve(new Response('boom', { status: 500 }));
+    await act;
+
+    const s = useOperator.getState();
+    expect(s.actionError).toBe(actionFailedWith());
+    expect(s.cancelling).toBeUndefined();
+  });
+
+  it('finalizeCohort discards a REFUSED (409) answer issued by an ENDED session', async () => {
+    const a = deferred<Response>();
+    stubAction({ '/finalize': a.promise });
+    seedLive();
+    const act = useOperator.getState().finalizeCohort(BASE, 'cohort-1');
+
+    await signBackIn();
+    const round = useOperator.getState().sessionRound;
+
+    a.resolve(
+      new Response(JSON.stringify({ error: 'cohort is not in a signing phase' }), { status: 409 }),
+    );
+    await act;
+
+    const s = useOperator.getState();
+    expect(s.actionError).toBeUndefined();
+    expect(s.finalizing).toBeUndefined();
+    expectSessionBUntouched(round);
+  });
+
+  it('finalizeCohort STILL preserves the server reason when the 409 answers the LIVE session', async () => {
+    const a = deferred<Response>();
+    stubAction({ '/finalize': a.promise });
+    seedLive();
+    const act = useOperator.getState().finalizeCohort(BASE, 'cohort-1');
+
+    a.resolve(
+      new Response(JSON.stringify({ error: 'cohort is not in a signing phase' }), { status: 409 }),
+    );
+    await act;
+
+    const s = useOperator.getState();
+    expect(s.actionError).toBe(actionFailedWith('cohort is not in a signing phase'));
+    expect(s.finalizing).toBeUndefined();
+  });
+
   it('opens no drill-down when the session expires INSIDE the post-success list re-read', async () => {
     // The property the retired status comparison was buying, and the reason the landing re-reads the
     // comparison on the far side of the refresh instead of caching a boolean across it: the list
@@ -2924,5 +3126,76 @@ describe('operator store session identity across every gated ACTION (review IN-0
     expect(s.error).toBe(SESSION_EXPIRED);
     // Never the freshly advertised cohort's drill-down, on top of the login screen.
     expect(s.view).toEqual({ kind: 'list' });
+  });
+});
+
+/**
+ * Review WR-13, the enumeration half.
+ *
+ * The behavioral rows above prove the rule for the branches they drive. This block proves it for
+ * the FILE, and it exists because of what the previous round's finding actually was: a reader
+ * checking the trio's general-law claim against the source could not tell a deliberate exemption
+ * from a missed site. A row that COUNTS is the only thing that makes that distinction checkable,
+ * and it is what turns a sixteenth capture added later into a deliberate decision rather than a
+ * silent addition.
+ *
+ * The source is read out of the file rather than reasoned about, following the shipped convention
+ * `participant-fate.spec.ts` uses for the gone-streak constant.
+ */
+describe('operator store session-identity enumeration, read out of the SOURCE (review WR-13)', () => {
+  const OPERATOR_SOURCE = readFileSync(
+    fileURLToPath(new URL('../src/stores/operator.ts', import.meta.url)),
+    'utf8',
+  );
+
+  /** The statement every gated call makes to capture the session it is asking in. */
+  const CAPTURE = 'const askedInRound = askingRound(get);';
+
+  /**
+   * The comparison every gated call must make before it writes. Spelled with its lowercase initial
+   * deliberately: `expireIfStillAsking(get, askedInRound)` does NOT match this string, so a verb
+   * that guards only its 401 branch fails here, which is exactly the state this plan found.
+   */
+  const COMPARISON = 'stillAsking(get, askedInRound)';
+
+  /**
+   * The gated call sites this store has. Stated as a number so adding one without a comparison
+   * fails, and so adding one WITH a comparison still fails until somebody updates this figure and
+   * therefore reads the rule.
+   */
+  const CAPTURE_SITES = 15;
+
+  it('captures the asking session at exactly the stated number of gated call sites', () => {
+    const segments = OPERATOR_SOURCE.split(CAPTURE);
+    expect(segments.length - 1).toBe(CAPTURE_SITES);
+  });
+
+  it('follows every capture with a comparison against the captured round, before the next capture', () => {
+    // Segment boundaries are captures rather than method boundaries, which is a deliberate
+    // simplification: every gated method takes its capture within a few lines of its top, so a
+    // segment is that method's body in practice. What the row buys is that a capture with NO
+    // comparison anywhere after it cannot hide.
+    const segments = OPERATOR_SOURCE.split(CAPTURE).slice(1);
+    const unguarded = segments
+      .map((segment, index) => ({ index, guarded: segment.includes(COMPARISON) }))
+      .filter((entry) => !entry.guarded)
+      .map((entry) => entry.index);
+    expect(unguarded).toEqual([]);
+  });
+
+  it('holds exactly ONE status-as-identity comparison, and it is inside askingRound', () => {
+    // The comparison `sessionRound` exists to replace. One occurrence is correct and necessary:
+    // `askingRound` is the single place allowed to read the status, to decide whether ANY session
+    // was live enough to own a question. Every other decision in the file compares the round, which
+    // is what makes the general-law sentence in `sessionRound`'s docstring true of the whole file
+    // rather than of most of it.
+    const token = `auth === ${JSON.stringify('logged-in').replace(/"/g, "'")}`;
+    const occurrences = OPERATOR_SOURCE.split(token).length - 1;
+    expect(occurrences).toBe(1);
+
+    const start = OPERATOR_SOURCE.indexOf('function askingRound(');
+    expect(start).toBeGreaterThan(-1);
+    const body = OPERATOR_SOURCE.slice(start, OPERATOR_SOURCE.indexOf('\n}', start));
+    expect(body).toContain(token);
   });
 });
