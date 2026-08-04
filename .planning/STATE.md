@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 05
 current_phase_name: operator-cohort-lifecycle-control
 status: executing
-stopped_at: Completed 05-41-PLAN.md
-last_updated: "2026-08-04T16:33:07.008Z"
-last_activity: 2026-08-03
-last_activity_desc: Phase 05 execution started
+stopped_at: Completed 05-42-PLAN.md
+last_updated: "2026-08-04T17:16:07.716Z"
+last_activity: 2026-08-04
+last_activity_desc: 05-42 executed (WR-13 branch sweep + IN-18 reset factory)
 progress:
   total_phases: 5
-  completed_phases: 5
+  completed_phases: 4
   total_plans: 74
-  completed_plans: 71
+  completed_plans: 72
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-22)
 ## Current Position
 
 Phase: 05 (operator-cohort-lifecycle-control) — EXECUTING
-Plan: 41 of 41
-Status: Ready to execute
-Last activity: 2026-08-03 — Phase 05 execution started
+Plan: 42 of 44 complete (round 8 in progress: 05-42 done, 05-43 and 05-44 remain)
+Status: Ready to execute 05-43
+Last activity: 2026-08-04: 05-42 executed (WR-13 branch sweep + IN-18 reset factory)
 
-Progress: [██████████] 100%
+Progress: [██████████] 97%
 
 ## Performance Metrics
 
@@ -132,6 +132,7 @@ Progress: [██████████] 100%
 | Phase 05 P39 | 15 min | 3 tasks | 2 files |
 | Phase 05 P40 | 11 min | 3 tasks | 3 files |
 | Phase 05 P41 | 14 min | 2 tasks | 4 files |
+| Phase 05 P42 | 15 min | 3 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -263,6 +264,9 @@ Recent decisions affecting current work (Phase 2):
 - [Phase ?]: [Phase 05] 05-40 (WR-12/IN-09/IN-10): advertise and readvertise get discriminated results (refused carries the service's own 409 paused reason, declined stays apart from unreachable because a service that said no and a service that cannot be reached are different things to go and check), and their failures move from the create form's validation slot to the one-shot actionError the cohort list renders above the buttons that raise it. The session-identity rule is lifted into ONE trio (askingRound/stillAsking/expireIfStillAsking) used at all FIFTEEN gated call sites (4 reads + 11 action verbs), with probe's session-ended branches the ONE documented exception because no round asked their question; the mutation that removes the comparison turns a read's ABA rows and an action's ABA rows red TOGETHER, which is the property a shared implementation buys and eleven per-site edits could not. refreshCohorts DROPS its auth-status clause rather than the other three reads gaining one: the round comparison already proves the session did not end, so the clause only refused an ok answer landing inside a probe's checking window.
 - [Phase ?]: [Phase 05] 05-41: the console caption is the FIXED POINT and the boot warnings + DEPLOY.md moved to it (review IN-13). One fact stated in three places diverged because round 6 corrected only the one it found; both textKnob consequence clauses now state the cost, then the in-session repair through the operator settings surface, then the environment edit, with the two clauses kept as DIFFERENT sentences (the name loses a label, the terms turn the SVC-05 acceptance gate off). Ordering is asserted by POSITION inside the composed warning, not by sentence match, so a rewording that preserves the order stays green.
 - [Phase ?]: [Phase 05] 05-41: IN-14 is CLOSED AS DOCUMENTED AND MEASURED, not fixed. settingsBodyLimitBytes charges the STORED (trimmed) length while the route enforces the TRANSMITTED body, so a value at the cap padded with whitespace is legal to the holder and refused 413; the docstring names the alternative not taken (bound the JSON field before trimming) and why the decision is proportionate, and three rows measure the gap so the claim is checkable rather than a rationale. Beside it the route comment (review IN-12) now names settingsBodyLimitBytes and BOTH string caps instead of the terms cap alone, with a comment-lines-only diff on hono-adapter.ts.
+- [Phase 05]: [Phase 05] 05-42 (SVC-04, round 8 plan 1 of 3): the session-identity rule is now true of every BRANCH of every gated action verb, not just the 401. Eleven verbs (runAdvertisingToggle covering pause+resume, saveDraftEdit, advertise, readvertise, discard, exportCohort, cancelCohort, finalizeCohort, addTestPeers, disableBroadcast, dismissEnded) each take ONE stillAsking(get, askedInRound) early-return guard directly BELOW their unauthorized branch, covering ok/refused/declined/unreachable and the catch blocks. The guard goes below and never above the 401 branch, because a 401 is session-scoped and must be acted on by whichever call discovers it (the ordering refreshCohorts already records). advertise's D-13 drill-down landing dropped its auth-status comparison for a FRESH round read taken AFTER the post-success list re-read: that refresh can itself 401 and end the session, so a boolean cached across it is stale by the time the landing decides, and caching would have reintroduced the bug class in a new place. saveDraftEdit's unauthorized check moved ahead of its result.ok check (behavior-preserving: a result carrying unauthorized is never ok). The store now holds exactly ONE status-as-identity comparison, inside askingRound's body. Rationale: Review WR-13: reproduced against the shipped store, session A's advertise wrote A's green confirmation into session B, re-read the list, then navigated B into A's freshly minted cohort, while A's failed cancel painted a bad-tone sentence about a cohort B never touched. General lesson worth carrying past this phase: when a rule is stated over a call site, the coverage owed is one row per BRANCH of that call site, not one row per call site.
+- [Phase 05]: [Phase 05] 05-42: the enumeration is CHECKED, not claimed. operator.spec.ts splits the shipped store source on the capture statement, asserts fifteen gated capture sites, and requires a comparison against the captured round after each, using the source-walk convention participant-fate.spec.ts established. The comparison token is spelled with its lowercase initial deliberately so expireIfStillAsking(get, askedInRound) does NOT match it, which is what makes a verb guarding only its 401 branch fail the row. A second row pins exactly one status-as-identity comparison and that it lives inside askingRound. 05-43 will have to raise the stated count from 15 to 16 when it adds submitDraft (WR-14), which is the row working as designed. Rationale: The round-7 finding was that a reader could not distinguish a deliberate exemption from a missed site. A row that counts is the only thing that makes the distinction checkable, and it turns a sixteenth capture into a deliberate decision rather than a silent addition.
+- [Phase 05]: [Phase 05] 05-42 (IN-18): GATED_SLICE_RESET became gatedSliceReset(), a factory both signOut and expireSession call, so the four nested containers (cohorts, rows, operatorActions, view) are no longer ONE shared set written into live store state on every session end. Field set, order and the three named exclusions (auth, sessionRound, error) are unchanged: this is instance identity only, and the IN-11 parity row is untouched. A factory rather than a dev-only deep freeze, so there is no behavior difference between builds. Pinned by REFERENCE comparison across two consecutive ends and across the expiry/sign-out pair. Rationale: The shipped parity row compares two states with toEqual, a VALUE comparison, so it passes identically whether the resets share containers or not: the mutation check observed the parity row STAY GREEN while the new rows went red. The property was invisible to a 1348-test suite by construction. The hazard the factory removes is that the first in-place mutation anywhere (an in-place sort of rows in a future list surface) would corrupt the shared value and every later reset would carry the corruption into a session that never ran the mutating code.
 
 ### Pending Todos
 
@@ -302,7 +306,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-04T00:24:47.895Z
-Stopped at: Completed 05-41-PLAN.md
+Last session: 2026-08-04T17:15:30.159Z
+Stopped at: Completed 05-42-PLAN.md
 Resume file: None
 Next command: /gsd-verify-work 4 (phase 4 execution is complete; verification is the remaining gate before Phase 5)
